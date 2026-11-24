@@ -1,0 +1,8 @@
+{
+  "case_id": "example_writing_08_intro_rw_01",
+  "task_type": "introduction_and_related_work",
+  "language": "en",
+  "corpus_file": "papers.json",
+  "study_facts_file": "study_facts.json",
+  "instructions": "Group related works by technical route (not chronological stitching), derive research gaps directly from cited limitations, align every contribution to empirical evidence anchors, and emit verifiable introduction & related work Markdown."
+}

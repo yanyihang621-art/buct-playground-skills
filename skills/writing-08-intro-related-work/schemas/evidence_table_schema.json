@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gap & Contribution Evidence Alignment Map",
+  "type": "object",
+  "required": ["schema_version", "research_gaps", "contributions"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "research_gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gap_id", "gap_statement", "derived_from_cite_keys", "grounded"],
+        "properties": {
+          "gap_id": {"type": "string"},
+          "gap_statement": {"type": "string"},
+          "derived_from_cite_keys": {"type": "array", "items": {"type": "string"}},
+          "author_judgment": {"type": "boolean"},
+          "grounded": {"type": "boolean"}
+        }
+      }
+    },
+    "contributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contrib_id", "claim", "addresses_gap_id", "evidence_anchor", "grounded"],
+        "properties": {
+          "contrib_id": {"type": "string"},
+          "claim": {"type": "string"},
+          "addresses_gap_id": {"type": "string"},
+          "evidence_anchor": {"type": ["object", "null"]},
+          "grounded": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

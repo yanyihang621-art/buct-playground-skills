@@ -1,0 +1,24 @@
+version: "1.0"
+required_sections_en:
+  - "Research Background"
+  - "Related Work"
+  - "Research Gaps"
+  - "Contributions"
+required_sections_zh:
+  - "研究背景"
+  - "相关工作"
+  - "研究空白"
+  - "主要贡献"
+banned_cliche_openings:
+  - "in recent years, with the rapid development"
+  - "has attracted widespread attention"
+  - "plays an increasingly important role"
+  - "近年来，随着.*快速发展"
+  - "受到了广泛关注"
+  - "具有重要的研究意义"
+comparison_dimensions:
+  - "problem_setting"
+  - "method_route"
+  - "evaluation_system"
+  - "key_finding"
+  - "limitation"
