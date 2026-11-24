@@ -1,0 +1,22 @@
+{
+  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "case_id": "example-reading-01-synthetic",
+  "task_type": "pdf_document_parsing",
+  "instruction": "Parse the input two-column scientific paper into structured sections, tables, formulas, and verifiable page/bbox provenance.",
+  "input_files": [
+    "sample_paper.pdf"
+  ],
+  "output_contract": {
+    "required": [
+      "case_id",
+      "status",
+      "metadata",
+      "sections",
+      "tables",
+      "formulas",
+      "sources",
+      "uncertainties",
+      "change_log"
+    ]
+  }
+}
