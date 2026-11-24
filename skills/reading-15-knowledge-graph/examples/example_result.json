@@ -1,0 +1,51 @@
+{
+  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "case_id": "example-reading-15-synthetic",
+  "status": "success",
+  "sources_manifest": [
+    { "source_id": "paper_1", "title": "Paper One Example", "doi": "10.1000/paper1", "authors": ["Alice Zhang"], "location_type": "jats_paragraph_id" },
+    { "source_id": "paper_2", "title": "Paper Two Example", "doi": "10.1000/paper2", "authors": ["Carol Wang"], "location_type": "jats_paragraph_id" }
+  ],
+  "nodes": [
+    {
+      "node_id": "n_1",
+      "label": "CO2 reduction reaction",
+      "canonical_key": "co2 reduction reaction",
+      "entity_type": "Task",
+      "aliases": ["CO2RR"],
+      "source_ids": ["paper_1", "paper_2"],
+      "evidence_anchors": [
+        { "source_id": "paper_1", "paragraph_id": "p1_s1_1", "location_type": "jats_paragraph_id", "pdf_page": null, "quote_snippet": "CO2 reduction reaction (CO2RR)" }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "e_1",
+      "source_node": "n_2",
+      "relation_type": "catalyzes",
+      "target_node": "n_1",
+      "conditions": ["573 K", "3.0 MPa"],
+      "evidence_strength": "direct_author_evidence",
+      "source_id": "paper_1",
+      "paragraph_id": "p1_s2_1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "At 573 K and 3.0 MPa, Cu-In2O3 catalyzes CO2RR."
+    }
+  ],
+  "merge_decisions": [
+    { "canonical_node_id": "n_1", "merged_aliases": ["CO2 reduction reaction", "CO2RR"], "reason": "Explicit acronym equivalence across paper_1 and paper_2." }
+  ],
+  "do_not_merge_records": [
+    { "generic_term": "Cu-In2O3", "instance_nodes": ["n_2", "n_5"], "reason": "Distinct experimental conditions (573 K / 3.0 MPa in paper_1 vs 523 K / 1.0 MPa in paper_2); sample instances kept separate." }
+  ],
+  "conflicts": [],
+  "executed_queries": [
+    { "query_id": "q_1", "query_type": "cross_paper_shared_concepts", "hit_count": 1, "answer_status": "supported" }
+  ],
+  "sources": [
+    { "source_id": "paper_1", "paragraph_id": "p1_s1_1", "location_type": "jats_paragraph_id", "pdf_page": null }
+  ],
+  "uncertainties": []
+}

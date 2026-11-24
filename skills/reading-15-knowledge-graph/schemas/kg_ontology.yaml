@@ -1,0 +1,71 @@
+schema_version: "1.0.0"
+ontology_name: "Scientific Literature Knowledge Graph Ontology"
+
+entity_types:
+  - Researcher
+  - Material
+  - MaterialInstance
+  - Method
+  - MethodInstance
+  - Task
+  - Metric
+  - Condition
+  - Finding
+
+relation_types:
+  - id: "uses"
+    polarity: "neutral"
+    contradicts: []
+  - id: "evaluates_on"
+    polarity: "neutral"
+    contradicts: []
+  - id: "achieves"
+    polarity: "positive"
+    contradicts: ["contradicts"]
+  - id: "compares_with"
+    polarity: "neutral"
+    contradicts: []
+  - id: "outperforms"
+    polarity: "positive"
+    contradicts: ["contradicts"]
+  - id: "increases"
+    polarity: "positive"
+    contradicts: ["decreases", "inhibits"]
+  - id: "decreases"
+    polarity: "negative"
+    contradicts: ["increases"]
+  - id: "inhibits"
+    polarity: "negative"
+    contradicts: ["increases", "catalyzes"]
+  - id: "catalyzes"
+    polarity: "positive"
+    contradicts: ["inhibits"]
+  - id: "supports"
+    polarity: "positive"
+    contradicts: ["contradicts"]
+  - id: "contradicts"
+    polarity: "negative"
+    contradicts: ["supports"]
+  - id: "restricted_to"
+    polarity: "neutral"
+    contradicts: []
+  - id: "instance_of"
+    polarity: "neutral"
+    contradicts: []
+  - id: "authored_by"
+    polarity: "neutral"
+    contradicts: []
+
+evidence_strength_tiers:
+  - direct_author_evidence
+  - direct_tabular_evidence
+  - prior_work_citation
+  - indirect_speculation
+
+alignment_policy:
+  merge_allowed:
+    - "Exact acronym-to-full-name equivalence (e.g., CO2RR <-> CO2 reduction reaction)"
+    - "Case and hyphenation normalization of abstract concepts or tasks"
+  do_not_merge_required:
+    - "Same generic Material or Method term across distinct papers when experimental conditions, sample preparations, or numeric outcomes differ. Keep paper-scoped MaterialInstance/MethodInstance nodes linked via instance_of to the canonical concept."
+    - "Never treat multiple file formats (e.g., JSON + Markdown) of the same paper as independent cross-paper evidence."

@@ -1,0 +1,12 @@
+schema_version: "1.0.0"
+queries:
+  - id: "cross_paper_shared_concepts"
+    description: "Find canonical concepts shared across >= 2 independent papers along with merge_decisions and do_not_merge_records."
+  - id: "entity_neighborhood"
+    description: "Retrieve 1-hop subgraph (nodes, directed edges, conditions, evidence snippets) around a target entity."
+  - id: "method_metric_comparison"
+    description: "Compare Material/Method -> Metric/Finding edges grouped strictly by source_id and conditions without merging outcomes."
+  - id: "conflict_and_boundary_audit"
+    description: "Inspect cross-paper/intra-paper conflicts, evidence_strength distribution, and unverifiable/not_reported items."
+  - id: "relation_evidence_probe"
+    description: "Check whether direct evidence-backed relations exist between two entities; return no_direct_evidence_unverifiable if absent."

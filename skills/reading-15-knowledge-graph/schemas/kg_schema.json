@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LiteratureKnowledgeGraph",
+  "description": "Multi-paper evidence-grounded scientific knowledge graph with alignment, do-not-merge records, conflict tracking, and incremental update support.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "sources_manifest",
+    "nodes",
+    "edges",
+    "merge_decisions",
+    "do_not_merge_records",
+    "conflicts",
+    "uncertainties"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "status": { "type": "string", "enum": ["success", "partial", "unverifiable", "refused"] },
+    "sources_manifest": { "type": "array", "items": { "type": "object" } },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "label", "entity_type", "source_ids", "evidence_anchors"],
+        "properties": {
+          "node_id": { "type": "string" },
+          "label": { "type": "string" },
+          "canonical_key": { "type": "string" },
+          "entity_type": { "type": "string" },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "source_ids": { "type": "array", "items": { "type": "string" } },
+          "evidence_anchors": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "edge_id",
+          "source_node",
+          "relation_type",
+          "target_node",
+          "evidence_strength",
+          "source_id",
+          "paragraph_id",
+          "location_type",
+          "quote_snippet"
+        ]
+      }
+    },
+    "merge_decisions": { "type": "array", "items": { "type": "object" } },
+    "do_not_merge_records": { "type": "array", "items": { "type": "object" } },
+    "conflicts": { "type": "array", "items": { "type": "object" } },
+    "incremental_changelog": { "type": "object" },
+    "uncertainties": { "type": "array", "items": { "type": "object" } }
+  }
+}
