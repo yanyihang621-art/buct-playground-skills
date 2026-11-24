@@ -1,0 +1,62 @@
+{
+  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "case_id": "example-reading-14-synthetic",
+  "status": "success",
+  "nanopub_count": 2,
+  "source_metadata": {
+    "paper_title": "Selective CO2 Hydrogenation over Cu-In2O3 Catalysts",
+    "authors": ["Alice Zhang", "Bob Li"],
+    "year": "2025",
+    "doi": "10.1021/acscatal.2025.00123",
+    "version": "1.0",
+    "source_file": "sample_nanopub_paper.pdf"
+  },
+  "nanopublications": [
+    {
+      "nanopub_id": "np_1",
+      "nanopub_uri": "urn:nanopub:sha256:example00000001",
+      "head": {
+        "assertion_graph": "urn:nanopub:sha256:example00000001#assertion",
+        "provenance_graph": "urn:nanopub:sha256:example00000001#provenance",
+        "pubinfo_graph": "urn:nanopub:sha256:example00000001#pubinfo"
+      },
+      "assertion": {
+        "subject": "Cu-In2O3",
+        "predicate": "catalyzes",
+        "predicate_uri": "http://purl.obolibrary.org/obo/RO_0002327",
+        "object": "CO2 hydrogenation to methanol",
+        "conditions": ["573 K", "3.0 MPa"],
+        "atomic_statement": "At 573 K and 3.0 MPa, Cu-In2O3 catalyzes CO2 hydrogenation to methanol."
+      },
+      "provenance": {
+        "evidence_type": "direct_experimental",
+        "minimal_evidence_snippet": "At 573 K and 3.0 MPa, Cu-In2O3 catalyzes CO2 hydrogenation to methanol.",
+        "location": {
+          "pdf_page": 1,
+          "printed_page": "1",
+          "section_id": "sec_3",
+          "block_id": "p1_b08",
+          "bbox": [315.0, 195.0, 545.0, 240.0]
+        },
+        "source_metadata": {
+          "paper_title": "Selective CO2 Hydrogenation over Cu-In2O3 Catalysts",
+          "authors": ["Alice Zhang", "Bob Li"],
+          "year": "2025",
+          "doi": "10.1021/acscatal.2025.00123"
+        }
+      },
+      "pubinfo": {
+        "created_at": "2025-01-15T00:00:00Z",
+        "creator": "reading-14-nanopublication/1.0.0",
+        "confidence_score": 0.92,
+        "confidence_basis": "direct_experimental evidence with explicit 573 K and 3.0 MPa qualifiers."
+      }
+    }
+  ],
+  "deduplication_log": [],
+  "conflicts": [],
+  "sources": [
+    { "element_id": "p1_b08", "kind": "body", "pdf_page": 1, "printed_page": "1", "bbox": [315.0, 195.0, 545.0, 240.0] }
+  ],
+  "uncertainties": []
+}
