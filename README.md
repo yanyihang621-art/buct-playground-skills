@@ -17,7 +17,7 @@
 | 7 | 写作13｜LaTeX 写作与编译 | `product-arena-07-865de7e4` | [`skills/writing-13-latex`](skills/writing-13-latex) | 已完成 |
 | 8 | 写作02｜学术语言润色 | `product-arena-02-7051d92d` | [`skills/writing-02-polishing`](skills/writing-02-polishing) | 已完成 |
 | 9 | 写作08｜引言与相关工作写作 | `product-arena-04-4b82ad21` | [`skills/writing-08-intro-related-work`](skills/writing-08-intro-related-work) | 已完成 |
-| 10 | 写作09｜方法与实验章节写作 | `product-arena-05-64faa4a2` | `skills/writing-09-methods-experiments` | 计划中 |
+| 10 | 写作09｜方法与实验章节写作 | `product-arena-05-64faa4a2` | [`skills/writing-09-methods-experiments`](skills/writing-09-methods-experiments) | 已完成 |
 
 ## 通用设计原则
 

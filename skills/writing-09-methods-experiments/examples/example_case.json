@@ -1,0 +1,7 @@
+{
+  "case_id": "example_writing_09_methods_01",
+  "task_type": "methods_and_experiments_writing",
+  "language": "en",
+  "spec_file": "experiment_spec.json",
+  "instructions": "Extract experimental steps, setup, datasets/splits, baselines, and parameter provenance across configs, logs, and scripts; detect cross-source conflicts and missing reproducibility items; draft an executable 6-section Methods & Experiments chapter."
+}

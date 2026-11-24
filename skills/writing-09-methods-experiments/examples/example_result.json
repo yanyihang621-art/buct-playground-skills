@@ -1,0 +1,35 @@
+{
+  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test schema, not an undisclosed benchmark output.",
+  "schema_version": "writing-09-methods-result/v1",
+  "challenge_id": "product-arena-05-64faa4a2",
+  "case_id": "example_writing_09_methods_01",
+  "status": "completed",
+  "language": "en",
+  "summary": "Extracted 8 parameters from config.yaml/run.log/train.py (0 conflicts), drafted all 6 Methods & Experiments sections with train/val/test separation, explicit seeds/repeats, baseline budget equivalence, and failure-mode limitations.",
+  "metrics": {
+    "parameter_count": 8,
+    "conflict_count": 0,
+    "step_count": 3,
+    "dataset_count": 1,
+    "baseline_count": 2,
+    "missing_repro_count": 0,
+    "parameter_prose_consistency": 1.0
+  },
+  "artifacts": {
+    "experiment_facts_json": "/app/work/methods/experiment_facts.json",
+    "parameter_table_json": "/app/work/methods/parameter_table.json",
+    "methods_and_experiments_md": "/app/output/methods_and_experiments.md",
+    "parameter_table_md": "/app/output/parameter_table.md",
+    "reproducibility_and_questions_md": "/app/output/reproducibility_and_questions.md",
+    "qa_report_json": "/app/work/methods/qa_report.json"
+  },
+  "sources": [],
+  "change_records": [],
+  "uncertainties": [],
+  "author_questions": [],
+  "verification": {
+    "passed": true,
+    "check_count": 6,
+    "failed_checks": []
+  }
+}

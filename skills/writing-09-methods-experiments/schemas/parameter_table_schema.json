@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experiment Parameter Provenance Table",
+  "type": "object",
+  "required": ["schema_version", "parameter_count", "parameters", "conflicts"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "parameter_count": {"type": "integer", "minimum": 0},
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "value", "unit", "target_component", "source"],
+        "properties": {
+          "name": {"type": "string"},
+          "value": {},
+          "unit": {"type": "string"},
+          "target_component": {"type": "string"},
+          "source": {"type": "string"}
+        }
+      }
+    },
+    "conflicts": {"type": "array", "items": {"type": "object"}}
+  }
+}
