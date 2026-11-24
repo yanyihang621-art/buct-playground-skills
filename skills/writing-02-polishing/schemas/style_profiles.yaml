@@ -1,0 +1,53 @@
+version: "1.0"
+registers:
+  journal_article:
+    description: "Objective, concise, third-person peer-reviewed academic style; prohibits colloquialisms and promotional hype."
+    allow_first_person: false
+  thesis:
+    description: "Rigorous, structured academic dissertation tone with explicit scope qualifiers."
+    allow_first_person: false
+  grant_proposal:
+    description: "Clear scientific motivation without exaggerated breakthroughs or unsupported claims."
+    allow_first_person: true
+  rebuttal:
+    description: "Polite, evidence-anchored point-by-point reviewer response."
+    allow_first_person: true
+  abstract:
+    description: "Compact IMRaD density preserving exact numerical findings and certainty level."
+    allow_first_person: false
+
+banned_colloquial_or_hype_en:
+  - "a lot of"
+  - "lots of"
+  - "kind of"
+  - "sort of"
+  - "pretty good"
+  - "very obvious"
+  - "very clear"
+  - "more and more"
+  - "in a word"
+  - "needless to say"
+  - "epoch-making"
+  - "revolutionary breakthrough"
+  - "earth-shattering"
+  - "undoubtedly proves"
+  - "totally solves"
+
+banned_colloquial_or_hype_zh:
+  - "众所周知"
+  - "毋庸置疑"
+  - "不言而喻"
+  - "显而易见"
+  - "国际领先"
+  - "划时代突破"
+  - "彻底解决"
+  - "非常完美"
+
+hedging_tiers:
+  tentative: ["may", "might", "could", "suggest", "suggests", "suggested", "indicate", "indicates", "likely", "appear to", "plausible", "tend to", "可能", "或许", "提示", "倾向于", "初步表明"]
+  moderate: ["show", "shows", "showed", "demonstrate", "demonstrates", "support", "supports", "consistent with", "observed", "表明", "显示", "支持", "观测到"]
+  strong_absolute: ["prove", "proves", "proved", "definitely", "undoubtedly", "always", "certainly", "must be", "证明", "毫无疑问", "必然", "绝对"]
+
+relation_markers:
+  correlational: ["correlated with", "associated with", "coincided with", "accompanied by", "相关", "呈正相关", "呈负相关", "伴随"]
+  causal: ["caused", "causes", "lead to", "leads to", "led to", "result in", "results in", "resulted in", "drive", "drives", "induce", "induces", "attributable to", "导致", "引起", "诱发", "归因于"]

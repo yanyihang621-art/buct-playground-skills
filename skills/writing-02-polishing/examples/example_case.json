@@ -1,0 +1,11 @@
+{
+  "case_id": "example_writing_02_polishing_01",
+  "task_type": "academic_language_polishing",
+  "register": "journal_article",
+  "manuscript_file": "draft.md",
+  "custom_glossary": {
+    "catalytic selectivity": "catalytic selectivity",
+    "Cu-ZnO-Al2O3": "Cu-ZnO-Al2O3"
+  },
+  "instructions": "Polish grammar, register, and Chinglish expressions minimally while preserving all numerical findings, equations, citations, hedging strength, correlational vs causal claims, and locked terminology."
+}

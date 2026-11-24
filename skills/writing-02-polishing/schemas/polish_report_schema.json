@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Academic Sentence-Level Polish Report",
+  "type": "object",
+  "required": ["schema_version", "register", "status", "sentence_count", "edited_count", "sentences", "glossary", "qa_report"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "register": {"type": "string"},
+    "status": {"type": "string", "enum": ["completed", "partial", "refused"]},
+    "sentence_count": {"type": "integer", "minimum": 0},
+    "edited_count": {"type": "integer", "minimum": 0},
+    "sentences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sent_id", "line", "role", "source_text", "polished_text", "edit_type", "rationale", "protected_tokens"],
+        "properties": {
+          "sent_id": {"type": "string"},
+          "line": {"type": "integer", "minimum": 1},
+          "role": {"type": "string"},
+          "source_text": {"type": "string"},
+          "polished_text": {"type": "string"},
+          "edit_type": {"type": "string"},
+          "rationale": {"type": "string"},
+          "protected_tokens": {"type": "array", "items": {"type": "string"}},
+          "uncertain": {"type": "boolean"}
+        }
+      }
+    },
+    "glossary": {"type": "object"},
+    "qa_report": {"type": "object"}
+  }
+}

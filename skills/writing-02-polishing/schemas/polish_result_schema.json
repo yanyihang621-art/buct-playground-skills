@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Writing 02 Academic Polishing Result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "challenge_id",
+    "case_id",
+    "status",
+    "register",
+    "summary",
+    "metrics",
+    "artifacts",
+    "change_records",
+    "uncertainties",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "challenge_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["completed", "partial", "refused"]},
+    "register": {"type": "string"},
+    "summary": {"type": "string"},
+    "metrics": {"type": "object"},
+    "artifacts": {"type": "object"},
+    "change_records": {"type": "array"},
+    "uncertainties": {"type": "array"},
+    "verification": {"type": "object"}
+  }
+}
