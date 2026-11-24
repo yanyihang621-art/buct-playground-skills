@@ -1,0 +1,33 @@
+{
+  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic compilation schema, not an undisclosed benchmark output.",
+  "schema_version": "writing-13-latex-result/v1",
+  "challenge_id": "product-arena-07-865de7e4",
+  "case_id": "example_writing_13_latex_01",
+  "status": "completed",
+  "summary": "Diagnosed 2 root-cause LaTeX errors, applied 2 deterministic preamble/escaping fixes, compiled cleanly in 4 passes (pdflatex + bibtex) to a 2-page PDF with 0 ??/[?] markers and PNG previews rendered.",
+  "metrics": {
+    "initial_error_count": 2,
+    "final_error_count": 0,
+    "overfull_hbox_count": 0,
+    "rendered_unresolved_count": 0,
+    "page_count": 2,
+    "passes_count": 4
+  },
+  "artifacts": {
+    "project_map_json": "/app/work/latex/project_map.json",
+    "diagnostics_json": "/app/work/latex/diagnostics_final.json",
+    "patch_diff": "/app/work/latex/patch.diff",
+    "build_manifest_json": "/app/work/latex/build_manifest.json",
+    "build_repro_sh": "/app/output/latex_project/build_repro.sh",
+    "output_pdf": "/app/output/main.pdf",
+    "previews": ["/app/output/previews/page_001.png"]
+  },
+  "change_records": [],
+  "uncertainties": [],
+  "verification": {
+    "passed": true,
+    "pdf_nonempty": true,
+    "zero_unresolved_rendered": true,
+    "repro_script_emitted": true
+  }
+}

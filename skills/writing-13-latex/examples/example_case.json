@@ -1,0 +1,8 @@
+{
+  "case_id": "example_writing_13_latex_01",
+  "task_type": "latex_writing_and_compilation",
+  "main_tex": "main.tex",
+  "auto_fix": true,
+  "render_previews": true,
+  "instructions": "Inspect the LaTeX project, diagnose and safely fix preamble/escaping/package issues with a diff record, compile deterministically through BibTeX convergence, verify rendered PDF & PNG previews, and emit a reproducible build manifest."
+}

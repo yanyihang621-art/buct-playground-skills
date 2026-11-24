@@ -1,0 +1,47 @@
+version: "1.0"
+taxonomy:
+  - category: "missing_file_or_cls"
+    patterns: ["File `([^']+)' not found", "cannot find `([^']+)'"]
+    severity: "fatal"
+    is_cascade_root: true
+    hint: "Provide missing .cls/.sty/.tex/figure file or switch to an installed template class."
+  - category: "missing_package"
+    patterns: ["LaTeX Error: Environment (\\S+) undefined", "Undefined control sequence.*\\\\(?:toprule|midrule|bottomrule|begin\\{align)"]
+    severity: "error"
+    is_cascade_root: true
+    hint: "Add required package (e.g., booktabs, amsmath) to preamble."
+  - category: "undefined_control_sequence"
+    patterns: ["Undefined control sequence"]
+    severity: "error"
+    is_cascade_root: true
+    hint: "Escape literal symbols or import the package defining this macro."
+  - category: "math_delimiter_mismatch"
+    patterns: ["Missing \\$ inserted", "Display math should end with \\$\\$"]
+    severity: "error"
+    is_cascade_root: true
+    hint: "Balance $ / $$ / \\(...\\) delimiters or move math symbols inside math mode."
+  - category: "table_column_mismatch"
+    patterns: ["Extra alignment tab has been changed to \\\\cr", "Misplaced \\\\noalign"]
+    severity: "error"
+    is_cascade_root: true
+    hint: "Check tabular column specifier count vs '&' cells per row and unescaped '%' comments."
+  - category: "unclosed_environment"
+    patterns: ["\\\\begin\\{(\\S+)\\} on input line \\d+ ended by \\\\end\\{(\\S+)\\}", "Emergency stop"]
+    severity: "error"
+    is_cascade_root: true
+    hint: "Balance \\begin{env} and \\end{env} pairs."
+  - category: "font_missing"
+    patterns: ["fontspec error:", "Font .* not found", "The font \".*\" cannot be found"]
+    severity: "fatal"
+    is_cascade_root: true
+    hint: "Switch to a system-installed Unicode font or compile with pdflatex if Latin-only."
+  - category: "undefined_reference_or_citation"
+    patterns: ["Reference `([^']+)' on page \\d+ undefined", "Citation `([^']+)' on page \\d+ undefined", "There were undefined references", "There were undefined citations"]
+    severity: "warning"
+    is_cascade_root: false
+    hint: "Run bibtex/biber + extra LaTeX passes, or verify \\label / .bib keys."
+  - category: "overfull_hbox"
+    patterns: ["Overfull \\\\hbox \\(([0-9.]+pt) too wide\\)"]
+    severity: "warning"
+    is_cascade_root: false
+    hint: "Wrap wide tables with tabularx / adjust column widths or allow line breaks."

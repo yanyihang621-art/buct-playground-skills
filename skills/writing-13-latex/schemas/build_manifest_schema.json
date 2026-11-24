@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reproducible LaTeX Build Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "engine",
+    "bib_tool",
+    "main_tex",
+    "passes_executed",
+    "output_pdf",
+    "pdf_sha256",
+    "page_count",
+    "repro_command"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "status": {"type": "string", "enum": ["completed", "partial", "failed"]},
+    "engine": {"type": "string"},
+    "engine_version": {"type": "string"},
+    "bib_tool": {"type": ["string", "null"]},
+    "bib_tool_version": {"type": ["string", "null"]},
+    "main_tex": {"type": "string"},
+    "passes_executed": {"type": "array", "items": {"type": "object"}},
+    "output_pdf": {"type": ["string", "null"]},
+    "pdf_sha256": {"type": ["string", "null"]},
+    "page_count": {"type": "integer", "minimum": 0},
+    "rendered_unresolved_markers": {"type": "array", "items": {"type": "string"}},
+    "previews": {"type": "array", "items": {"type": "string"}},
+    "repro_command": {"type": "string"},
+    "packages_detected": {"type": "array", "items": {"type": "string"}}
+  }
+}
