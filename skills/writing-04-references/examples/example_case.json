@@ -1,0 +1,14 @@
+{
+  "case_id": "example_writing_04_references_01",
+  "task_type": "reference_and_citation_management",
+  "style": "gbt7714",
+  "manuscript_file": "draft.md",
+  "bib_files": ["library.bib", "export.ris"],
+  "insert_claims": [
+    {
+      "target_phrase": "Cu-ZnO-Al2O3 catalysts exhibit high CO2 conversion selectivity",
+      "cite_keys": ["zhang2024_cu"]
+    }
+  ],
+  "instructions": "Deduplicate multi-source references with explainable merge criteria, insert missing citations at claim clauses, renumber sequentially, format in GB/T 7714-2015, and verify bidirectional consistency."
+}

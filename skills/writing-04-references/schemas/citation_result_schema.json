@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Writing 04 Reference & Citation Management Result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "challenge_id",
+    "case_id",
+    "status",
+    "style",
+    "summary",
+    "metrics",
+    "artifacts",
+    "sources",
+    "change_records",
+    "uncertainties",
+    "verification"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "challenge_id": {"type": "string"},
+    "case_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["completed", "partial", "refused"]},
+    "style": {"type": "string"},
+    "summary": {"type": "string"},
+    "metrics": {"type": "object"},
+    "artifacts": {"type": "object"},
+    "sources": {"type": "array"},
+    "change_records": {"type": "array"},
+    "uncertainties": {"type": "array"},
+    "verification": {"type": "object"}
+  }
+}

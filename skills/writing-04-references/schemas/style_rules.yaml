@@ -1,0 +1,30 @@
+version: "1.0"
+styles:
+  gbt7714:
+    name: "GB/T 7714-2015"
+    mode: "numeric"
+    max_authors_before_etal: 3
+    zh_etal: "等"
+    en_etal: "et al"
+    type_codes:
+      article: "J"
+      journal: "J"
+      inproceedings: "C"
+      conference: "C"
+      book: "M"
+      thesis: "D"
+      phdthesis: "D"
+      mastersthesis: "D"
+      preprint: "EB/OL"
+      electronic: "EB/OL"
+      misc: "Z"
+  apa7:
+    name: "APA 7th Edition"
+    mode: "author_year"
+    max_authors_in_text: 2
+    max_authors_bib: 20
+  ieee:
+    name: "IEEE Reference Style"
+    mode: "numeric"
+    max_authors_before_etal: 6
+    en_etal: "et al."

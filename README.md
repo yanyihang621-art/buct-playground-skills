@@ -12,8 +12,8 @@
 | 2 | 阅读10｜文献总结与结构化笔记 | `product-arena-06-6d8cf72b` | [`skills/reading-10-structured-notes`](skills/reading-10-structured-notes) | 已完成 |
 | 3 | 阅读14｜Nanopublication | `product-arena-09-0e8befd4` | [`skills/reading-14-nanopublication`](skills/reading-14-nanopublication) | 已完成 |
 | 4 | 阅读15｜文献知识图谱构建 | `product-arena-10-760d1a0b` | [`skills/reading-15-knowledge-graph`](skills/reading-15-knowledge-graph) | 已完成 |
-| 5 | 阅读03｜文献翻译 | `product-arena-01-5a9928c1` | `skills/reading-03-translation` | 已完成 |
-| 6 | 写作04｜参考文献与引用管理 | `product-arena-03-429cc14d` | `skills/writing-04-references` | 计划中 |
+| 5 | 阅读03｜文献翻译 | `product-arena-01-5a9928c1` | [`skills/reading-03-translation`](skills/reading-03-translation) | 已完成 |
+| 6 | 写作04｜参考文献与引用管理 | `product-arena-03-429cc14d` | [`skills/writing-04-references`](skills/writing-04-references) | 已完成 |
 | 7 | 写作13｜LaTeX 写作与编译 | `product-arena-07-865de7e4` | `skills/writing-13-latex` | 计划中 |
 | 8 | 写作02｜学术语言润色 | `product-arena-02-7051d92d` | `skills/writing-02-polishing` | 计划中 |
 | 9 | 写作08｜引言与相关工作写作 | `product-arena-04-4b82ad21` | `skills/writing-08-intro-related-work` | 计划中 |
