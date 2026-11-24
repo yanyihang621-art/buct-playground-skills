@@ -1,0 +1,23 @@
+{
+  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "case_id": "example-reading-10-synthetic",
+  "task_type": "literature_structured_notes",
+  "instruction": "Read the input scientific paper and produce section-aligned structured notes, a unified Paper Card (recording conditions and limitations), searchable knowledge entries, and verifiable page/block anchors.",
+  "input_files": [
+    "sample_catalysis_paper.pdf"
+  ],
+  "output_contract": {
+    "required": [
+      "case_id",
+      "status",
+      "paper_card",
+      "section_notes",
+      "knowledge_entries",
+      "terminology_glossary",
+      "conflicts",
+      "sources",
+      "verification_ledger",
+      "uncertainties"
+    ]
+  }
+}

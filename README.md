@@ -9,7 +9,7 @@
 | 序号 | 赛道与赛题 | Challenge ID | 仓库子目录 | 状态 |
 |---|---|---|---|---|
 | 1 | 阅读01｜文献文档解析 | `product-arena-08-3027d350` | [`skills/reading-01-doc-parsing`](skills/reading-01-doc-parsing) | 已完成 |
-| 2 | 阅读10｜文献总结与结构化笔记 | `product-arena-06-6d8cf72b` | `skills/reading-10-structured-notes` | 计划中 |
+| 2 | 阅读10｜文献总结与结构化笔记 | `product-arena-06-6d8cf72b` | [`skills/reading-10-structured-notes`](skills/reading-10-structured-notes) | 已完成 |
 | 3 | 阅读14｜Nanopublication | `product-arena-09-0e8befd4` | `skills/reading-14-nanopublication` | 计划中 |
 | 4 | 阅读15｜文献知识图谱构建 | `product-arena-10-760d1a0b` | `skills/reading-15-knowledge-graph` | 计划中 |
 | 5 | 阅读03｜文献翻译 | `product-arena-01-5a9928c1` | `skills/reading-03-translation` | 计划中 |
