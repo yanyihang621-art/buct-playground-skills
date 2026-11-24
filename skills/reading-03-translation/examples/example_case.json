@@ -1,0 +1,12 @@
+{
+  "case_id": "example_reading_03_translation_01",
+  "task_type": "literature_translation",
+  "source_lang": "en",
+  "target_lang": "zh-CN",
+  "input_files": ["sample_catalysis_paper.pdf"],
+  "custom_glossary": {
+    "Cu-ZnO-Al2O3": "Cu-ZnO-Al2O3",
+    "space-time yield": "时空产率"
+  },
+  "instructions": "Perform glossary-locked, paragraph-aligned English-to-Chinese translation with full formula, unit, and citation preservation and verifiable QA checks."
+}

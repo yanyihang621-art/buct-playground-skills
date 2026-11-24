@@ -1,0 +1,35 @@
+{
+  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test output, not an undisclosed benchmark output.",
+  "schema_version": "reading-03-translation-result/v1",
+  "challenge_id": "product-arena-01-5a9928c1",
+  "status": "completed",
+  "source_lang": "en",
+  "target_lang": "zh-CN",
+  "summary": "Completed glossary-locked bilingual translation across 14 aligned segments with 100% protected token fidelity (formulas, citations, numbers+units) and zero terminology drift.",
+  "metrics": {
+    "segment_count": 14,
+    "translated_count": 14,
+    "alignment_completeness": 1.0,
+    "protected_token_fidelity": 1.0,
+    "terminology_consistency": 1.0,
+    "negation_preservation": 1.0,
+    "locked_term_count": 6,
+    "uncertainty_count": 0
+  },
+  "artifacts": {
+    "document_json": "work/papers/paper_1/document.json",
+    "glossary_json": "work/translation/glossary.json",
+    "segments_json": "work/translation/segments.json",
+    "bilingual_doc_json": "work/translation/bilingual_doc.json",
+    "bilingual_md": "work/translation/bilingual.md",
+    "bilingual_html": "work/translation/bilingual.html",
+    "zh_only_md": "work/translation/zh_only.md",
+    "qa_report_json": "work/translation/qa_report.json"
+  },
+  "uncertainties": [],
+  "verification": {
+    "passed": true,
+    "check_count": 6,
+    "failed_checks": []
+  }
+}

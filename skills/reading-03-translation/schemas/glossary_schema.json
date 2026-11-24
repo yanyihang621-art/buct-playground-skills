@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Locked Bilingual Scientific Glossary",
+  "type": "object",
+  "required": ["schema_version", "source_lang", "target_lang", "entry_count", "entries"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "source_lang": {"type": "string"},
+    "target_lang": {"type": "string"},
+    "entry_count": {"type": "integer", "minimum": 0},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["term_id", "source_term", "target_zh", "status", "source_occurrences"],
+        "properties": {
+          "term_id": {"type": "string"},
+          "source_term": {"type": "string"},
+          "aliases": {"type": "array", "items": {"type": "string"}},
+          "target_zh": {"type": "string"},
+          "core_zh": {"type": "string"},
+          "domain": {"type": "string"},
+          "status": {"type": "string", "enum": ["locked", "proposed", "keep_verbatim"]},
+          "keep_acronym": {"type": "boolean"},
+          "forbidden_drifts": {"type": "array", "items": {"type": "string"}},
+          "first_seen": {
+            "type": "object",
+            "properties": {
+              "page": {"type": "integer"},
+              "block_id": {"type": "string"}
+            }
+          },
+          "source_occurrences": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

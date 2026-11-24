@@ -1,0 +1,168 @@
+version: "1.0"
+description: "Bilingual EN->ZH scientific literature terminology seed & connective/negation rules."
+terms:
+  - term_en: "catalytic selectivity"
+    term_zh: "催化选择性"
+    domain: "catalysis"
+    aliases: ["selectivity"]
+    keep_acronym: false
+  - term_en: "turnover frequency"
+    term_zh: "转换频率 (TOF)"
+    domain: "catalysis"
+    aliases: ["TOF"]
+    keep_acronym: true
+  - term_en: "turnover number"
+    term_zh: "转换数 (TON)"
+    domain: "catalysis"
+    aliases: ["TON"]
+    keep_acronym: true
+  - term_en: "active site"
+    term_zh: "活性位点"
+    domain: "catalysis"
+    aliases: ["active sites", "active center", "active centers"]
+    keep_acronym: false
+  - term_en: "space velocity"
+    term_zh: "空速"
+    domain: "chemical_engineering"
+    aliases: ["GHSV", "WHSV"]
+    keep_acronym: false
+  - term_en: "apparent activation energy"
+    term_zh: "表观活化能"
+    domain: "kinetics"
+    aliases: ["activation energy"]
+    keep_acronym: false
+  - term_en: "rate-determining step"
+    term_zh: "决速步骤"
+    domain: "kinetics"
+    aliases: ["RDS"]
+    keep_acronym: false
+  - term_en: "overpotential"
+    term_zh: "过电位"
+    domain: "electrochemistry"
+    aliases: []
+    keep_acronym: false
+  - term_en: "Faradaic efficiency"
+    term_zh: "法拉第效率"
+    domain: "electrochemistry"
+    aliases: ["FE"]
+    keep_acronym: false
+  - term_en: "current density"
+    term_zh: "电流密度"
+    domain: "electrochemistry"
+    aliases: []
+    keep_acronym: false
+  - term_en: "adsorption energy"
+    term_zh: "吸附能"
+    domain: "computational_chemistry"
+    aliases: ["binding energy"]
+    keep_acronym: false
+  - term_en: "density functional theory"
+    term_zh: "密度泛函理论 (DFT)"
+    domain: "computational_chemistry"
+    aliases: ["DFT"]
+    keep_acronym: true
+  - term_en: "metal-organic framework"
+    term_zh: "金属有机框架 (MOF)"
+    domain: "materials"
+    aliases: ["metal-organic frameworks", "MOF", "MOFs"]
+    keep_acronym: true
+  - term_en: "transmission electron microscopy"
+    term_zh: "透射电子显微镜 (TEM)"
+    domain: "characterization"
+    aliases: ["TEM"]
+    keep_acronym: true
+  - term_en: "X-ray photoelectron spectroscopy"
+    term_zh: "X 射线光电子能谱 (XPS)"
+    domain: "characterization"
+    aliases: ["XPS"]
+    keep_acronym: true
+  - term_en: "Fourier-transform infrared spectroscopy"
+    term_zh: "傅里叶变换红外光谱 (FTIR)"
+    domain: "characterization"
+    aliases: ["FTIR", "FT-IR"]
+    keep_acronym: true
+  - term_en: "in situ"
+    term_zh: "原位"
+    domain: "general_science"
+    aliases: []
+    keep_acronym: false
+  - term_en: "operando"
+    term_zh: "工况原位 (operando)"
+    domain: "characterization"
+    aliases: []
+    keep_acronym: true
+  - term_en: "synergistic effect"
+    term_zh: "协同效应"
+    domain: "general_science"
+    aliases: []
+    keep_acronym: false
+  - term_en: "reaction mechanism"
+    term_zh: "反应机理"
+    domain: "chemistry"
+    aliases: []
+    keep_acronym: false
+  - term_en: "mass transfer"
+    term_zh: "传质"
+    domain: "chemical_engineering"
+    aliases: ["mass-transfer"]
+    keep_acronym: false
+  - term_en: "heat transfer"
+    term_zh: "传热"
+    domain: "chemical_engineering"
+    aliases: ["heat-transfer"]
+    keep_acronym: false
+  - term_en: "proton exchange membrane fuel cell"
+    term_zh: "质子交换膜燃料电池 (PEMFC)"
+    domain: "energy"
+    aliases: ["PEMFC", "PEMFCs"]
+    keep_acronym: true
+  - term_en: "ablation study"
+    term_zh: "消融实验"
+    domain: "machine_learning"
+    aliases: []
+    keep_acronym: false
+  - term_en: "attention mechanism"
+    term_zh: "注意力机制"
+    domain: "machine_learning"
+    aliases: []
+    keep_acronym: false
+  - term_en: "confidence interval"
+    term_zh: "置信区间"
+    domain: "statistics"
+    aliases: ["CI"]
+    keep_acronym: false
+  - term_en: "ground truth"
+    term_zh: "真实标签"
+    domain: "machine_learning"
+    aliases: []
+    keep_acronym: false
+  - term_en: "benchmark"
+    term_zh: "基准测试"
+    domain: "general_science"
+    aliases: ["benchmarks"]
+    keep_acronym: false
+
+negation_pairs:
+  - en_patterns: ["\\bnot\\b", "\\bnever\\b", "\\bno\\s+", "\\bwithout\\b", "\\bunable\\s+to\\b", "\\bfailed\\s+to\\b", "\\bneither\\b", "\\bnor\\b", "\\bnegligible\\b", "\\babsence\\s+of\\b"]
+    zh_markers: ["不", "未", "无", "没有", "非", "不能", "无法", "未能", "缺乏", "可忽略", "均未", "既不"]
+  - en_patterns: ["\\bonly\\b", "\\bsolely\\b", "\\brestricted\\s+to\\b", "\\bexclusively\\b"]
+    zh_markers: ["仅", "只", "仅仅", "局限于", "仅限于", "唯一"]
+
+section_headings_zh:
+  "abstract": "摘要"
+  "keywords": "关键词"
+  "introduction": "引言"
+  "experimental": "实验部分"
+  "experimental section": "实验部分"
+  "materials and methods": "材料与方法"
+  "methods": "方法"
+  "methodology": "方法论"
+  "results": "结果"
+  "results and discussion": "结果与讨论"
+  "discussion": "讨论"
+  "conclusions": "结论"
+  "conclusion": "结论"
+  "acknowledgments": "致谢"
+  "acknowledgements": "致谢"
+  "references": "参考文献"
+  "supporting information": "支撑信息"
