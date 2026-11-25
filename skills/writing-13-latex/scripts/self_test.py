@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import shutil
 import sys
@@ -15,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from build_latex_result import run_latex_pipeline
+from build_evidence import apply_contract, project_contract_result
 from compile_latex import compile_latex_project
 from parse_tex_log import parse_tex_logs
 from prepare_case import pdf_text, stage
@@ -192,6 +194,28 @@ def _run_table_checks(root: Path) -> Dict[str, bool]:
         }
 
 
+def _check_scientific_delivery(result, output_dir):
+    """Exercise a closed case contract using the compiled manuscript from suite 1."""
+    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object", "additionalProperties": False, "required": ["case_id", "paper"],
+              "properties": {"case_id": {"type": "string"}, "paper": {
+                  "type": "object", "required": ["pdf_path", "temperatures"],
+                  "properties": {"pdf_path": {"type": "string"},
+                                 "temperatures": {"type": "array", "items": {"$ref": "#/$defs/value"}}}}},
+              "$defs": {"value": {"type": "number"}}}
+    cases = {"valid_contract_and_file": (result["artifacts"]["output_pdf"], [573], True),
+             "missing_requested_pdf": ("absent-manuscript.pdf", [573], False),
+             "wrong_nested_fact_type": (result["artifacts"]["output_pdf"], ["573 K"], False)}
+    checks = {}
+    for name, (path, values, valid) in cases.items():
+        trial = copy.deepcopy(result)
+        apply_contract(trial, schema, {"paper": {"pdf_path": path, "temperatures": values}},
+                       output_dir=output_dir)
+        projected = project_contract_result(trial, schema)
+        checks[name] = trial["verification"]["passed"] is valid and set(projected) == {"case_id", "paper"}
+    return checks
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run real MiKTeX/TeX compilation self-tests for writing-13-latex.")
     parser.add_argument("--out-dir", required=True)
@@ -239,9 +263,10 @@ def main() -> int:
 
     neg = _run_negative_diag_tests(root / "neg_diag")
     render_checks = _run_table_checks(root / "rendered_tables")
+    contract_checks = _check_scientific_delivery(r1["result"], root / "l1" / "output")
 
     summary: Dict[str, Any] = {
-        "all_passed": bool(l1_ok and l2_ok and l3_ok and l4_ok and all(neg.values()) and all(render_checks.values())),
+        "all_passed": all([l1_ok, l2_ok, l3_ok, l4_ok, *neg.values(), *render_checks.values(), *contract_checks.values()]),
         "suites": {
             "l1_clean_article_with_bibtex": {"passed": l1_ok, "status": r1["result"]["status"], "metrics": r1["result"]["metrics"], "engine_version": r1["manifest"]["engine_version"]},
             "l2_broken_tex_diagnose_and_autofix": {"passed": l2_ok, "unreviewed_status": first["result"]["status"], "status": r2["result"]["status"], "metrics": r2["result"]["metrics"], "restored_measurement_visible": "91.8% at 573 K" in " ".join(final_text.split())},
@@ -250,6 +275,7 @@ def main() -> int:
         },
         "negative_diag_tests": neg,
         "rendered_table_tests": render_checks,
+        "output_contract_tests": contract_checks,
     }
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r2)

@@ -30,7 +30,7 @@ python3 "$TOOLS/prepare_case.py" --input-dir /input --stage "$S"
 4. **写下可核验依据**。在 `$S/report.json` 写对象。按下面字段保留实际证据，键名需与该案例的契约一致。对于只要求修复的稿件，可选关键未变的数值或公式佐证科学内容保真。
    - `source_mapping` 数组。每条给 `source`（materials.json 来源标签或 `case.json#/路径`）、`source_quote`（原文短引）、`target`（相对工程根的 .tex）、`target_quote`（实际 TeX 字符串）与解释。可另给 `pdf_quote` 和页码 `page` 核验渲染值。表格应选源材料中的组标与数值，给 `pdf_row` 数组（字符串按实际列序），例如 `["2.0","21.7"]`，可查出虽在同页却排错行的数值。正文、公式和表格有不同来源时分别定位。
    - `task_checks` 数组。对照实际要求写 `requirement`、`status`（passed / partial / failed）和 `evidence`（源文件、标签、目标页或命令结果）。打开 PDF 核对表头与最后一列、公式编号及断行、字体缺字、图注和模板位置，特别检查改动所在页。页数和文件哈希不能验证科学含义。
-   - `change_records`、`uncertainties` 记录有意义的修改原因、证据冲突与尚缺材料。`contract_values` 仅填写原 `output_contract` 额外要求的实质产物或数据，按原字段名、类型、路径和语义交付。凡要求另交源文件、变更表或特定文件名，都实际生成并打开；只写一个路径不能证明交付。
+   - `change_records`、`uncertainties` 记录有意义的修改原因、证据冲突与尚缺材料。`contract_values` 仅填写原 `output_contract` 额外要求的实质产物或数据，按原字段名、类型、路径和语义交付。案例指定文件名时，在 `artifact_exports` 写“目标相对路径 → 已生成的输出相对路径”，如 `{"deliverables/revised.pdf":"paper.pdf","deliverables/editable":"latex_project"}`。自制变更表应先在工作项目中生成并验证，再从 `latex_project/…` 导出。给 `contract_values` 中约定的文件字段填写对应目标路径。
 
 ## 构建、核验、交付
 
@@ -40,8 +40,8 @@ python3 "$TOOLS/build_latex_result.py" --input-dir "$S/baseline" --case /input/c
   --stage "$S" --material-dir /input --work-dir /app/work --output-dir /app/output --no-fix
 ```
 
-需要指定引擎时追加 `--engine pdflatex`、`xelatex` 或 `lualatex`。查看 `result.json` 的 artifacts 和 `evidence/build_comparison.json`。对照原稿与修订稿在本环境的实际入口、引擎版本、各遍退出码、引用、报警、页数和源码差异。没有起始 TeX 的案例仅记录本次可观察到的构建。即使命令退出非零，也先读已保存的诊断，依据具体证据回到工作副本修复。传入 stage、原始材料和 report 后，打包工具会生成 `/app/output/evidence_checks.json`。打开这份文件，检查可检索的原文、最终源码和 PDF 短引的位置，对手工核验项记录页码和可见内容。对 `ambiguous_numeric_percent`，比对底稿并修正被注释吞掉的文字；若确认是有意注释，使用 report 的 `confirmed_comments` 准确记录 `file`、`line` 和 `reason`。
+需要指定引擎时追加 `--engine pdflatex`、`xelatex` 或 `lualatex`。查看最终 `result.json` 及 `evidence/delivery_record.json` 的 artifacts，阅读 `evidence/build_comparison.json`。若契约规定 `additionalProperties: false`，请在完整交付清单中查看扩展诊断。按报告的 JSON Pointer 修复缺少的嵌套字段、实际文件或类型不符，再重建。对照原稿与修订稿在本环境的实际入口、引擎版本、各遍退出码、引用、报警、页数和源码差异。没有起始 TeX 的案例仅记录本次可观察到的构建。即使命令退出非零，也先读已保存的诊断，依据具体证据回到工作副本修复。传入 stage、原始材料和 report 后，打包工具会生成 `/app/output/evidence_checks.json`。打开这份文件，检查可检索的原文、最终源码和 PDF 短引的位置，对手工核验项记录页码和可见内容。对 `ambiguous_numeric_percent`，比对底稿并修正被注释吞掉的文字；若确认是有意注释，使用 report 的 `confirmed_comments` 准确记录 `file`、`line` 和 `reason`。
 
-对 `??`、未解析 cite、越界表格、缺字或逐条证据失败，修正后重新打包并检查。打开被标记的具体 PDF 页和 PNG。遇宽表时先定位实际不可见的列或读数；可按表意换行、转置、拆表、跨双栏或改用横页，保持原有列义、单位和全部有效数字。对改后表格逐行检查组别与数值，并复核裁切位置和最后一页。确认交付的项目可从干净目录复编，最终 JSON 有原 `case_id`、全部契约字段和真实状态。保留已完成部分，区分“缺输入”“未验证”“构建失败”，将具体文件与下一步写入结果。每案例预算 900 秒，先保存可编辑稿与现有证据，再改善排版。
+对 `??`、未解析 cite、越界表格、缺字或逐条证据失败，修正后重新打包并检查。核对模板中仍可见的待填标题、作者、机构与正文插入提示，用底稿中的真实信息替换。匿名评审按任务要求保留匿名格式，材料未给出的作者资料应记录缺口。打开被标记的具体 PDF 页和 PNG。遇宽表时先定位实际不可见的列或读数；可按表意换行、转置、拆表、跨双栏或改用横页，保持原有列义、单位和全部有效数字。对改后表格逐行检查组别与数值，并复核裁切位置和最后一页。确认交付的项目可从干净目录复编，最终 JSON 有原 `case_id`、全部契约字段和真实状态。保留已完成部分，区分“缺输入”“未验证”“构建失败”，将具体文件与下一步写入结果。每案例预算 900 秒，先保存可编辑稿与现有证据，再改善排版。
 
 可直接运行的最小案例和书写报告的示例见 [README.md](README.md)。

@@ -9,11 +9,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from build_evidence import apply_contract, copy_sources, source_diff
+from build_evidence import apply_contract, copy_sources, project_contract_result, publish_exports, source_diff
 from compile_latex import compile_latex_project
 from inspect_project import inspect_latex_project
 from lint_and_fix_tex import lint_and_fix_project
-from tex_utils import write_json_atomic
+from manuscript_checks import check_manuscript
+from tex_utils import sha256_file, write_json_atomic
 from verify_manuscript import verify
 
 
@@ -139,10 +140,33 @@ def run_latex_pipeline(input_dir, work_dir, output_dir, *, case_path=None, auto_
 
 
 def publish(stage, output):
-    names = [p.name for p in sorted(stage.iterdir()) if p.name != "result.json"]
-    old = output / "result.json"
-    if old.exists():
+    core = {"evidence", "previews", "latex_project"}
+    names = sorted(core)
+    extras = {}
+    for p in sorted(stage.rglob("*")):
+        rel = p.relative_to(stage)
+        if rel.parts[0] not in core and rel != Path("result.json") and p.is_file():
+            extras[rel.as_posix()] = sha256_file(p)
+    names.extend(extras)
+    ledger = Path("evidence") / "published_files.json"
+    if (output / ledger).is_file():
+        for rel, digest in read_object(output / ledger).items():
+            relative = Path(rel)
+            if (relative.is_absolute() or relative.anchor or ".." in relative.parts or not relative.parts
+                    or relative.parts[0] in core | {"result.json"} or relative.parts[0].startswith(".")):
+                continue
+            path = (output / rel).resolve()
+            if (rel not in extras and path.is_relative_to(output) and path.is_file()
+                    and sha256_file(path) == digest):
+                names.append(rel)
+    write_json_atomic(stage / ledger, extras)
+    old = output / "evidence" / "delivery_record.json"
+    if not old.is_file():
+        old = output / "result.json"
+    if old.is_file():
         old_artifacts = read_object(old).get("artifacts") or {}
+        if not isinstance(old_artifacts, dict):
+            old_artifacts = {}
         old_pdf = old_artifacts.get("output_pdf")
         if old_artifacts.get("evidence_checks_json") == "evidence_checks.json" and "evidence_checks.json" not in names:
             names.append("evidence_checks.json")
@@ -154,21 +178,28 @@ def publish(stage, output):
     backup = stage / ".previous"
     backup.mkdir()
     installed = []
+    saved = []
     try:
         for name in names:
             target = output / name
-            if target.is_symlink():
+            if (not target.resolve().is_relative_to(output) or target.is_symlink()
+                    or any(p.is_symlink() for p in target.parents if p.is_relative_to(output))):
                 raise ValueError(f"Refusing to publish through a symlink at {target}")
+            if name not in core and target.is_dir():
+                raise ValueError(f"Requested file conflicts with an existing directory: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
+                (backup / name).parent.mkdir(parents=True, exist_ok=True)
                 target.replace(backup / name)
+                saved.append(name)
             if (stage / name).exists():
                 (stage / name).replace(target)
                 installed.append(name)
     except BaseException:
         for name in reversed(installed):
             (output / name).replace(stage / name)
-        for saved in backup.iterdir():
-            saved.replace(output / saved.name)
+        for name in reversed(saved):
+            (backup / name).replace(output / name)
         raise
 
 
@@ -306,6 +337,17 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     }
     if report_path:
         artifacts["case_review_json"] = "evidence/case_review.json"
+    if pmap.get("found"):
+        review = check_manuscript(delivery, pmap["main_tex"], output / artifacts["output_pdf"] if artifacts["output_pdf"] else None)
+        write_json_atomic(evidence / "manuscript_checks.json", review)
+        artifacts["manuscript_checks_json"] = "evidence/manuscript_checks.json"
+        if review["blockers"] or review["review"]:
+            uncertainties.append({"code": "manuscript_template_fields", "blockers": review["blockers"],
+                                  "review": review["review"]})
+        if review["blockers"]:
+            passed = False
+            if status == "completed":
+                status = "partial"
     evidence_checks = None
     if stage is not None and report_path:
         source_dir = Path(material_dir).resolve() if material_dir else case_file.resolve().parent
@@ -360,8 +402,11 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
         result["verification"]["source_evidence"] = {
             k: evidence_checks[k] for k in ("checked", "verified", "failed", "needs_manual_review")
         }
-    apply_contract(result, case.get("output_contract"), report.get("contract_values", {}))
-    write_json_atomic(output / "result.json", result)
+    export_issues = publish_exports(output, report)
+    contract = case.get("output_contract")
+    apply_contract(result, contract, report.get("contract_values", {}), output_dir=output, export_issues=export_issues)
+    write_json_atomic(evidence / "delivery_record.json", result)
+    write_json_atomic(output / "result.json", project_contract_result(result, contract))
     return {"result": result, "manifest": manifest, "diagnostics": diagnostics,
             "init_diagnostics": init["diagnostics"]}
 

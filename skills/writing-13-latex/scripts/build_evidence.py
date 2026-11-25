@@ -6,6 +6,8 @@ import difflib
 import shutil
 from pathlib import Path
 
+from contract_delivery import (artifact_path_errors, constraints, is_schema, pointer,
+                               project_contract_result, publish_exports, schema_errors)
 from tex_utils import sha256_file, write_text_lf
 
 
@@ -95,36 +97,37 @@ def contract_fields(contract):
     return contract
 
 
-def type_errors(value, spec, path):
-    """Validate structural types in the common field shorthand without dependencies."""
-    if isinstance(spec, str):
-        spec = {"type": spec}
-    if not isinstance(spec, dict):
-        return []
-    expected = spec.get("type")
-    names = expected if isinstance(expected, list) else [expected]
-    types = {"object": dict, "array": list, "string": str, "integer": int,
-             "number": (int, float), "boolean": bool, "null": type(None)}
-    if all(isinstance(name, str) and name in types for name in names):
-        if not any(isinstance(value, types[name]) and
-                   not (name in {"integer", "number"} and isinstance(value, bool)) for name in names):
-            return [f"{path} expected {'|'.join(names)}"]
-    if "enum" in spec and value not in spec["enum"]:
-        return [f"{path} outside declared enum"]
-    errors = []
-    if isinstance(value, dict):
-        errors.extend(f"{path}.{k} missing" for k in spec.get("required", []) if k not in value)
-        for k, child in spec.get("properties", {}).items():
-            if k in value:
-                errors.extend(type_errors(value[k], child, f"{path}.{k}"))
-    if isinstance(value, list) and isinstance(spec.get("items"), dict):
-        for i, item in enumerate(value):
-            errors.extend(type_errors(item, spec["items"], f"{path}[{i}]"))
-    return errors
+def merge_missing(existing, extra):
+    """Allow case-specific additions without replacing runtime facts or measured values."""
+    if isinstance(existing, dict) and isinstance(extra, dict):
+        for key, value in extra.items():
+            if key not in existing:
+                existing[key] = value
+            else:
+                merge_missing(existing[key], value)
 
 
-def apply_contract(result, contract, values):
-    """Fill from actual build artifacts or case-specific reviewed values only."""
+def declared_fields(root, schema, result, values):
+    nodes = list(constraints(root, schema))
+    fields = {}
+    required = set()
+    for node in nodes:
+        fields.update(node.get("properties", {}))
+        required.update(node.get("required", []))
+        # Conditional or alternative properties can receive real supplied values.
+        # Their requiredness is decided by the actual validator on the final object.
+        for branch in [*node.get("oneOf", []), *node.get("anyOf", []),
+                       node.get("then", {}), node.get("else", {})]:
+            for part in constraints(root, branch):
+                for key, spec in part.get("properties", {}).items():
+                    if key in result or key in values:
+                        fields.setdefault(key, spec)
+    for key in required:
+        fields.setdefault(key, {})
+    return fields, required
+
+
+def apply_contract(result, contract, values, *, output_dir=None, export_issues=()):
     artifacts = result["artifacts"]
     generated = {
         "main_tex": artifacts.get("main_tex"), "editable_source": artifacts.get("main_tex"),
@@ -133,16 +136,49 @@ def apply_contract(result, contract, values):
         "build_manifest": artifacts.get("build_manifest_json"), "sources": result["source_mapping"],
         "evidence": result["source_mapping"], "changes": result["change_records"],
     }
-    issues = []
-    for key, spec in contract_fields(contract).items():
-        if key in {"main_result", "summary"} and key in values:
-            result[key] = values[key]
+    issues = list(export_issues)
+    if is_schema(contract):
+        schema = contract
+        fields, required = declared_fields(schema, schema, result, values)
+    else:
+        fields = contract_fields(contract)
+        required = {k for k, spec in fields.items() if not isinstance(spec, dict) or spec.get("required") is not False}
+        simple = {"object", "array", "integer", "number", "string", "boolean", "null"}
+        specs = {}
+        for key, spec in fields.items():
+            if isinstance(spec, dict):
+                spec = {k: v for k, v in spec.items() if k not in {"name", "field", "key"}
+                        and not (k == "required" and isinstance(v, bool))}
+            elif isinstance(spec, str) and spec in simple:
+                spec = {"type": spec}
+            specs[key] = spec if isinstance(spec, (dict, bool)) else {}
+        schema = {"type": "object", "properties": specs, "required": sorted(required)}
+    protected = {"case_id", "status", "verification", "metrics", "schema_version", "challenge_id"}
+    for key in fields:
+        if key in protected:
+            continue
+        if key in values:
+            if key not in result or key in {"main_result", "summary"}:
+                result[key] = values[key]
+            else:
+                merge_missing(result[key], values[key])
         elif key not in result:
-            value = values.get(key, generated.get(key))
-            result[key] = value
-            if value is None and key not in values:
-                issues.append(f"{key} has no case-derived value")
-        issues.extend(type_errors(result[key], spec, key))
+            if key in generated and (generated[key] is not None or key in required):
+                result[key] = generated[key]
+            elif key in required:
+                result[key] = None
+                issues.append(f"{pointer((key,))}: no case-derived value provided")
+    # Validate exactly the serialized official shape, including deliberate closed objects.
+    # The internal verification record keeps richer detail for reviewers.
+    result["verification"]["contract_issues"] = []
+    if fields or is_schema(contract):
+        try:
+            projected = project_contract_result(result, contract)
+            if output_dir is not None:
+                issues.extend(artifact_path_errors(projected, Path(output_dir).resolve(), fields, schema))
+            issues.extend(schema_errors(projected, schema))
+        except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+            issues.append("[schema] invalid case contract: " + str(exc))
     if issues:
         result["uncertainties"].append({"code": "output_contract_gap", "details": issues})
         result["verification"]["passed"] = False

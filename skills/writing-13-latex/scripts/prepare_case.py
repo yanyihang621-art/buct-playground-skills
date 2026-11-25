@@ -3,7 +3,7 @@
 import argparse
 import json
 import os
-import re
+import posixpath
 import shutil
 import stat
 import subprocess
@@ -14,14 +14,16 @@ from xml.etree import ElementTree as ET
 
 from tex_utils import write_json_atomic, write_text_lf
 
-# Source and build dependencies. Manuscript/task documents remain in the input inventory.
+# Recognize implicit inline filename keys; filesystem projects can use arbitrary suffixes.
 PROJECT_SUFFIXES = set(
     ".tex .ltx .bib .bst .cls .sty .clo .cfg .def .fd .bbx .cbx .lbx .bbl .ist "
     ".pdf .eps .jpg .jpeg .png .svg .tikz .pgf .csv .tsv .dat .table .txt .lua "
     ".ttf .otf .enc .map .icc .py .asy .gnuplot .code .ins .dtx .md .xml .json .yaml .yml".split()
 )
 CONTROL = {"case.json", "task.md", "challenge.json", "config.json", "resources.yaml"}
+METADATA_DIRS = {".git", ".hg", ".svn", "__MACOSX", "__pycache__"}
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
 def safe_name(raw):
@@ -40,30 +42,73 @@ def unpack(path, dest):
             rel = safe_name(entry.filename)
             if stat.S_ISLNK(entry.external_attr >> 16):
                 raise ValueError("unsupported archived link")
-            if not entry.is_dir() and "__MACOSX" not in rel.parts:
+            if not entry.is_dir() and METADATA_DIRS.isdisjoint(rel.parts):
                 target = dest / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(entry) as src, target.open("xb") as out:
                     shutil.copyfileobj(src, out)
 
 
-def docx_text(path):
+def docx_text(path, *, stage_root=None, media_dir=None, images=None):
     with zipfile.ZipFile(path) as doc:
         body = ET.fromstring(doc.read("word/document.xml")).find(W + "body")
         if body is None:
             return ""
         lines = []
+        # Word stores the editable document, image bytes and placement in separate parts.
+        # Use only internal image relationships. Preserve linked-vs-embedded semantics.
+        relationships = {}
+        rels_part = "word/_rels/document.xml.rels"
+        if rels_part in doc.namelist():
+            for link in ET.fromstring(doc.read(rels_part)):
+                if link.get("Type", "").endswith("/image") and link.get("TargetMode") != "External":
+                    target = link.get("Target", "")
+                    part = posixpath.normpath(posixpath.join("word", target)) if not target.startswith("/") else target[1:]
+                    relationships[link.get("Id")] = safe_name(part).as_posix()
+        stored = {}
+
+        def read_images(block, location):
+            for node in block.iter():
+                key = node.get(R + "embed") or node.get(R + "id")
+                part = relationships.get(key)
+                if part is None:
+                    continue
+                lines.append(f"[figure at {location}] {part}")
+                if stage_root is None or images is None:
+                    continue
+                if part not in stored:
+                    record = {"source_part": part, "locations": []}
+                    stored[part] = record
+                    images.append(record)
+                    try:
+                        original = doc.getinfo(part)
+                        if original.file_size > 256 * 1024**2:
+                            raise ValueError("embedded image exceeds reader budget")
+                        asset = media_dir / safe_name(part)
+                        destination = stage_root / asset
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        with doc.open(original) as raw, destination.open("xb") as out:
+                            shutil.copyfileobj(raw, out)
+                        record["reader_path"] = asset.as_posix()
+                    except (KeyError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+                        record["detail"] = str(exc)
+                if location not in stored[part]["locations"]:
+                    stored[part]["locations"].append(location)
+
         para = 0
         table = 0
         for block in body:
             if block.tag == W + "p":
                 para += 1
                 lines.append(f"[paragraph {para}] " + "".join(n.text or "" for n in block.iter(W + "t")))
+                read_images(block, f"paragraph {para}")
             elif block.tag == W + "tbl":
                 table += 1
                 for idx, row in enumerate(block.findall(W + "tr"), 1):
                     cells = ["".join(n.text or "" for n in cell.iter(W + "t")) for cell in row.findall(W + "tc")]
                     lines.append(f"[table {table} row {idx}] " + " | ".join(cells))
+                    for column, cell in enumerate(row.findall(W + "tc"), 1):
+                        read_images(cell, f"table {table} row {idx} cell {column}")
         return "\n".join(lines)
 
 
@@ -94,7 +139,8 @@ def inline_files(case):
         elif isinstance(node, dict):
             name = node.get("path") or node.get("filename") or node.get("name")
             content = node.get("content", node.get("text"))
-            if isinstance(name, str) and isinstance(content, str) and Path(name).suffix.lower() in PROJECT_SUFFIXES:
+            if isinstance(name, str) and isinstance(content, str) and (
+                    "path" in node or "filename" in node or Path(name).suffix.lower() in PROJECT_SUFFIXES):
                 yield name, content, pointer
             for key, value in node.items():
                 if key == "output_contract":
@@ -125,7 +171,9 @@ def stage(input_dir, target):
         def add(path, source, rel, include):
             item = {"source": source}
             suffix = path.suffix.lower()
-            if include and (suffix in PROJECT_SUFFIXES or path.name in ("Makefile", "latexmkrc", ".latexmkrc")):
+            # \input, listings and custom build commands may depend on filenames with
+            # arbitrary extensions (including .pdf_tex) or no extension at all.
+            if include:
                 dest = baseline / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 if dest.exists():
@@ -134,7 +182,15 @@ def stage(input_dir, target):
                 item["project_path"] = rel.as_posix()
             if suffix in {".pdf", ".docx"}:
                 try:
-                    value = docx_text(path) if suffix == ".docx" else pdf_text(path)
+                    if suffix == ".docx":
+                        images = []
+                        value = docx_text(path, stage_root=root, media_dir=Path("reader") / f"{len(files) + 1:04}-media", images=images)
+                        if images:
+                            item["embedded_figures"] = images
+                            warnings.extend({"source": f"{source}!/{image['source_part']}", "detail": image["detail"]}
+                                            for image in images if "detail" in image)
+                    else:
+                        value = pdf_text(path)
                     view = Path("reader") / f"{len(files) + 1:04}.txt"
                     write_text_lf(root / view, value)
                     item["text_view"] = view.as_posix()
@@ -146,6 +202,8 @@ def stage(input_dir, target):
             if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(input_dir):
                 continue
             rel = path.relative_to(input_dir)
+            if not METADATA_DIRS.isdisjoint(rel.parts):
+                continue
             source = rel.as_posix()
             if path.suffix.lower() == ".zip":
                 try:
