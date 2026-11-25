@@ -1,34 +1,8 @@
 {
-  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test schema, not an undisclosed benchmark output.",
-  "schema_version": "writing-08-intro-rw-result/v1",
-  "challenge_id": "product-arena-04-4b82ad21",
-  "case_id": "example_writing_08_intro_rw_01",
-  "status": "completed",
-  "language": "en",
-  "summary": "Clustered 4 related works into 2 technical routes, derived 2 literature-grounded gaps, mapped 2 contributions 1-to-1 to author evidence anchors, and passed all 6 verification checks.",
-  "metrics": {
-    "literature_count": 4,
-    "route_cluster_count": 2,
-    "gap_count": 2,
-    "contribution_count": 2,
-    "citation_coverage_ratio": 1.0,
-    "grounded_gap_ratio": 1.0,
-    "grounded_contribution_ratio": 1.0
-  },
-  "artifacts": {
-    "materials_index_json": "/app/work/intro_rw/materials_index.json",
-    "related_work_clusters_json": "/app/work/intro_rw/related_work_clusters.json",
-    "gap_contribution_map_json": "/app/work/intro_rw/gap_contribution_map.json",
-    "comparison_matrix_md": "/app/output/comparison_matrix.md",
-    "intro_and_related_work_md": "/app/output/intro_and_related_work.md",
-    "qa_report_json": "/app/work/intro_rw/qa_report.json"
-  },
-  "sources": [],
-  "change_records": [],
-  "uncertainties": [],
-  "verification": {
-    "passed": true,
-    "check_count": 6,
-    "failed_checks": []
-  }
+  "_example_notice": "Excerpt from the synthetic interface example. Run worked_example.py to generate the complete evidence, QA and artifacts.",
+  "case_id": "demo_drift",
+  "bounded_question": "How does calibration drift change when a sensor moves outdoors?",
+  "study_evidence": [
+    "Field protocol, Table 1"
+  ]
 }

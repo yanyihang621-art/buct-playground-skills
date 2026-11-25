@@ -21,7 +21,7 @@ def _format_ref_line(p: Dict[str, Any], idx: int) -> str:
     if not auths:
         auths = "Unknown"
     yr = p.get("year") or "s.a."
-    venue = p.get("venue") or "Preprint"
+    venue = p.get("venue") or "[venue not supplied]"
     doi = f" DOI:{p['doi']}." if p.get("doi") else ""
     return f"[{idx}] {auths}. {p.get('title', 'Untitled')}. {venue}, {yr}.{doi} (`@{p['cite_key']}`)"
 
@@ -49,19 +49,8 @@ def render_intro_and_related_work(
     lines.append("## 研究背景" if is_zh else "## Research Background")
     if bg:
         lines.append(bg.strip())
-    elif clusters.get("clusters"):
-        first_p = clusters["clusters"][0]["papers"][0]
-        if is_zh:
-            lines.append(
-                f"围绕{facts.get('target_problem', '当前核心科学问题')}，现有研究已从不同工艺与表征尺度展开系统探索，"
-                f"例如围绕 `{first_p.get('problem_setting') or first_p.get('title')}` 的定量验证 [@{first_p['cite_key']}]。"
-                f"然而受限于工况约束与实验边界条件，仍有关键机制问题亟待厘清。"
-            )
-        else:
-            lines.append(
-                f"Addressing {facts.get('target_problem', 'this scientific problem')} demands quantitative mechanistic control "
-                f"under realistic operating constraints, as highlighted in studies on {first_p.get('problem_setting') or first_p.get('title')} [@{first_p['cite_key']}]."
-            )
+    elif facts.get("target_problem"):
+        lines.append(facts["target_problem"])
     else:
         lines.append("[Material gap: missing background facts.]")
     lines.append("")
@@ -73,7 +62,7 @@ def render_intro_and_related_work(
         parts: List[str] = []
         for p in cl["papers"]:
             k = p["cite_key"]
-            finding = p.get("key_finding") or p.get("title")
+            finding = p.get("key_finding") or "[finding requires source review]"
             lim = p.get("limitation")
             if is_zh:
                 stmt = f"在{p.get('evaluation_system') or '既有测试条件'}下，研究者验证了{finding} [@{k}]"

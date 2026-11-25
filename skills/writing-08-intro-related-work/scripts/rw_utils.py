@@ -13,8 +13,7 @@ from typing import Any, Dict, List, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 
-BIB_ENTRY_RE = re.compile(r"@([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,")
-CITE_KEY_RE = re.compile(r"\[@([A-Za-z0-9_:\-]+)\]|\\cite[pt]?\{([^}]+)\}")
+CITE_GROUP_RE = re.compile(r"\[([^\[\]\n]*@[\w:./+-]+[^\[\]\n]*)\]|\\(?:auto|paren|text)?cite[pt]?\*?(?:\[[^\]]*\]){0,2}\{([^}]+)\}")
 
 
 def write_text_lf(path: Path, text: str) -> None:
@@ -65,47 +64,17 @@ def load_writing_rules(path: Optional[Path] = None) -> Dict[str, Any]:
 
 def extract_inline_cite_keys(text: str) -> List[str]:
     keys: List[str] = []
-    for m in CITE_KEY_RE.finditer(text):
-        grp = m.group(1) or m.group(2) or ""
-        for part in grp.split(","):
-            k = part.strip().lstrip("@")
-            if k:
-                keys.append(k)
+    for match in CITE_GROUP_RE.finditer(text):
+        if match.group(1):
+            keys.extend(key.rstrip(".") for key in re.findall(r"@([\w:./+-]+)", match.group(1)))
+        else:
+            keys.extend(key.strip() for key in match.group(2).split(",") if key.strip())
     return keys
 
 
 def parse_bibtex_records(bib_path: Path) -> List[Dict[str, Any]]:
-    raw = bib_path.read_text(encoding="utf-8", errors="replace")
-    records: List[Dict[str, Any]] = []
-    for m in BIB_ENTRY_RE.finditer(raw):
-        key = m.group(2).strip()
-        start = raw.find("{", m.start())
-        depth, pos = 0, start
-        while pos < len(raw):
-            if raw[pos] == "{":
-                depth += 1
-            elif raw[pos] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            pos += 1
-        body = raw[start + 1 : pos]
-        fields: Dict[str, str] = {}
-        for fm in re.finditer(r"([A-Za-z_]+)\s*=\s*[\{\"]([^\}\"]+)[\}\"]", body):
-            fields[fm.group(1).lower()] = re.sub(r"\s+", " ", fm.group(2)).strip()
-        records.append(
-            {
-                "cite_key": key,
-                "title": fields.get("title", ""),
-                "authors": [a.strip() for a in re.split(r"\s+and\s+", fields.get("author", "")) if a.strip()],
-                "year": int(fields["year"]) if fields.get("year", "").isdigit() else None,
-                "venue": fields.get("journal") or fields.get("booktitle") or "",
-                "doi": fields.get("doi"),
-                "route": fields.get("route") or fields.get("keywords") or "",
-                "problem_setting": fields.get("problem", ""),
-                "evaluation_system": fields.get("evaluation", ""),
-                "key_finding": fields.get("finding") or fields.get("abstract", ""),
-                "limitation": fields.get("limitation", ""),
-            }
-        )
-    return records
+    """Compatibility wrapper shared with the passage-aware indexer."""
+    from ingest_materials import paper_record
+    from source_readers import bib_entries, read_text
+    rows = (paper_record(fields, "literature") for fields, _ in bib_entries(read_text(bib_path)))
+    return [row for row in rows if row]

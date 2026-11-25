@@ -1,153 +1,227 @@
 #!/usr/bin/env python3
-"""Harbor end-to-end orchestrator for writing-08-intro-related-work."""
+"""Package an editor-authored manuscript, its verified evidence and case-specific deliverables."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
+import re
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+from typing import Any
 
 from cluster_related_work import cluster_related_works
 from derive_gaps_and_contributions import build_gap_and_contribution_map
 from draft_intro_related_work import render_intro_and_related_work
+from export_manuscript import case_exports, export_manuscript
 from ingest_materials import ingest_materials
+from output_contract import contract_specs, resolve_contract
 from rw_utils import write_json_atomic, write_text_lf
 from verify_intro_rw import verify_intro_and_related_work
 
 
-def run_intro_rw_pipeline(
-    input_dir: str | Path,
-    work_dir: str | Path,
-    output_dir: str | Path,
-    *,
-    case_path: Optional[str | Path] = None,
-    draft_file: Optional[str | Path] = None,
-    language: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run ingest -> cluster -> derive gaps/contributions -> draft -> verify -> result.json."""
-    in_p = Path(input_dir)
-    work_p = Path(work_dir) / "intro_rw"
-    out_p = Path(output_dir)
-    work_p.mkdir(parents=True, exist_ok=True)
-    out_p.mkdir(parents=True, exist_ok=True)
+def _read_object(path: str | Path) -> dict:
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{Path(path).name} must contain a JSON object")
+    return data
 
-    case_data: Dict[str, Any] = {}
-    if case_path and Path(case_path).exists():
-        case_data = json.loads(Path(case_path).read_text(encoding="utf-8"))
-    elif (in_p / "case.json").exists():
-        case_data = json.loads((in_p / "case.json").read_text(encoding="utf-8"))
 
-    case_id = str(case_data.get("case_id", "local_intro_rw_case"))
-    lang = str(language or case_data.get("language") or "en")
+def _sections(draft: str) -> dict:
+    # Collect a complete section including its lower-level subheadings.
+    headings = list(re.finditer(r"^(#{1,6})\s+(.+?)\s*$", draft, re.MULTILINE))
+    sections = {}
+    for i, h in enumerate(headings):
+        next_peer = next((m.start() for m in headings[i + 1:] if len(m[1]) <= len(h[1])), len(draft))
+        sections[h[2].strip()] = draft[h.end():next_peer].strip()
+    return sections
 
-    materials = ingest_materials(in_p, case_data)
-    mats_p = work_p / "materials_index.json"
-    write_json_atomic(mats_p, materials)
 
-    if materials["paper_count"] == 0 and not materials["study_facts"]:
-        res_obj = {
-            "schema_version": "writing-08-intro-rw-result/v1",
-            "challenge_id": "product-arena-04-4b82ad21",
-            "case_id": case_id,
-            "status": "refused",
-            "language": lang,
-            "summary": "Refused: missing both literature corpus and study_facts inputs.",
-            "metrics": {"literature_count": 0, "route_cluster_count": 0, "gap_count": 0, "contribution_count": 0},
-            "artifacts": {"materials_index_json": str(mats_p)},
-            "sources": [],
-            "change_records": [],
-            "uncertainties": materials["material_gaps"],
-            "verification": {"passed": False, "check_count": 6, "failed_checks": ["honesty_and_material_sufficiency"]},
-        }
-        write_json_atomic(out_p / "result.json", res_obj)
-        return {"result": res_obj}
-
-    clusters_full = cluster_related_works(materials)
-    matrix_md = clusters_full.pop("comparison_matrix_md")
-    clus_p = work_p / "related_work_clusters.json"
-    matrix_p = out_p / "comparison_matrix.md"
-    write_json_atomic(clus_p, clusters_full)
-    write_text_lf(matrix_p, matrix_md)
-
-    gc_map = build_gap_and_contribution_map(materials, clusters_full)
-    gc_p = work_p / "gap_contribution_map.json"
-    write_json_atomic(gc_p, gc_map)
-
-    if draft_file and Path(draft_file).exists():
-        draft_md = Path(draft_file).read_text(encoding="utf-8", errors="replace")
-    else:
-        draft_md = render_intro_and_related_work(materials, clusters_full, gc_map, language=lang)
-
-    draft_p = out_p / "intro_and_related_work.md"
-    write_text_lf(draft_p, draft_md)
-
-    qa_rep = verify_intro_and_related_work(draft_md, materials, clusters_full, gc_map, language=lang)
-    qa_p = work_p / "qa_report.json"
-    write_json_atomic(qa_p, qa_rep)
-
-    status = "completed" if qa_rep["passed"] else "partial"
-    uncertainties = list(materials.get("material_gaps", []))
-    if qa_rep["violations"]:
-        uncertainties.append({"code": "qa_violations", "items": qa_rep["violations"]})
-
-    res_obj = {
-        "schema_version": "writing-08-intro-rw-result/v1",
-        "challenge_id": "product-arena-04-4b82ad21",
-        "case_id": case_id,
-        "status": status,
-        "language": lang,
-        "summary": (
-            f"Status={status} ({lang}): clustered {materials['paper_count']} works into {clusters_full['route_cluster_count']} routes, "
-            f"{len(gc_map['research_gaps'])} grounded gaps, {len(gc_map['contributions'])} evidence-aligned contributions."
-        ),
-        "metrics": qa_rep["metrics"],
-        "artifacts": {
-            "materials_index_json": str(mats_p),
-            "related_work_clusters_json": str(clus_p),
-            "gap_contribution_map_json": str(gc_p),
-            "comparison_matrix_md": str(matrix_p),
-            "intro_and_related_work_md": str(draft_p),
-            "qa_report_json": str(qa_p),
-        },
-        "sources": [{"cite_key": p["cite_key"], "title": p["title"], "year": p["year"], "doi": p.get("doi")} for p in materials["papers"]],
-        "change_records": [{"action": "route_clustered", "route_count": clusters_full["route_cluster_count"]}],
-        "uncertainties": uncertainties,
-        "verification": {
-            "passed": qa_rep["passed"],
-            "check_count": len(qa_rep["checks"]),
-            "failed_checks": [k for k, v in qa_rep["checks"].items() if not v],
-        },
+def _contract_products(result: dict, sections: dict, matrix: str, papers: list, gaps: list, contribs: list) -> dict:
+    products = {
+        "draft": result["manuscript"], "draft_markdown": result["manuscript"],
+        "main_result": result["manuscript"], "markdown": result["manuscript"],
+        "introduction_and_related_work": result["manuscript"], "sections": sections,
+        "evidence": result["claim_evidence"], "evidence_table": result["claim_evidence"],
+        "fact_source_mapping": result["claim_evidence"], "references": papers, "bibliography": papers,
+        "comparison_matrix": matrix, "research_gaps": gaps, "contributions": contribs,
+        "limitations": result["uncertainties"], "revision_log": result["change_records"],
     }
-    write_json_atomic(out_p / "result.json", res_obj)
-    return {"result": res_obj, "materials": materials, "clusters": clusters_full, "gc_map": gc_map, "draft_md": draft_md, "qa_report": qa_rep}
+    aliases = {"research_background": ("research background", "background", "研究背景"),
+               "introduction": ("introduction", "引言", "研究背景", "research background"),
+               "related_work": ("related work", "related works", "相关工作", "相关研究")}
+    folded = {title.casefold(): body for title, body in sections.items()}
+    for field, labels in aliases.items():
+        for name in labels:
+            if name in folded:
+                products[field] = folded[name]
+                break
+    for ext in ("md", "docx", "tex", "pdf", "png"):
+        path = result["artifacts"].get("intro_and_related_work_" + ext)
+        if path:
+            products["manuscript_" + ext] = path
+            products[ext + "_path"] = path
+            products["output_" + ext] = path
+            products[path] = path
+            if ext in ("pdf", "png"):
+                products["preview_" + ext] = path
+                products[ext + "_preview"] = path
+    return products
+
+
+def _blocking_uncertainty(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("blocking") is True or item.get("required") is True:
+        return True
+    if str(item.get("severity", "")).lower() in {"fatal", "critical", "error", "high", "blocking"}:
+        return True
+    return item.get("code") in {"missing_study_facts", "empty_or_missing_literature_corpus",
+                                "missing_required_input", "missing_required_artifact",
+                                "missing_source_evidence", "unresolved_contract_field"}
+
+
+def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_dir: str | Path, *,
+                          case_path: str | Path | None = None, draft_file: str | Path | None = None,
+                          language: str | None = None, analysis_file: str | Path | None = None,
+                          materials_file: str | Path | None = None, formats: list[str] | None = None) -> dict:
+    inp, work, out = Path(input_dir), Path(work_dir) / "intro_rw", Path(output_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
+    case_file = Path(case_path) if case_path else inp / "case.json"
+    case = _read_object(case_file) if case_path or case_file.exists() else {}
+    lang = str(language or case.get("language") or case.get("output_language") or "en")
+    materials = _read_object(materials_file) if materials_file else ingest_materials(inp, case)
+    write_json_atomic(work / "materials_index.json", materials)
+    analysis, editorial_issues = {}, []
+    if analysis_file:
+        from editorial_evidence import apply_editorial_evidence
+        materials, analysis, editorial_issues = apply_editorial_evidence(materials, _read_object(analysis_file))
+
+    papers = materials.get("papers", [])
+    has_material = bool(papers or materials.get("study_facts") or
+                        any(p.get("role") != "instruction" for p in materials.get("passages", [])))
+    clusters = cluster_related_works(materials)
+    matrix = clusters.pop("comparison_matrix_md")
+    gc_map = build_gap_and_contribution_map(materials, clusters)
+    for key in ("research_gaps", "contributions", "claim_evidence"):
+        if key in analysis:
+            gc_map[key] = analysis[key]
+    cards = materials.get("claim_evidence", gc_map.get("claim_evidence", []))
+    gc_map["claim_evidence"] = cards
+    draft = ""
+    mode = "missing_input"
+    delivery_issues = list(editorial_issues)
+    if has_material and draft_file:
+        mode = "agent_manuscript"
+        draft = Path(draft_file).read_text(encoding="utf-8-sig")
+        if not draft.strip():
+            delivery_issues.append({"code": "empty_agent_draft", "message": "The supplied manuscript is empty."})
+    elif has_material:
+        mode = "outline_only"
+        draft = render_intro_and_related_work(materials, clusters, gc_map, language=lang)
+        delivery_issues.append({"code": "awaiting_agent_draft",
+                                "message": "Working outline generated. Review the evidence and write the final prose."})
+
+    qa = verify_intro_and_related_work(draft, materials, clusters, gc_map, language=lang)
+    uncertainties = [*materials.get("material_gaps", []), *analysis.get("uncertainties", [])]
+    if any(_blocking_uncertainty(item) for item in uncertainties):
+        delivery_issues.append({"code": "unresolved_required_material",
+                                "message": "One or more recorded material gaps block a requested deliverable."})
+    if analysis_file and draft_file and draft.strip() and not cards:
+        attached_claims = [r for k in ("research_gaps", "contributions") for r in analysis.get(k, [])
+                           if r.get("evidence") and (r.get("claim") or r.get("gap_statement") or "").strip()
+                           and (r.get("claim") or r["gap_statement"]).strip() in draft]
+        if not attached_claims:
+            delivery_issues.append({"code": "missing_manuscript_evidence",
+                                    "message": "Attach manuscript claims to quotations from the indexed source materials."})
+    if qa["violations"]:
+        uncertainties.append({"code": "manuscript_qa", "items": qa["violations"]})
+
+    artifacts = {}
+    if draft:
+        case_formats, names = case_exports(case)
+        requested_names = analysis.get("artifact_names", {})
+        if isinstance(requested_names, dict):
+            names.update(requested_names)
+        else:
+            delivery_issues.append({"code": "invalid_artifact_names", "message": "Use a format-to-filename object."})
+        artifacts, export_issues = export_manuscript(draft, out, [*case_formats, *(formats or [])], names, lang)
+        delivery_issues.extend(export_issues)
+    write_text_lf(out / "comparison_matrix.md", matrix)
+    artifacts["comparison_matrix_md"] = "comparison_matrix.md"
+    source_manifest = materials.get("sources", [])
+    if not source_manifest:
+        source_manifest = [{k: p[k] for k in ("cite_key", "title", "authors", "year", "venue", "doi", "source_path",
+                                             "locator", "source_ids") if k in p} for p in papers]
+    output_records = {
+        "related_work_clusters": clusters, "gap_contribution_map": gc_map,
+        "claim_evidence": cards, "sources": source_manifest, "qa_report": qa,
+    }
+    for name, record in output_records.items():
+        write_json_atomic(out / f"{name}.json", record)
+        artifacts[name + "_json"] = f"{name}.json"
+    research_gaps, contributions = gc_map["research_gaps"], gc_map["contributions"]
+    result = {
+        "schema_version": "writing-08-intro-rw-result/v1", "challenge_id": "product-arena-04-4b82ad21",
+        "case_id": case.get("case_id", "local_intro_rw_case"), "status": "completed", "language": lang,
+        "summary": "", "draft_mode": mode, "manuscript": draft, "metrics": qa["metrics"], "artifacts": artifacts,
+        "sources": source_manifest, "claim_evidence": cards, "research_gaps": research_gaps, "contributions": contributions,
+        "change_records": [*analysis.get("change_records", []),
+                           {"action": "checked_manuscript", "draft_mode": mode, "checks": list(qa["checks"])}],
+        "uncertainties": uncertainties,
+        "verification": {"passed": bool(qa["passed"]), "check_count": len(qa["checks"]),
+                         "failed_checks": [k for k, passed in qa["checks"].items() if not passed]},
+    }
+    if not has_material:
+        result["status"] = "refused"
+    elif not qa["passed"] or delivery_issues:
+        result["status"] = "partial"
+    result["summary"] = (f"{mode}: {len(papers)} literature records, {clusters['route_cluster_count']} comparison groups, "
+                         f"{len(research_gaps)} proposed gaps, {len(contributions)} contribution entries, "
+                         f"{len(cards)} claim-evidence links.")
+    products = _contract_products(result, _sections(draft), matrix, papers, research_gaps, contributions)
+    contract_issues = resolve_contract(result, case.get("output_contract"), products, analysis.get("contract_fields", {}))
+    all_issues = [*delivery_issues, *contract_issues]
+    if all_issues:
+        result["uncertainties"].extend(all_issues)
+        result["verification"]["passed"] = False
+        result["verification"]["failed_checks"].extend(dict.fromkeys(row.get("code", "delivery_issue") for row in all_issues))
+        if has_material:
+            result["status"] = "partial"
+    contract = case.get("output_contract")
+    if isinstance(contract, dict) and contract.get("additionalProperties") is False:
+        allowed = set(contract_specs(contract)) | {"case_id"}
+        # Retain independent audit information even when only case fields are allowed in result.json.
+        write_json_atomic(out / "editorial_report.json", result)
+        write_json_atomic(out / "result.json", {k: v for k, v in result.items() if k in allowed})
+    else:
+        write_json_atomic(out / "result.json", result)
+    return {"result": result, "materials": materials, "clusters": clusters, "gc_map": gc_map,
+            "draft_md": draft, "qa_report": qa}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run end-to-end Introduction & Related Work pipeline.")
-    parser.add_argument("--input-dir", required=True)
-    parser.add_argument("--work-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--case", default=None)
-    parser.add_argument("--draft-file", default=None)
-    parser.add_argument("--language", default=None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-dir", default="/input")
+    parser.add_argument("--work-dir", default="/app/work")
+    parser.add_argument("--output-dir", default="/app/output")
+    parser.add_argument("--case")
+    parser.add_argument("--draft-file", help="Final manuscript written from the current case")
+    parser.add_argument("--analysis", help="Editorial evidence card, gap, contribution and contract data")
+    parser.add_argument("--materials-file", help="Original materials index produced by ingest_materials.py")
+    parser.add_argument("--language")
+    parser.add_argument("--format", action="append", choices=("md", "docx", "pdf", "tex", "png"), default=[])
     args = parser.parse_args()
-
-    out = run_intro_rw_pipeline(
-        args.input_dir,
-        args.work_dir,
-        args.output_dir,
-        case_path=args.case,
-        draft_file=args.draft_file,
-        language=args.language,
-    )
-    print(json.dumps(out["result"], ensure_ascii=False))
-    return 0 if (out["result"]["status"] != "refused" and out["result"]["verification"]["passed"]) else 1
+    try:
+        bundle = run_intro_rw_pipeline(args.input_dir, args.work_dir, args.output_dir, case_path=args.case,
+                                       draft_file=args.draft_file, language=args.language, analysis_file=args.analysis,
+                                       materials_file=args.materials_file, formats=args.format)
+    except (OSError, ValueError) as exc:
+        parser.exit(2, f"Input or file error: {exc}\n")
+    r = bundle["result"]
+    print(json.dumps({"case_id": r["case_id"], "status": r["status"], "verification": r["verification"],
+                      "result": str(Path(args.output_dir) / "result.json")}, ensure_ascii=False))
+    return 0 if r["status"] == "completed" else 1
 
 
 if __name__ == "__main__":

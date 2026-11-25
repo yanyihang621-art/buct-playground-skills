@@ -1,8 +1,31 @@
 {
-  "case_id": "example_writing_08_intro_rw_01",
-  "task_type": "introduction_and_related_work",
+  "case_id": "demo_drift",
   "language": "en",
-  "corpus_file": "papers.json",
-  "study_facts_file": "study_facts.json",
-  "instructions": "Group related works by technical route (not chronological stitching), derive research gaps directly from cited limitations, align every contribution to empirical evidence anchors, and emit verifiable introduction & related work Markdown."
+  "instructions": "Synthetic tutorial. Draft a concise introduction for measurement researchers. Limit the gap to the supplied reports.",
+  "output_contract": {
+    "type": "object",
+    "required": [
+      "case_id",
+      "manuscript",
+      "bounded_question",
+      "study_evidence"
+    ],
+    "properties": {
+      "case_id": {
+        "type": "string"
+      },
+      "manuscript": {
+        "type": "string"
+      },
+      "bounded_question": {
+        "type": "string"
+      },
+      "study_evidence": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
 }

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -16,23 +15,12 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from rw_utils import write_json_atomic, write_text_lf
 
-TAXONOMY_HINTS = [
-    ("Cu-Based / Oxide Catalysts", ("cu-zno", "copper", "al2o3", "oxide", "CuZn", "铜基")),
-    ("Noble Metal / Bimetallic Catalysts", ("pd", "pt", "rh", "ru", "noble", "bimetallic", "贵金属")),
-    ("MOF / Porous Framework Catalysts", ("mof", "zeolite", "zif", "framework", "metal-organic", "框架")),
-    ("Operando / Mechanistic Characterization", ("operando", "in situ", "ftir", "xps", "dft", "mechanism", "原位", "机理")),
-]
-
-
 def _infer_route(paper: Dict[str, Any]) -> str:
-    explicit = str(paper.get("route", "")).strip()
-    if explicit:
-        return explicit
-    blob = f"{paper.get('title', '')} {paper.get('key_finding', '')} {paper.get('problem_setting', '')}".lower()
-    for label, kws in TAXONOMY_HINTS:
-        if any(kw in blob for kw in kws):
-            return label
-    return "General / Baseline Approaches"
+    return str(paper.get("route") or "").strip() or "Unclassified (review source)"
+
+
+def _cell(value: Any) -> str:
+    return " ".join(str(value or "—").split()).replace("|", "\\|")
 
 
 def cluster_related_works(materials: Dict[str, Any]) -> Dict[str, Any]:
@@ -46,7 +34,7 @@ def cluster_related_works(materials: Dict[str, Any]) -> Dict[str, Any]:
     clusters: List[Dict[str, Any]] = []
     for idx, (route_name, members) in enumerate(clusters_map.items(), start=1):
         # Order within route chronologically, while comparing across routes
-        members_sorted = sorted(members, key=lambda x: (x.get("year") or 9999, x.get("cite_key", "")))
+        members_sorted = sorted(members, key=lambda x: (str(x.get("year") or "9999"), x.get("cite_key", "")))
         limitations = [m["limitation"] for m in members_sorted if m.get("limitation")]
         clusters.append(
             {
@@ -62,18 +50,16 @@ def cluster_related_works(materials: Dict[str, Any]) -> Dict[str, Any]:
     lines: List[str] = [
         "# 相关工作技术路线对比矩阵 (Related Work Comparison Matrix)",
         "",
-        "| 技术路线 (Route) | 文献 Key | 问题设定 (Problem) | 评价体系 (Evaluation) | 核心结论 (Key Finding) | 局限性 (Limitation) |",
-        "|---|---|---|---|---|---|",
+        "| Route / comparison axis | Study | Setting | Evaluation | Finding | Boundary | Source |",
+        "|---|---|---|---|---|---|---|",
     ]
     for cl in clusters:
         for p in cl["papers"]:
-            lines.append(
-                f"| {cl['route_name']} | `@{p['cite_key']}` ({p.get('year') or 's.a.'}) | "
-                f"{(p.get('problem_setting') or '-').replace('|', '/')} | "
-                f"{(p.get('evaluation_system') or '-').replace('|', '/')} | "
-                f"{(p.get('key_finding') or p.get('title') or '-').replace('|', '/')} | "
-                f"{(p.get('limitation') or '[Unspecified]').replace('|', '/')} |"
-            )
+            locators = [f"{e['path']} {e['locator']}" for e in p.get("evidence", [])]
+            cells = [cl["route_name"], f"@{p['cite_key']}", p.get("problem_setting"),
+                     p.get("evaluation_system"), p.get("key_finding"), p.get("limitation"),
+                     ", ".join(dict.fromkeys(locators or p.get("source_ids", [])))]
+            lines.append("| " + " | ".join(_cell(v) for v in cells) + " |")
     lines.append("")
 
     return {

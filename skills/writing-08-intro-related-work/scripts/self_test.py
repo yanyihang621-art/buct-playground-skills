@@ -140,96 +140,139 @@ def _setup_w4_empty_corpus(d: Path) -> Path:
     return cp
 
 
-def _run_negative_qa_tests(w1: Dict[str, Any]) -> Dict[str, bool]:
-    md = w1["draft_md"]
-    mats = w1["materials"]
-    clus = w1["clusters"]
-    gc = w1["gc_map"]
+def _edited_fixture(materials: Dict[str, Any]):
+    """Four original English fixture paragraphs and their links into synthetic inputs."""
+    sources = materials["passages"]
 
-    # 1. Cliche opening injected
-    q1 = verify_intro_and_related_work("In recent years, with the rapid development of catalysis...\n" + md, mats, clus, gc)
-    # 2. Fabricated cite key [@ghost2029]
-    q2 = verify_intro_and_related_work(md + "\nUnsupported claim [@ghost2029].\n", mats, clus, gc)
-    # 3. Ungrounded gap (no cite keys and author_judgment=False)
-    gc3 = copy.deepcopy(gc)
-    gc3["research_gaps"][0]["derived_from_cite_keys"] = []
-    gc3["research_gaps"][0]["author_judgment"] = False
-    q3 = verify_intro_and_related_work(md, mats, clus, gc3)
-    # 4. Exaggerated unbacked contribution (Table 99 / 99.9% absent from study_facts)
-    gc4 = copy.deepcopy(gc)
-    gc4["contributions"][0]["evidence_anchor"] = {"figure_or_table_ref": "Table 99", "metric_value": "99.9%"}
-    q4 = verify_intro_and_related_work(md, mats, clus, gc4)
-    # 5. Sequential chronological stitching without ### route subheadings
-    no_route_md = "\n".join(line for line in md.splitlines() if not line.startswith("### "))
-    q5 = verify_intro_and_related_work(no_route_md, mats, clus, gc)
+    def ref(snippet):
+        row = next(p for p in sources if snippet in p["text"] and p["role"] != "instruction")
+        return {"source_id": row["source_id"], "quote": snippet}
 
+    background = "Steam-induced sintering constrains thermal operation of copper catalysts."
+    comparison = ("Whereas the oxide study reports a lower barrier for formate hydrogenation [1], "
+                  "the PdZn study emphasizes selectivity over CO [2].")
+    gap = "The stability reported for confined clusters does not establish long-duration operation."
+    contribution = ("Our confined Cu-ZnO-Al2O3 catalyst delivers 91.8% methanol selectivity "
+                    "at 573 K over 120 h.")
+    paper1 = ref("rapid sintering above 593 K under industrial steam")
+    mechanism = ref("Cu-ZnO synergy lowered the formate hydrogenation barrier")
+    alloy = ref("PdZn alloy formation improved methanol selectivity over CO")
+    framework = ref("framework hydrolysis above 120 h time-on-stream")
+    original = ref("achieving 91.8% methanol selectivity at 573 K over 120 h.")
+    claim_rows = [
+        {"kind": "background", "claim": background, "cite_keys": ["zhang2023_cu"], "evidence": [paper1]},
+        {"kind": "comparison", "claim": comparison, "cite_keys": ["zhang2023_cu", "li2024_pdzn"],
+         "evidence": [mechanism, alloy]},
+        {"kind": "gap", "claim": gap, "cite_keys": ["chen2024_mof"], "evidence": [framework]},
+        {"kind": "contribution", "claim": contribution, "evidence": [original]},
+    ]
+    draft = (f"{background} Sintering accelerates above 593 K in industrial steam [1].\n\n"
+             f"{comparison} Confinement raises a different durability question: hydrolysis was reported "
+             f"beyond 120 h [3].\n\n{gap} Framework hydrolysis places a time limit on the test [3].\n\n"
+             f"{contribution}\n\n## References\n")
+    for i, paper in enumerate(materials["papers"], 1):
+        draft += f"[{i}] {', '.join(paper['authors'])}. {paper['title']}. {paper['venue']}, {paper['year']}.\n"
+    analysis = {
+        "research_gaps": [{"gap_id": "G1", "gap_statement": gap, "derived_from_cite_keys": ["chen2024_mof"],
+                           "evidence": [framework]}],
+        "contributions": [{"contrib_id": "C1", "claim": contribution, "addresses_gap_id": "G1",
+                           "evidence": [original]}],
+        "claim_evidence": claim_rows,
+        "section_spans": {"background": background, "related_work": comparison,
+                          "gap": gap, "contribution": contribution},
+    }
+    return draft, analysis
+
+
+def _run_negative_qa_tests(outline: Dict[str, Any], edited: Dict[str, Any]) -> Dict[str, bool]:
+    md, m, c, gc = (outline[k] for k in ("draft_md", "materials", "clusters", "gc_map"))
+    cliche = verify_intro_and_related_work("In recent years, with the rapid development of catalysis...\n" + md, m, c, gc)
+    unknown = verify_intro_and_related_work("Unsupported claim [@ghost2029].\n\n" + md, m, c, gc)
+    bad_gap = copy.deepcopy(gc)
+    bad_gap["research_gaps"][0].update(derived_from_cite_keys=[], author_judgment=False)
+    gap = verify_intro_and_related_work(md, m, c, bad_gap)
+    bad_contrib = copy.deepcopy(gc)
+    bad_contrib["contributions"][0]["evidence_anchor"] = {"figure_or_table_ref": "Table 99", "metric_value": "99.9%"}
+    anchor = verify_intro_and_related_work(md, m, c, bad_contrib)
+    bare_prose = "\n".join(line for line in md.splitlines() if not line.startswith("### "))
+    stitched = verify_intro_and_related_work(bare_prose, m, c, gc)
+    edit, m, c, gc = (edited[k] for k in ("draft_md", "materials", "clusters", "gc_map"))
+    changed = verify_intro_and_related_work(edit.replace("91.8%", "99.9%"), m, c, gc)
+    ghost_number = verify_intro_and_related_work(edit.replace("test [3]", "test [93]"), m, c, gc)
     return {
-        "neg_1_cliche_caught": (not q1["passed"]) and (not q1["checks"]["anti_cliche_and_anti_stitching"]),
-        "neg_2_ghost_cite_caught": (not q2["passed"]) and (not q2["checks"]["citation_coverage_and_metadata"]),
-        "neg_3_ungrounded_gap_caught": (not q3["passed"]) and (not q3["checks"]["gap_evidence_grounding"]),
-        "neg_4_exaggerated_contrib_caught": (not q4["passed"]) and (not q4["checks"]["contribution_evidence_alignment"]),
-        "neg_5_no_route_clustering_caught": (not q5["passed"]) and (not q5["checks"]["anti_cliche_and_anti_stitching"]),
+        "cliche_opening": not cliche["checks"]["anti_cliche_and_anti_stitching"],
+        "invented_key_in_prose": not unknown["checks"]["citation_coverage_and_metadata"],
+        "gap_missing_source": not gap["checks"]["gap_evidence_grounding"],
+        "invented_table_and_metric": not anchor["checks"]["contribution_evidence_alignment"],
+        "serial_summaries_without_comparison": not stitched["checks"]["anti_cliche_and_anti_stitching"],
+        "number_changed_after_evidence_audit": not changed["passed"],
+        "invented_numbered_citation": not ghost_number["checks"]["citation_coverage_and_metadata"],
     }
 
 
-def _compare_baseline(w1: Dict[str, Any]) -> Dict[str, Any]:
-    m = w1["qa_report"]["metrics"]
-    return {
-        "naive_sequential_summary_baseline": {
-            "route_clustered_comparison": False,
-            "grounded_gap_ratio": 0.3,
-            "grounded_contribution_ratio": 0.4,
-            "anti_cliche_gate": False,
-        },
-        "skill_pipeline": {
-            "route_clustered_comparison": m["route_cluster_count"] >= 2,
-            "grounded_gap_ratio": m["grounded_gap_ratio"],
-            "grounded_contribution_ratio": m["grounded_contribution_ratio"],
-            "anti_cliche_gate": w1["qa_report"]["checks"]["anti_cliche_and_anti_stitching"],
-        },
-        "skill_wins": m["grounded_gap_ratio"] >= 1.0 and m["grounded_contribution_ratio"] >= 1.0 and m["citation_coverage_ratio"] >= 1.0,
-    }
+def _compare_baseline(edited: Dict[str, Any]) -> Dict[str, Any]:
+    """Actually evaluate two fixture drafts with the same source package and verifier."""
+    materials, clusters, evidence = (edited[k] for k in ("materials", "clusters", "gc_map"))
+    bibliography = edited["draft_md"].split("## References", 1)[1]
+    serial = "\n\n".join(f"{p['authors'][0]} reported {p['key_finding']} [@{p['cite_key']}]."
+                         for p in materials["papers"])
+    comparison_input = "## Related Work\n\n" + serial + "\n\n## References" + bibliography
+    # Give the control its own true source links. It need not reproduce the edited draft's wording.
+    control_cards = []
+    for p in materials["papers"]:
+        finding = p["key_finding"]
+        source = next(s for s in materials["passages"] if finding in s["text"])
+        control_cards.append({"kind": "literature_summary", "claim": finding, "cite_keys": [p["cite_key"]],
+                              "evidence": [{"source_id": source["source_id"], "quote": finding}]})
+    control_materials = {**materials, "claim_evidence": control_cards, "section_spans": {}}
+    control = verify_intro_and_related_work(comparison_input, control_materials, clusters,
+                                             {"research_gaps": [], "contributions": []})
+    revised = verify_intro_and_related_work(edited["draft_md"], materials, clusters, evidence)
+
+    def observed(report):
+        return {"passed_checks": sum(report["checks"].values()), "checks": report["checks"],
+                "resolved_keys": report["metrics"]["cited_in_manuscript"],
+                "cross_work_comparisons": report["metrics"]["cross_work_comparisons"]}
+
+    return {"scope": "Local synthetic draft comparison; the platform runs the official Agent comparison.",
+            "control_recipe": "One source finding per paragraph, same input order and bibliography.",
+            "source_count": len(materials["papers"]), "sequential_control": observed(control),
+            "evidence_edited_draft": observed(revised)}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run writing-08-intro-related-work self-test suite.")
+    parser = argparse.ArgumentParser(description="Run synthetic integration fixtures and audit regressions.")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--compare-baseline", action="store_true")
     args = parser.parse_args()
-
     root = Path(args.out_dir)
+
+    def run(case, name, **options):
+        return run_intro_rw_pipeline(case.parent, root / name / "work", root / name / "output",
+                                     case_path=case, **options)
+
     c1 = _setup_w1_catalysis_en(root / "w1" / "input")
-    r1 = run_intro_rw_pipeline(root / "w1" / "input", root / "w1" / "work", root / "w1" / "output", case_path=c1)
-    neg = _run_negative_qa_tests(r1)
-    w1_ok = r1["result"]["status"] == "completed" and r1["qa_report"]["passed"] and r1["clusters"]["route_cluster_count"] == 3 and all(neg.values())
-
+    r1 = run(c1, "w1")
     c2 = _setup_w2_zh_bib(root / "w2" / "input")
-    r2 = run_intro_rw_pipeline(root / "w2" / "input", root / "w2" / "work", root / "w2" / "output", case_path=c2)
-    w2_ok = r2["result"]["status"] == "completed" and r2["qa_report"]["passed"] and r2["clusters"]["route_cluster_count"] == 2
-
-    # W3: verify agent-refined draft file mode
-    w3_draft = root / "w3_agent_draft.md"
-    write_text_lf(w3_draft, r1["draft_md"])
-    r3 = run_intro_rw_pipeline(root / "w1" / "input", root / "w3" / "work", root / "w3" / "output", case_path=c1, draft_file=w3_draft)
-    w3_ok = r3["result"]["status"] == "completed" and r3["qa_report"]["passed"]
-
-    c4 = _setup_w4_empty_corpus(root / "w4" / "input")
-    r4 = run_intro_rw_pipeline(root / "w4" / "input", root / "w4" / "work", root / "w4" / "output", case_path=c4)
-    w4_ok = r4["result"]["status"] == "refused" and len(r4["result"]["uncertainties"]) >= 1
-
-    summary: Dict[str, Any] = {
-        "all_passed": bool(w1_ok and w2_ok and w3_ok and w4_ok),
-        "suites": {
-            "w1_catalysis_intro_rw_en": {"passed": w1_ok, "metrics": r1["qa_report"]["metrics"], "negative_qa_tests": neg},
-            "w2_chinese_bib_manuscript": {"passed": w2_ok, "metrics": r2["qa_report"]["metrics"]},
-            "w3_agent_draft_verification": {"passed": w3_ok, "status": r3["result"]["status"]},
-            "w4_empty_corpus_honest_refusal": {"passed": w4_ok, "status": r4["result"]["status"], "uncertainties": len(r4["result"]["uncertainties"])},
-        },
+    r2 = run(c2, "w2")
+    manuscript, notes = _edited_fixture(r1["materials"])
+    draft_file, notes_file = root / "w3_agent_draft.md", root / "w3_notes.json"
+    write_text_lf(draft_file, manuscript)
+    write_json_atomic(notes_file, notes)
+    r3 = run(c1, "w3", draft_file=draft_file, analysis_file=notes_file)
+    r4 = run(_setup_w4_empty_corpus(root / "w4" / "input"), "w4")
+    negative = _run_negative_qa_tests(r1, r3)
+    tests = {
+        "w1 English scaffold requires editing": r1["result"]["status"] == "partial" and r1["clusters"]["route_cluster_count"] == 3,
+        "w2 Chinese BibTeX scaffold requires editing": r2["result"]["status"] == "partial" and r2["clusters"]["route_cluster_count"] == 2,
+        "w3 continuous publication-style prose and numeric references": r3["result"]["status"] == "completed"
+            and r3["qa_report"]["metrics"]["claim_evidence_rows"] == 4 and bool(r3["qa_report"]["metrics"]["cross_work_comparisons"]),
+        "w4 empty input is explicit": r4["result"]["status"] == "refused" and bool(r4["result"]["uncertainties"]),
+        **negative,
     }
+    summary = {"all_passed": all(tests.values()), "suites": tests}
     if args.compare_baseline:
-        summary["baseline_comparison"] = _compare_baseline(r1)
-        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["skill_wins"]
-
+        summary["baseline_comparison"] = _compare_baseline(r3)
     write_json_atomic(root / "self_test_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary["all_passed"] else 1

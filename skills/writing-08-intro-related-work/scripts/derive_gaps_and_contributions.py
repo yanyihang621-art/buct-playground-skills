@@ -64,12 +64,11 @@ def build_gap_and_contribution_map(materials: Dict[str, Any], clusters: Dict[str
         has_valid_anchor = isinstance(anchor, dict) and any(
             anchor.get(k) for k in ("figure_or_table_ref", "method_ref", "metric_value")
         )
-        default_gap = gaps[min(idx - 1, len(gaps) - 1)]["gap_id"] if gaps else "gap_unlinked"
         contributions.append(
             {
                 "contrib_id": item.get("contrib_id") or f"contrib_{idx:02d}",
                 "claim": str(item.get("claim", "")).strip(),
-                "addresses_gap_id": str(item.get("addresses_gap_id") or default_gap),
+                "addresses_gap_id": str(item.get("addresses_gap_id") or ""),
                 "evidence_anchor": anchor if isinstance(anchor, dict) else None,
                 "grounded": has_valid_anchor,
             }
