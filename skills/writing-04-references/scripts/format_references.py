@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+from collections import defaultdict
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -24,41 +26,72 @@ GBT_TYPE_CODES = {
     "thesis": "D",
     "phdthesis": "D",
     "mastersthesis": "D",
+    "dissertation": "D",
+    "report": "R",
+    "techreport": "R",
+    "standard": "S",
+    "patent": "P",
+    "dataset": "DS",
+    "webpage": "EB/OL",
+    "online": "EB/OL",
     "preprint": "EB/OL",
     "electronic": "EB/OL",
     "misc": "Z",
 }
 
 
+def _organization(name: str) -> bool:
+    return bool(re.search(r"\b(?:organization|organisation|association|institute|university|consortium|committee|"
+                          r"collaboration|agency|society|group|team|council|department|laboratory|network)\b", name, re.I))
+
+
 def _format_authors_gbt(authors: List[str], lang: str) -> str:
     if not authors:
         return "[佚名]" if lang == "zh" else "[Anon.]"
     etal = "等" if (lang == "zh" or any(CJK_RE.search(a) for a in authors)) else "et al"
-    shown = authors[:3]
+    shown = []
+    for author in authors[:3]:
+        if CJK_RE.search(author) or _organization(author):
+            shown.append(author)
+        else:
+            surname, given = _western_name(author)
+            shown.append(" ".join(filter(None, [surname.upper(), " ".join(_initials(given))])))
     joined = ", ".join(shown)
     return f"{joined}, {etal}" if len(authors) > 3 else joined
 
 
-def _surname_first_apa(author: str) -> str:
+def _western_name(author: str) -> tuple[str, str]:
     s = author.strip()
-    if CJK_RE.search(s):
-        return s
     if "," in s:
-        parts = [p.strip() for p in s.split(",", 1)]
-        initials = " ".join(f"{w[0].upper()}." for w in parts[1].split() if w)
-        return f"{parts[0]}, {initials}".strip().rstrip(",")
+        surname, given = s.split(",", 1)
+        return surname.strip(), given.strip()
     words = s.split()
-    if len(words) <= 1:
-        return s
-    surname = words[-1]
-    initials = " ".join(f"{w[0].upper()}." for w in words[:-1] if w)
-    return f"{surname}, {initials}"
+    if not words:
+        return "", ""
+    start = len(words) - 1
+    while start > 0 and words[start - 1] in ("al", "de", "du", "del", "der", "di", "la", "van", "von"):
+        start -= 1
+    return " ".join(words[start:]), " ".join(words[:start])
+
+
+def _initials(given: str) -> List[str]:
+    return [part[0].upper() for part in re.findall(r"[^\W\d_]+", given) if part]
+
+
+def _surname_first_apa(author: str) -> str:
+    if CJK_RE.search(author) or _organization(author):
+        return author.strip()
+    surname, given = _western_name(author)
+    initials = " ".join(f"{letter}." for letter in _initials(given))
+    return f"{surname}, {initials}" if initials else surname
 
 
 def _format_authors_apa(authors: List[str]) -> str:
     if not authors:
         return "Anonymous"
-    formatted = [_surname_first_apa(a) for a in authors[:20]]
+    formatted = [_surname_first_apa(a) for a in authors]
+    if len(formatted) > 20:
+        return ", ".join(formatted[:19]) + ", … " + formatted[-1]
     if len(formatted) == 1:
         return formatted[0]
     return ", ".join(formatted[:-1]) + ", & " + formatted[-1]
@@ -68,7 +101,7 @@ def format_single_gbt7714(rec: Dict[str, Any], index: int) -> str:
     lang = rec.get("language", "en")
     authors = _format_authors_gbt(rec.get("authors", []), lang)
     title = (rec.get("title") or "[Untitled]").rstrip(".")
-    tcode = GBT_TYPE_CODES.get(rec.get("entry_type", "article").lower(), "J")
+    tcode = GBT_TYPE_CODES.get(rec.get("entry_type", "article").lower(), "Z")
     venue = rec.get("venue") or (f"arXiv:{rec['arxiv_id']}" if rec.get("arxiv_id") else "[Source Unknown]")
     yr = str(rec.get("year") or "s.a.")
 
@@ -77,6 +110,8 @@ def format_single_gbt7714(rec: Dict[str, Any], index: int) -> str:
         body = f"[{index}] {authors}. {title}[{tcode}]. {venue}, {yr}."
         if ref_url:
             body += f" {ref_url}."
+        if rec.get("doi"):
+            body += f" DOI:{rec['doi']}."
         return body
 
     tail = yr
@@ -92,15 +127,41 @@ def format_single_gbt7714(rec: Dict[str, Any], index: int) -> str:
     out = f"[{index}] {authors}. {title}[{tcode}]. {venue}, {tail}."
     if rec.get("doi"):
         out += f" DOI:{rec['doi']}."
+    elif rec.get("url"):
+        out += f" {rec['url']}."
     return out
 
 
-def format_single_apa7(rec: Dict[str, Any]) -> str:
+def _apa_order(rec: Dict[str, Any]) -> tuple:
+    names = tuple(_surname_first_apa(a).casefold() for a in rec.get("authors", []))
+    title = re.sub(r"^(the|an|a)\s+", "", str(rec.get("title") or "").casefold())
+    return names or (title,), str(rec.get("year") or ""), title
+
+
+def apa_year_labels(records: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Return consistent year suffixes for identical author lists and publication year."""
+    labels = {r["cite_key"]: str(r.get("year") or "n.d.") for r in records}
+    groups = defaultdict(list)
+    for rec in sorted(records, key=_apa_order):
+        groups[_apa_order(rec)[:2]].append(rec["cite_key"])
+    for keys in groups.values():
+        if len(keys) < 2:
+            continue
+        for index, key in enumerate(keys, 1):
+            suffix = ""
+            while index:
+                index, remainder = divmod(index - 1, 26)
+                suffix = chr(97 + remainder) + suffix
+            labels[key] += ("-" if labels[key] == "n.d." else "") + suffix
+    return labels
+
+
+def format_single_apa7(rec: Dict[str, Any], year_label: str = "") -> str:
     authors = _format_authors_apa(rec.get("authors", []))
-    yr = str(rec.get("year") or "n.d.")
+    yr = year_label or str(rec.get("year") or "n.d.")
     title = (rec.get("title") or "Untitled").rstrip(".")
     venue = rec.get("venue") or (f"arXiv preprint arXiv:{rec['arxiv_id']}" if rec.get("arxiv_id") else "")
-    parts = [f"{authors} ({yr}). {title}."]
+    parts = [f"{authors} ({yr}). {title}." if rec.get("authors") else f"{title}. ({yr})."]
     if venue:
         v_str = venue
         if rec.get("volume"):
@@ -119,10 +180,20 @@ def format_single_apa7(rec: Dict[str, Any]) -> str:
 
 def format_single_ieee(rec: Dict[str, Any], index: int) -> str:
     authors = rec.get("authors", [])
-    auth_str = f"{authors[0]} et al." if len(authors) > 6 else ", ".join(authors) if authors else "Anon."
+    names = []
+    for author in authors:
+        surname, given = _western_name(author)
+        initials = " ".join(f"{c}." for c in _initials(given))
+        names.append(author if CJK_RE.search(author) or _organization(author) else f"{initials} {surname}".strip())
+    if len(names) > 6:
+        auth_str = names[0] + " et al."
+    elif len(names) > 2:
+        auth_str = ", ".join(names[:-1]) + ", and " + names[-1]
+    else:
+        auth_str = " and ".join(names) or "Anon."
     title = (rec.get("title") or "Untitled").rstrip(".")
-    venue = rec.get("venue") or "Preprint"
-    segs = [f'[{index}] {auth_str}, "{title},"', f"{venue}"]
+    venue = rec.get("venue") or ""
+    segs = [venue] if venue else []
     if rec.get("volume"):
         segs.append(f"vol. {rec['volume']}")
     if rec.get("issue"):
@@ -131,9 +202,11 @@ def format_single_ieee(rec: Dict[str, Any], index: int) -> str:
         segs.append(f"pp. {rec['pages']}")
     if rec.get("year"):
         segs.append(str(rec["year"]))
-    out = ", ".join(segs) + "."
+    out = f'[{index}] {auth_str}, “{title},” ' + ", ".join(segs) + "." if segs else f'[{index}] {auth_str}, “{title}.”'
     if rec.get("doi"):
         out += f" doi: {rec['doi']}."
+    elif rec.get("url"):
+        out += f" [Online]. Available: {rec['url']}"
     return out
 
 
@@ -147,7 +220,8 @@ def format_single_bibtex(rec: Dict[str, Any]) -> str:
     if rec.get("title"):
         fields.append(f"  title = {{{rec['title']}}}")
     if rec.get("venue"):
-        vkey = "booktitle" if etype == "inproceedings" else "journal"
+        vkey = {"inproceedings": "booktitle", "conference": "booktitle", "book": "publisher",
+                "phdthesis": "school", "mastersthesis": "school", "techreport": "institution"}.get(etype, "journal")
         fields.append(f"  {vkey} = {{{rec['venue']}}}")
     if rec.get("year"):
         fields.append(f"  year = {{{rec['year']}}}")
@@ -161,26 +235,48 @@ def format_single_bibtex(rec: Dict[str, Any]) -> str:
         fields.append(f"  doi = {{{rec['doi']}}}")
     if rec.get("arxiv_id"):
         fields.append(f"  eprint = {{{rec['arxiv_id']}}}")
+    if rec.get("url"):
+        fields.append(f"  url = {{{rec['url']}}}")
     return f"@{etype}{{{rec['cite_key']},\n" + ",\n".join(fields) + "\n}"
+
+
+def format_single_ris(rec: Dict[str, Any]) -> str:
+    kind = {"article": "JOUR", "journal": "JOUR", "book": "BOOK", "inproceedings": "CPAPER",
+            "conference": "CPAPER", "thesis": "THES", "dataset": "DATA", "report": "RPRT"}.get(rec.get("entry_type"), "GEN")
+    rows = [f"TY  - {kind}", f"ID  - {rec['cite_key']}"]
+    rows += ["AU  - " + name for name in rec.get("authors", [])]
+    for field, tag in (("title", "TI"), ("venue", "T2"), ("year", "PY"), ("volume", "VL"), ("issue", "IS"),
+                       ("doi", "DO"), ("url", "UR"), ("abstract", "AB")):
+        if rec.get(field):
+            rows.append(f"{tag}  - {rec[field]}")
+    if rec.get("pages"):
+        parts = re.split(r"\s*[-–—]+\s*", str(rec["pages"]), maxsplit=1)
+        rows.append("SP  - " + parts[0])
+        if len(parts) > 1:
+            rows.append("EP  - " + parts[1])
+    rows.extend("KW  - " + word for word in rec.get("keywords", []))
+    return "\n".join(rows + ["ER  - "])
 
 
 def format_library(records: List[Dict[str, Any]], style: str = "gbt7714") -> str:
     """Format an ordered list of canonical records in the requested style."""
     st = style.lower()
     if st == "apa7":
-        ordered = sorted(records, key=lambda r: ((r.get("authors") or ["ZZZ"])[0].lower(), r.get("year") or 9999))
-        return "\n".join(format_single_apa7(r) for r in ordered) + "\n"
+        labels = apa_year_labels(records)
+        return "\n".join(format_single_apa7(r, labels[r["cite_key"]]) for r in sorted(records, key=_apa_order)) + "\n"
     if st == "ieee":
         return "\n".join(format_single_ieee(r, i) for i, r in enumerate(records, start=1)) + "\n"
     if st == "bibtex":
         return "\n\n".join(format_single_bibtex(r) for r in records) + "\n"
+    if st == "ris":
+        return "\n\n".join(format_single_ris(r) for r in records) + "\n"
     return "\n".join(format_single_gbt7714(r, i) for i, r in enumerate(records, start=1)) + "\n"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Format canonical_library.json into target citation style.")
     parser.add_argument("--lib", required=True, help="Path to canonical_library.json")
-    parser.add_argument("--style", choices=("gbt7714", "apa7", "ieee", "bibtex"), default="gbt7714")
+    parser.add_argument("--style", choices=("gbt7714", "apa7", "ieee", "bibtex", "ris"), default="gbt7714")
     parser.add_argument("--out", required=True, help="Output formatted bibliography file")
     args = parser.parse_args()
 

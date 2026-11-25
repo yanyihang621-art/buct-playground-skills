@@ -1,36 +1,13 @@
 {
-  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test schema, not an undisclosed benchmark output.",
-  "schema_version": "writing-04-references-result/v1",
-  "challenge_id": "product-arena-03-429cc14d",
-  "case_id": "example_writing_04_references_01",
+  "_example_notice": "Illustrative excerpt. Run the tutorial for the full generated result and evidence.",
+  "case_id": "tutorial",
   "status": "completed",
-  "style": "gbt7714",
-  "summary": "Merged 5 raw records into 4 canonical references (1 arXiv-to-published duplicate merged, 0 false merges), synchronized 4 citations cleanly in GB/T 7714-2015.",
+  "style": "ieee",
   "metrics": {
-    "raw_record_count": 5,
-    "canonical_record_count": 4,
-    "merged_duplicate_count": 1,
-    "in_text_citation_count": 4,
-    "bibliography_count": 4,
-    "numbering_continuity": true,
-    "bidirectional_sync": true
+    "claim_source_pairs": 1,
+    "reviewed_claim_source_pairs": 1,
+    "in_text_citation_count": 1,
+    "bibliography_count": 1
   },
-  "artifacts": {
-    "raw_library_json": "/app/work/references/raw_library.json",
-    "canonical_library_json": "/app/work/references/canonical_library.json",
-    "dedup_report_json": "/app/work/references/dedup_report.json",
-    "citation_map_json": "/app/work/references/citation_map.json",
-    "synced_manuscript": "/app/output/synced_manuscript.md",
-    "bibliography_formatted": "/app/output/bibliography_gbt7714.txt",
-    "qa_report_json": "/app/work/references/qa_report.json"
-  },
-  "sources": [],
-  "change_records": [],
-  "uncertainties": [],
-  "verification": {
-    "passed": true,
-    "check_count": 6,
-    "failed_checks": [],
-    "doi_verification_mode": "offline_syntax_only"
-  }
+  "editor_note": "Original citation 7 now appears first and is numbered 1. The supplied abstract supports the count."
 }

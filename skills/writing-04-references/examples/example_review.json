@@ -1,0 +1,17 @@
+{
+  "semantic_reviews": [
+    {
+      "line": 1,
+      "occurrence_index": 1,
+      "cite_key": "Tutorial2024",
+      "claim_quote": "The tutorial compared three calibration settings",
+      "verdict": "supported",
+      "source_field": "abstract",
+      "source_quote": "We compared three calibration settings",
+      "reason": "The supplied abstract identifies three settings and attributes the comparison to this teaching dataset."
+    }
+  ],
+  "contract_values": {
+    "editor_note": "Original citation 7 now appears first and is numbered 1. The supplied abstract supports the count."
+  }
+}

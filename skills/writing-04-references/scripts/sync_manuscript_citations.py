@@ -1,241 +1,270 @@
 #!/usr/bin/env python3
-"""Insert claim-level citations, renumber sequentially, and synchronize bibliography."""
-
+"""Resolve original citation markers, then number by first appearance in the edited manuscript."""
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
-import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import re
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+from format_references import apa_year_labels, format_library
+from io_utils import first_author_surname, normalize_title, write_json_atomic, write_text_lf
 
-from format_references import format_library
-from io_utils import write_json_atomic, write_text_lf
-
-REF_SECTION_RE = re.compile(
-    r"^(?:#{1,3}\s*(?:References?|参考文献|Bibliography)|\\begin\{thebibliography\}|\\bibliography\{)",
-    re.IGNORECASE | re.MULTILINE,
+HEADING = re.compile(r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\d+(?:\.\d+)*[.、]?[ \t]+)?(?:references?(?: cited)?|bibliography|引用文献|参考文献(?:\s*[(（]references[)）])?)[:：]?[ \t]*$")
+ENTRY = re.compile(r"(?m)^[ \t]*(?:\[(\d+)\]|(\d+)[.)、])[ \t]*(\S.*)$")
+TEX_BIB = re.compile(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}|\\bibliography\{[^}]+\}", re.S)
+NUMERIC = r"\d+(?:\s*[-–—,，;；]\s*\d+)*"
+AUTHOR = r"(?:[A-ZÀ-Þ][\w'’\-]+(?:[ \t]+(?:et[ \t]+al\.?|and[ \t]+[\w'’\-]+|&[ \t]+[\w'’\-]+))?|[\u3400-\u9fff]{2,8}(?:等)?)"
+AY_ITEM = rf"{AUTHOR}\s*[,，]?\s*(?:19|20)\d{{2}}[a-z]?"
+MARKER = re.compile(
+    r"(?P<literal>" + r"\x60{3}[\s\S]*?\x60{3}|\x60[^\n\x60]+\x60|\$\$[\s\S]*?\$\$|\$[^\n$]+\$|\\\[[\s\S]*?\\\])"
+    r"|(?P<key>\[(?:@|CITE:)[^\]\n]+\])"
+    r"|(?P<tex>\\(?:cite(?:p|t|alp|author|year)?|parencite|textcite|autocite)\*?(?:\[[^]\n]*\]){0,2}\{(?P<ids>[^}\n]+)\})"
+    rf"|(?P<super><sup>\s*(?:\[(?P<sup_br>{NUMERIC})\]|(?P<sup_num>{NUMERIC}))\s*</sup>)"
+    rf"|(?P<number>(?<![\w\\])\[(?P<numbers>{NUMERIC})\](?!\s*\())"
+    rf"|(?P<attached>(?<=[\w])\[(?P<attached_numbers>{NUMERIC})\](?!\s*\())"
+    rf"|(?P<author>[(（](?P<names>{AY_ITEM}(?:\s*[;；]\s*{AY_ITEM})*)[)）])"
 )
-CITE_TAG_RE = re.compile(
-    r"\[@([A-Za-z0-9_:\-.;,\s@]+?)\]|\[CITE:([A-Za-z0-9_:\-.;,\s]+?)\]|\\cite[pt]?\{([^}]+)\}"
-)
+DOI = re.compile(r"10\.\d{4,9}/[^\s<>]+", re.I)
 
 
-def _compress_numeric_list(nums: List[int]) -> str:
-    if not nums:
-        return ""
-    uniq = sorted(set(nums))
-    ranges: List[str] = []
-    start = prev = uniq[0]
-    for n in uniq[1:]:
-        if n == prev + 1:
-            prev = n
+def compressed(numbers):
+    runs = []
+    for n in sorted(set(numbers)):
+        if runs and n == runs[-1][-1] + 1:
+            runs[-1].append(n)
         else:
-            ranges.append(f"{start}" if start == prev else (f"{start},{prev}" if prev == start + 1 else f"{start}–{prev}"))
-            start = prev = n
-    ranges.append(f"{start}" if start == prev else (f"{start},{prev}" if prev == start + 1 else f"{start}–{prev}"))
-    return "[" + ",".join(ranges) + "]"
+            runs.append([n])
+    return "[" + ",".join(f"{r[0]}–{r[-1]}" if len(r) >= 3 else ",".join(map(str, r)) for r in runs) + "]"
 
 
-def _format_author_year_inline(recs: List[Dict[str, Any]]) -> str:
-    parts: List[str] = []
-    for r in recs:
-        auths = r.get("authors", [])
-        yr = r.get("year") or "n.d."
-        if not auths:
-            who = "Anonymous"
-        elif len(auths) == 1:
-            who = auths[0].split(",")[0].split()[-1]
-        elif len(auths) == 2:
-            a1 = auths[0].split(",")[0].split()[-1]
-            a2 = auths[1].split(",")[0].split()[-1]
-            who = f"{a1} & {a2}"
-        else:
-            a1 = auths[0].split(",")[0].split()[-1]
-            who = f"{a1} et al."
-        parts.append(f"{who}, {yr}")
-    return "(" + "; ".join(parts) + ")"
+def split_original(text):
+    heading = HEADING.search(text)
+    if not heading:
+        return text, ""
+    suffix = text[heading.end():]
+    next_heading = re.search(r"(?im)^(?:#{1,6}\s+\S|(?:appendix\b|附录|致谢|acknowledg(?:e)?ments\b).*$)", suffix)
+    end = heading.end() + next_heading.start() if next_heading else len(text)
+    return text[:heading.start()] + text[end:], text[heading.start():end]
 
 
-def _extract_sentence_context(text: str, pos: int) -> str:
-    left = max(text.rfind("\n", 0, pos), text.rfind(". ", 0, pos), text.rfind("。", 0, pos))
-    right_candidates = [idx for idx in (text.find("\n", pos), text.find(". ", pos), text.find("。", pos)) if idx != -1]
-    right = min(right_candidates) + 1 if right_candidates else len(text)
-    return text[max(0, left + 1) : right].strip()
+def original_numbers(section, records):
+    candidates = defaultdict(set)
+    rows = list(ENTRY.finditer(section))
+    for idx, match in enumerate(rows):
+        entry = section[match.start():rows[idx + 1].start() if idx + 1 < len(rows) else len(section)]
+        dois = {s.lower().rstrip(".,;，。") for s in DOI.findall(entry)}
+        normalized = " " + normalize_title(entry) + " "
+        matches = [r for r in records if r.get("doi") and r["doi"].lower() in dois]
+        if not dois:
+            matches = [r for r in records if len(normalize_title(r.get("title"))) >= 4 and
+                       " " + normalize_title(r["title"]) + " " in normalized]
+        number = match.group(1) or match.group(2)
+        candidates[number].add(matches[0]["cite_key"] if len(matches) == 1 else None)
+    return {number: next(iter(keys)) for number, keys in candidates.items() if len(keys) == 1 and None not in keys}
 
 
-def _apply_claim_insertions(body: str, insert_claims: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-    """Insert [@key] directly at the target claim clause rather than paragraph end."""
-    logs: List[Dict[str, Any]] = []
-    updated = body
-    for item in insert_claims:
-        phrase = str(item.get("target_phrase", "")).strip()
-        keys = [str(k).strip() for k in item.get("cite_keys", []) if str(k).strip()]
-        if not phrase or not keys:
+def expand_numbers(raw):
+    numbers = []
+    for group in re.split(r"[,，;；]", raw):
+        ends = [int(n.strip()) for n in re.split(r"[-–—]", group)]
+        if ends[-1] < ends[0] or ends[-1] - ends[0] > 250:
+            return []
+        numbers.extend(str(i) for i in range(ends[0], ends[-1] + 1))
+    return numbers
+
+
+def apply_edits(text, edits, log, issues):
+    """Anchored edits must identify one source span. Ambiguous spans stay visible."""
+    for edit in edits:
+        if not isinstance(edit, dict):
+            issues.append({"reason": "invalid_edit"})
             continue
-        idx = updated.find(phrase)
-        if idx == -1:
-            logs.append({"action": "claim_insert_missed", "target_phrase": phrase, "cite_keys": keys})
+        phrase = edit.get("target_phrase")
+        keys = edit.get("cite_keys")
+        if not isinstance(phrase, str) or not phrase.strip() or not isinstance(keys, list) or not keys:
+            issues.append({"reason": "invalid_edit", "target_phrase": phrase})
             continue
-        insert_pos = idx + len(phrase)
-        tag = " " + "[" + "; ".join(f"@{k}" for k in keys) + "]"
-        # Avoid duplicate insertion if already immediately followed by citation tag
-        after = updated[insert_pos : insert_pos + 32]
-        if not re.match(r"^\s*\[(?:@|\d)", after):
-            updated = updated[:insert_pos] + tag + updated[insert_pos:]
-            logs.append(
-                {
-                    "action": "claim_inserted",
-                    "target_phrase": phrase,
-                    "inserted_tag": tag.strip(),
-                    "line": updated.count("\n", 0, insert_pos) + 1,
-                }
-            )
-    return updated, logs
+        matches = [m for m in re.finditer(re.escape(phrase), text)
+                   if edit.get("line") is None or text.count("\n", 0, m.start()) + 1 == edit["line"]]
+        if len(matches) != 1:
+            issues.append({"reason": "nonunique_or_missing_anchor", "target_phrase": phrase, "matches": len(matches)})
+            continue
+        tag = "[" + "; ".join("@" + str(k) for k in keys) + "]"
+        m = matches[0]
+        replacement = tag if edit.get("replace_marker") else phrase + " " + tag
+        if not edit.get("replace_marker") and re.match(r"\s*(?:\[(?:@|CITE:)|\\cite)", text[m.end():]):
+            issues.append({"reason": "existing_marker_at_insertion", "target_phrase": phrase})
+            continue
+        text = text[:m.start()] + replacement + text[m.end():]
+        log.append({"action": "marker_replaced" if edit.get("replace_marker") else "claim_inserted",
+                    "from": phrase, "to": replacement, "line": text.count("\n", 0, m.start()) + 1})
+    return text
 
 
-def sync_manuscript(
-    manuscript_text: str,
-    canonical_library: Dict[str, Any],
-    *,
-    style: str = "gbt7714",
-    is_latex: bool = False,
-    insert_claims: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """Synchronize in-text citations, numbers/author-year labels, and bibliography section."""
+def author_key(item, records):
+    yr = re.search(r"((?:19|20)\d{2})([a-z]?)$", item)
+    surname = re.split(r"\s+(?:et al\.?|and|&)|\s*[,，]", item[:yr.start()].strip().rstrip(",，").removesuffix("等"), maxsplit=1)[0]
+    candidates = [r for r in records if first_author_surname(r["authors"]) == surname.strip().casefold()
+                  and str(r.get("year")) == yr[1]]
+    # Original a/b suffixes belong to the source bibliography and must not be inferred.
+    return candidates[0]["cite_key"] if len(candidates) == 1 and not yr[2] else None
+
+
+def author_label(rec, labels):
+    names = [(a.split(",", 1)[0] if "," in a else a.split()[-1]) for a in rec["authors"] if a.strip()]
+    name = "Anonymous" if not names else names[0]
+    if len(names) == 2:
+        name = " & ".join(names)
+    if len(names) > 2:
+        name += " et al."
+    return name + ", " + labels[rec["cite_key"]]
+
+
+def context_at(body, start, end):
+    left = list(re.finditer(r"\n|[。！？]|(?<=[a-z0-9])\.(?=\s+[A-Z])", body[:start]))
+    right = re.search(r"\n|[。！？]|(?<=[a-z0-9\]])\.(?=\s|$)", body[end:])
+    return body[left[-1].end() if left else 0:end + right.end() if right else len(body)].strip()
+
+
+def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_latex=False,
+                    insert_claims=None, original_number_map=None, text_edits=None, non_citations=None):
+    manuscript_text = manuscript_text.replace("\r\n", "\n").replace("\r", "\n")
     records = canonical_library.get("records", [])
-    alias_to_rec: Dict[str, Dict[str, Any]] = {}
-    for rec in records:
-        alias_to_rec[rec["cite_key"]] = rec
-        for al in rec.get("aliases", []):
-            alias_to_rec[al] = rec
-
-    m_sec = REF_SECTION_RE.search(manuscript_text)
-    body = manuscript_text[: m_sec.start()].rstrip() if m_sec else manuscript_text.rstrip()
-
-    change_log: List[Dict[str, Any]] = []
-    if insert_claims:
-        body, ins_logs = _apply_claim_insertions(body, insert_claims)
-        change_log.extend(ins_logs)
-
-    cited_order: List[str] = []
-    key_to_num: Dict[str, int] = {}
-    unresolved_keys: List[Dict[str, Any]] = []
-    in_text_occurrences: List[Dict[str, Any]] = []
-
-    def _split_keys(raw: str) -> List[str]:
-        parts = re.split(r"[;,]\s*", raw.replace("@", "").strip())
-        return [p.strip() for p in parts if p.strip()]
-
-    def _replace_match(m: re.Match[str]) -> str:
-        raw_grp = m.group(1) or m.group(2) or m.group(3) or ""
-        raw_keys = _split_keys(raw_grp)
-        line_no = body.count("\n", 0, m.start()) + 1
-        ctx = _extract_sentence_context(body, m.start())
-
-        resolved_recs: List[Dict[str, Any]] = []
-        nums: List[int] = []
-        canon_keys: List[str] = []
-
-        for rk in raw_keys:
-            rec = alias_to_rec.get(rk)
-            if not rec:
-                unresolved_keys.append({"raw_key": rk, "line": line_no, "context": ctx})
-                return m.group(0)
-            ck = rec["cite_key"]
-            if ck not in key_to_num:
-                cited_order.append(ck)
-                key_to_num[ck] = len(cited_order)
-            resolved_recs.append(rec)
-            nums.append(key_to_num[ck])
-            canon_keys.append(ck)
-
-        if is_latex:
-            replacement = f"\\cite{{{','.join(canon_keys)}}}"
-        elif style.lower() == "apa7":
-            replacement = _format_author_year_inline(resolved_recs)
+    aliases = defaultdict(list)
+    by_key = {r["cite_key"]: r for r in records}
+    for record in records:
+        for alias in set([record["cite_key"], *record.get("aliases", [])]):
+            aliases[alias].append(record["cite_key"])
+    body, old_section = (manuscript_text, "") if is_latex else split_original(manuscript_text)
+    old_map = original_numbers(old_section, records)
+    issues, changes, occurrences = [], [], []
+    for n, key in (original_number_map or {}).items():
+        if str(n) in old_map and old_map[str(n)] != key:
+            issues.append({"reason": "contradictory_number_map", "raw_key": str(n)})
+            del old_map[str(n)]
+        elif isinstance(key, str):
+            old_map[str(n)] = key
+    for edit in text_edits or []:
+        before, after = edit.get("before"), edit.get("after")
+        if not before or not isinstance(after, str) or not edit.get("reason") or body.count(before) != 1:
+            issues.append({"reason": "unanchored_text_edit", "before": before})
+            continue
+        body = body.replace(before, after, 1)
+        changes.append({"action": "reviewed_text_edit", "from": before, "to": after, "reason": edit["reason"],
+                        "source": edit.get("source")})
+    body = apply_edits(body, insert_claims or [], changes, issues)
+    order = {}
+    replacements = []
+    unsafe_number = False
+    protected = {(r.get("line"), r.get("marker"), r.get("context")) for r in (non_citations or []) if r.get("reason")}
+    for marker in MARKER.finditer(body):
+        if marker["literal"]:
+            continue
+        # Markdown link destinations, TeX optional dimensions and code are not citations.
+        line = body.count("\n", 0, marker.start()) + 1
+        context = context_at(body, marker.start(), marker.end())
+        if any(line == ln and marker[0] == token and quote and quote in context for ln, token, quote in protected):
+            continue
+        if marker["key"]:
+            keys = re.split(r"\s*[,;]\s*", re.sub(r"^\[(?:CITE:)?|]$", "", marker[0]).replace("@", ""))
+        elif marker["tex"]:
+            keys = [k.strip() for k in marker["ids"].split(",")]
+        elif marker["author"]:
+            keys = [author_key(x.strip(), records) for x in re.split(r"[;；]", marker["names"])]
         else:
-            replacement = _compress_numeric_list(nums)
+            nums = expand_numbers(marker["numbers"] or marker["attached_numbers"] or marker["sup_br"] or marker["sup_num"])
+            keys = [old_map.get(n) for n in nums]
+        if not keys or any(len(aliases.get(k, [])) != 1 for k in keys):
+            if marker["number"] or marker["attached"] or marker["super"]:
+                unsafe_number = True
+            issues.append({"line": line, "original_tag": marker[0], "reason": "unmapped_or_ambiguous",
+                           "raw_keys": keys, "context": context})
+            continue
+        keys = list(dict.fromkeys(aliases[k][0] for k in keys))
+        for k in keys:
+            order.setdefault(k, len(order) + 1)
+        replacements.append((marker, keys, line, context))
+    cited = [by_key[k] for k in order]
+    labels = apa_year_labels(cited) if style == "apa7" else {}
+    parts, last = [], 0
+    for m, keys, line, context in replacements:
+        nums = [order[k] for k in keys]
+        if is_latex:
+            new = (m[0][:m.start("ids") - m.start()] + ",".join(keys) + "}"
+                   if m["tex"] else "\\cite{" + ",".join(keys) + "}")
+        elif style == "apa7":
+            new = "(" + "; ".join(author_label(by_key[k], labels) for k in sorted(keys, key=lambda k: author_label(by_key[k], labels))) + ")"
+        else:
+            new = compressed(nums)
+            if m["super"]:
+                new = "<sup>" + new + "</sup>"
+        parts.extend([body[last:m.start()], new])
+        last = m.end()
+        occurrences.append({"line": line, "original_tag": m[0], "rendered_tag": new, "cite_keys": keys,
+                            "assigned_numbers": nums, "context_sentence": context})
+        if m[0] != new:
+            changes.append({"action": "citation_synced", "line": line, "from": m[0], "to": new, "keys": keys})
+    edited = "".join(parts) + body[last:]
+    bibliography = format_library(cited, "bibtex" if is_latex else style)
+    if is_latex and cited and not issues:
+        command = r"\bibliography{references_synced}"
+        if re.search(r"\\(?:usepackage(?:\[[^]]*\])?\{biblatex\}|addbibresource\{)", edited):
+            if re.search(r"\\addbibresource\{[^}]+\}", edited):
+                edited = re.sub(r"\\addbibresource\{[^}]+\}", lambda _: r"\addbibresource{references_synced.bib}", edited, count=1)
+            else:
+                edited = edited.replace(r"\begin{document}", "\\addbibresource{references_synced.bib}\n\\begin{document}", 1)
+            command = r"\printbibliography"
+        elif r"\bibliographystyle{" not in edited:
+            command = "\\bibliographystyle{" + ("apalike" if style == "apa7" else "unsrt") + "}\n" + command
+        if TEX_BIB.search(edited):
+            edited = TEX_BIB.sub(lambda _: command, edited, count=1)
+        elif r"\printbibliography" not in edited:
+            at = edited.find(r"\end{document}")
+            at = len(edited) if at < 0 else at
+            edited = edited[:at] + command + "\n" + edited[at:]
+    elif not is_latex and ((old_section and issues) or unsafe_number):
+        # Original numbering cannot safely coexist with newly assigned numbers.
+        edited = manuscript_text
+        changes = [{"action": "review_required", "reason": "original bibliography and body retained together"}]
+        occurrences, cited, order, bibliography = [], [], {}, old_section
+    elif not is_latex and cited:
+        title = "## 参考文献" if re.search(r"[\u3400-\u9fff]", edited) else "## References"
+        edited = edited.rstrip() + "\n\n" + title + "\n\n" + bibliography
+    elif not cited and old_section:
+        edited = manuscript_text
+    if is_latex and occurrences:
+        # Bibliography commands can insert lines into the preamble. Track final positions separately.
+        search_pos = 0
+        for occ in occurrences:
+            found = edited.find(occ["rendered_tag"], search_pos)
+            if found >= 0:
+                occ["edited_line"] = edited.count("\n", 0, found) + 1
+                search_pos = found + len(occ["rendered_tag"])
+    citation_map = {"schema_version": "writing-04-citation-map/v2", "style": style, "is_latex": is_latex,
+                    "cited_count": len(cited), "original_number_map": old_map,
+                    "cited_order": [{"number": n, "cite_key": k, "ref_id": by_key[k]["ref_id"]} for k, n in order.items()],
+                    "in_text_occurrences": occurrences, "unresolved_keys": issues}
+    return {"synced_manuscript": edited, "formatted_bibliography": bibliography, "citation_map": citation_map,
+            "change_log": changes, "cited_records": cited}
 
-        in_text_occurrences.append(
-            {
-                "line": line_no,
-                "original_tag": m.group(0),
-                "rendered_tag": replacement,
-                "cite_keys": canon_keys,
-                "assigned_numbers": nums,
-                "context_sentence": ctx,
-            }
-        )
-        if m.group(0) != replacement:
-            change_log.append(
-                {"action": "citation_synced", "line": line_no, "from": m.group(0), "to": replacement, "keys": canon_keys}
-            )
-        return replacement
 
-    synced_body = CITE_TAG_RE.sub(_replace_match, body)
-    cited_records = [alias_to_rec[ck] for ck in cited_order]
-
-    bib_text = format_library(cited_records, style="bibtex" if is_latex else style)
-    if is_latex:
-        synced_full = synced_body + "\n\n\\bibliography{references_synced}\n"
-    elif style.lower() == "apa7":
-        header = "## 参考文献 (References)"
-        synced_full = synced_body + f"\n\n{header}\n\n" + bib_text
-    else:
-        header = "## 参考文献" if any("\u4e00" <= ch <= "\u9fff" for ch in synced_body) else "## References"
-        synced_full = synced_body + f"\n\n{header}\n\n" + bib_text
-
-    citation_map = {
-        "schema_version": "writing-04-citation-map/v1",
-        "style": style,
-        "is_latex": is_latex,
-        "cited_count": len(cited_records),
-        "cited_order": [{"number": idx + 1, "cite_key": ck, "ref_id": alias_to_rec[ck]["ref_id"]} for idx, ck in enumerate(cited_order)],
-        "in_text_occurrences": in_text_occurrences,
-        "unresolved_keys": unresolved_keys,
-    }
-
-    return {
-        "synced_manuscript": synced_full,
-        "formatted_bibliography": bib_text,
-        "citation_map": citation_map,
-        "change_log": change_log,
-        "cited_records": cited_records,
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync citations and numbered/author-year bibliography in manuscript.")
-    parser.add_argument("--manuscript", required=True, help="Input .md, .tex, or .txt manuscript")
-    parser.add_argument("--lib", required=True, help="Canonical library JSON")
-    parser.add_argument("--style", choices=("gbt7714", "apa7", "ieee"), default="gbt7714")
-    parser.add_argument("--insert-map", default=None, help="Optional JSON file with insert_claims list")
-    parser.add_argument("--out-manuscript", required=True, help="Output edited manuscript path")
-    parser.add_argument("--out-bib", required=True, help="Output formatted bibliography path")
-    parser.add_argument("--out-map", required=True, help="Output citation_map.json path")
-    args = parser.parse_args()
-
-    ms_path = Path(args.manuscript)
-    text = ms_path.read_text(encoding="utf-8", errors="replace")
-    lib = json.loads(Path(args.lib).read_text(encoding="utf-8"))
-    inserts = None
-    if args.insert_map and Path(args.insert_map).exists():
-        raw_ins = json.loads(Path(args.insert_map).read_text(encoding="utf-8"))
-        inserts = raw_ins.get("insert_claims", raw_ins) if isinstance(raw_ins, dict) else raw_ins
-
-    res = sync_manuscript(text, lib, style=args.style, is_latex=(ms_path.suffix.lower() == ".tex"), insert_claims=inserts)
-    write_text_lf(Path(args.out_manuscript), res["synced_manuscript"])
-    write_text_lf(Path(args.out_bib), res["formatted_bibliography"])
-    write_json_atomic(Path(args.out_map), res["citation_map"])
-    print(json.dumps({"cited_count": res["citation_map"]["cited_count"], "unresolved": len(res["citation_map"]["unresolved_keys"])}, ensure_ascii=False))
-    return 0
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    for name in ("manuscript", "lib", "out-manuscript", "out-bib", "out-map"):
+        p.add_argument("--" + name, required=True, type=Path)
+    p.add_argument("--style", default="gbt7714")
+    p.add_argument("--insert-map", type=Path)
+    args = p.parse_args()
+    edits = json.loads(args.insert_map.read_text(encoding="utf-8")) if args.insert_map else []
+    res = sync_manuscript(args.manuscript.read_text(encoding="utf-8"), json.loads(args.lib.read_text(encoding="utf-8")),
+                          style=args.style, is_latex=args.manuscript.suffix == ".tex",
+                          insert_claims=edits.get("insert_claims", []) if isinstance(edits, dict) else edits)
+    write_text_lf(args.out_manuscript, res["synced_manuscript"])
+    write_text_lf(args.out_bib, res["formatted_bibliography"])
+    write_json_atomic(args.out_map, res["citation_map"])
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

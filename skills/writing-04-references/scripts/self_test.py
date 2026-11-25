@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -207,6 +208,14 @@ def _run_negative_qa_tests(r1: Dict[str, Any]) -> Dict[str, bool]:
     c4["in_text_occurrences"][1]["context_sentence"] = "Quantum entanglement in photonic qubits enables fault-tolerant teleportation."
     c4["in_text_occurrences"][1]["cite_keys"] = ["zhang2024_kinetics"]
     q4 = verify_citations(ms, c4, lib, dedup, raw)
+    context = c4["in_text_occurrences"][1]
+    cited = next(r for r in lib["records"] if r["cite_key"] == "zhang2024_kinetics")
+    audit = {"line": context["line"], "cite_key": cited["cite_key"], "claim_quote": "photonic qubits",
+             "source_field": "title", "source_quote": cited["title"], "verdict": "mismatch",
+             "reason": "The cited paper studies methanol reforming, not quantum teleportation."}
+    reviewed = verify_citations(ms, c4, lib, dedup, raw, semantic_reviews=[audit])
+    audit["source_quote"] = "This invented quote is absent."
+    tampered = verify_citations(ms, c4, lib, dedup, raw, semantic_reviews=[audit])
 
     # 5. Unresolved placeholder marker in final text
     q5 = verify_citations(ms + "\n[CITE:todo_fix]", cmap, lib, dedup, raw)
@@ -215,30 +224,22 @@ def _run_negative_qa_tests(r1: Dict[str, Any]) -> Dict[str, bool]:
         "neg_1_numbering_gap_caught": (not q1["passed"]) and (not q1["checks"]["numbering_continuity"]),
         "neg_2_dangling_ref_caught": (not q2["passed"]) and (not q2["checks"]["bidirectional_sync"]),
         "neg_3_fake_doi_caught": (not q3["passed"]) and (not q3["checks"]["metadata_and_doi_validity"]),
-        "neg_4_topic_mismatch_caught": (not q4["passed"]) and (not q4["checks"]["claim_reference_alignment"]),
+        "neg_4a_lexical_warning": q4["checks"]["claim_reference_alignment"] and any(
+            row.get("reason") == "no_lexical_overlap_review" for row in q4["review_queue"]),
+        "neg_4b_reviewed_mismatch": any(v.get("reason") == "reviewed_mismatch" for v in reviewed["violations"]),
+        "neg_4c_unlocated_quote": any(v.get("reason") == "unsupported_review_or_unlocated_quote" for v in tampered["violations"]),
         "neg_5_placeholder_leak_caught": (not q5["passed"]) and (not q5["checks"]["placeholder_and_honesty"]),
     }
 
 
-def _compare_baseline(r1: Dict[str, Any]) -> Dict[str, Any]:
-    m = r1["qa_report"]["metrics"]
-    return {
-        "naive_baseline": {
-            "explainable_dedup": False,
-            "same_author_anti_false_merge": False,
-            "claim_level_insertion": False,
-            "numbering_continuity": False,
-            "bidirectional_sync": False,
-        },
-        "skill_pipeline": {
-            "explainable_dedup": m["merged_duplicate_count"] == 1,
-            "same_author_anti_false_merge": len(r1["dedup_report"]["anti_false_merge_guards"]) >= 1,
-            "claim_level_insertion": True,
-            "numbering_continuity": m["numbering_continuity"],
-            "bidirectional_sync": m["bidirectional_sync"],
-        },
-        "skill_wins": m["merged_duplicate_count"] == 1 and m["numbering_continuity"] and m["bidirectional_sync"],
-    }
+def _compare_baseline(r1, input_file):
+    """Observe citation markers in the actual input and the output of this fixture."""
+    tag = re.compile(r"\[(?:@|CITE:)[^\]]+\]")
+    before = len(tag.findall(input_file.read_text(encoding="utf-8")))
+    after = len(tag.findall(r1["sync_res"]["synced_manuscript"]))
+    return {"comparison": "Original input vs edited output on the same local fixture",
+            "input_keyed_tags": before, "output_keyed_tags": after,
+            "observed_change": before > 0 and after == 0}
 
 
 def main() -> int:
@@ -252,7 +253,7 @@ def main() -> int:
     r1 = run_reference_pipeline(root / "r1" / "input", root / "r1" / "work", root / "r1" / "output", case_path=c1)
     neg = _run_negative_qa_tests(r1)
     r1_ok = (
-        r1["result"]["status"] == "completed"
+        r1["qa_report"]["passed"] and r1["result"]["verification"]["pending_claim_source_pairs"] == 5
         and r1["dedup_report"]["raw_record_count"] == 5
         and r1["dedup_report"]["canonical_record_count"] == 4
         and len(r1["dedup_report"]["anti_false_merge_guards"]) >= 1
@@ -262,11 +263,11 @@ def main() -> int:
 
     c2 = _setup_r2_latex_apa(root / "r2" / "input")
     r2 = run_reference_pipeline(root / "r2" / "input", root / "r2" / "work", root / "r2" / "output", case_path=c2)
-    r2_ok = r2["result"]["status"] == "completed" and r"\\cite{smith2022_dft}" not in "raw" and "\\cite{smith2022_dft}" in r2["sync_res"]["synced_manuscript"]
+    r2_ok = r2["qa_report"]["passed"] and "\\cite{smith2022_dft}" in r2["sync_res"]["synced_manuscript"]
 
     c3 = _setup_r3_reorder_sync(root / "r3" / "input")
     r3 = run_reference_pipeline(root / "r3" / "input", root / "r3" / "work", root / "r3" / "output", case_path=c3)
-    r3_ok = r3["result"]["status"] == "completed" and "[1–3]" in r3["sync_res"]["synced_manuscript"]
+    r3_ok = r3["qa_report"]["passed"] and "[1–3]" in r3["sync_res"]["synced_manuscript"]
 
     c4 = _setup_r4_missing_fields(root / "r4" / "input")
     r4 = run_reference_pipeline(root / "r4" / "input", root / "r4" / "work", root / "r4" / "output", case_path=c4)
@@ -286,9 +287,21 @@ def main() -> int:
             "r4_missing_fields_honest_partial": {"passed": r4_ok, "status": r4["result"]["status"], "uncertainties": len(r4["result"]["uncertainties"])},
         },
     }
+    example = SCRIPT_DIR.parent / "examples"
+    tutorial = root / "tutorial"
+    case_path = tutorial / "input" / "case.json"
+    case = json.loads((example / "example_case.json").read_text(encoding="utf-8"))
+    write_json_atomic(case_path, case)
+    review = json.loads((example / "example_review.json").read_text(encoding="utf-8"))
+    final = run_reference_pipeline(case_path.parent, tutorial / "work", tutorial / "output", review=review)["result"]
+    valid = (final["status"] == "completed" and final["metrics"]["reviewed_claim_source_pairs"] == 1
+             and final["claim_evidence"][0]["quote_located"] and "[1]" in final["revised_manuscript"]
+             and final["editor_note"] == review["contract_values"]["editor_note"])
+    summary["suites"]["tutorial_reviewed_and_contract_filled"] = {"passed": valid}
+    summary["all_passed"] &= valid
     if args.compare_baseline:
-        summary["baseline_comparison"] = _compare_baseline(r1)
-        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["skill_wins"]
+        summary["baseline_comparison"] = _compare_baseline(r1, c1.parent / "draft.md")
+        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["observed_change"]
 
     write_json_atomic(root / "self_test_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

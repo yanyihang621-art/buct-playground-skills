@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional
 DOI_URL_PREFIX_RE = re.compile(r"^https?://(?:dx\.)?doi\.org/", re.IGNORECASE)
 DOI_SYNTAX_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Za-z0-9]+$")
 FAKE_DOI_PREFIXES = ("10.0000/", "10.9999/", "10.1234/fake")
-ARXIV_RE = re.compile(r"(?:arXiv[:\s]*)?(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE)
+ARXIV_ID_PATTERN = r"(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z-]+)?/\d{7})(?:v\d+)?"
+ARXIV_RE = re.compile(r"(?:\barXiv\s*:\s*|https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/)("
+                      + ARXIV_ID_PATTERN + r")(?=\.pdf\b|[?#\s),;]|$)", re.I)
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
@@ -44,6 +46,7 @@ def normalize_doi(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     s = str(raw).strip().rstrip(".,;")
+    s = re.sub(r"^doi\s*:\s*", "", s, flags=re.I)
     s = DOI_URL_PREFIX_RE.sub("", s).strip()
     return s or None
 
@@ -63,7 +66,8 @@ def is_valid_doi_syntax(doi: Optional[str]) -> bool:
 def extract_arxiv_id(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
-    m = ARXIV_RE.search(str(raw))
+    text = str(raw).strip()
+    m = re.fullmatch("(" + ARXIV_ID_PATTERN + ")", text, re.I) or ARXIV_RE.search(text)
     return m.group(1).lower() if m else None
 
 
@@ -109,7 +113,7 @@ def detect_language(text: str) -> str:
 def parse_year(raw: Any) -> Optional[int]:
     if raw is None:
         return None
-    m = re.search(r"\b(19\d{2}|20\d{2})\b", str(raw))
+    m = re.search(r"(?<!\d)((?:1[5-9]|20)\d{2})(?!\d)", str(raw))
     return int(m.group(1)) if m else None
 
 

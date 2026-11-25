@@ -1,14 +1,39 @@
 {
-  "case_id": "example_writing_04_references_01",
-  "task_type": "reference_and_citation_management",
-  "style": "gbt7714",
-  "manuscript_file": "draft.md",
-  "bib_files": ["library.bib", "export.ris"],
-  "insert_claims": [
+  "case_id": "tutorial",
+  "notice": "Synthetic teaching example. All records and measurements below are illustrative.",
+  "style": "IEEE",
+  "manuscript": "The tutorial compared three calibration settings [7].",
+  "bibliography": [
     {
-      "target_phrase": "Cu-ZnO-Al2O3 catalysts exhibit high CO2 conversion selectivity",
-      "cite_keys": ["zhang2024_cu"]
+      "cite_key": "Tutorial2024",
+      "original_number": 7,
+      "authors": [
+        "Mira Example"
+      ],
+      "title": "Calibration settings in a tutorial dataset",
+      "year": 2024,
+      "venue": "Illustrative Methods Notes",
+      "url": "https://example.org/tutorial",
+      "abstract": "We compared three calibration settings using the same teaching dataset."
     }
   ],
-  "instructions": "Deduplicate multi-source references with explainable merge criteria, insert missing citations at claim clauses, renumber sequentially, format in GB/T 7714-2015, and verify bidirectional consistency."
+  "output_contract": {
+    "type": "object",
+    "properties": {
+      "revised_manuscript": {
+        "type": "string"
+      },
+      "claim_evidence": {
+        "type": "array"
+      },
+      "editor_note": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "revised_manuscript",
+      "claim_evidence",
+      "editor_note"
+    ]
+  }
 }

@@ -1,25 +1,45 @@
-# writing-04-references (`写作04｜参考文献与引用管理`)
+# 参考文献与引用管理
 
-纯 Python（不依赖 `bibtexparser`）学术文献引用与参考文献管理 Skill，覆盖 **多格式文献库解析、可解释去重、论断级精准插引、顺序编码/著者-出版年重排与双向同步、6 项确定性引用质检**。
+给出稿件和文献库，生成可编辑的引文修订稿、按目标体例排好的书目，以及逐句可复查的证据。运行入口为 `scripts/build_reference_result.py`。执行案例的 Agent 负责阅读证据、选择引用、判断论断的支持程度和完成案例特定交付。
 
-## 支持格式与规范
+## 在本地运行教学案例
 
-- **输入文献库**：BibTeX (`.bib`)、RIS (`.ris`)、EndNote Tagged / CNKI (`.enw`)、JSON、纯文本列表。
-- **目标引用样式**：`GB/T 7714-2015`（含中英文混排 `等`/`et al`、`[J]`/`[C]`/`[M]`/`[D]`/`[EB/OL]`）、`APA 7th`、`IEEE`、`BibTeX`。
-- **稿件格式**：Markdown (`.md`)、LaTeX (`.tex`)、纯文本 (`.txt`)。
+以下命令使用 Python 3.10+。从本 Skill 根目录运行，示例完全使用合成教学材料。
 
-## 本地自测
-
-```powershell
-$env:PYTHONDONTWRITEBYTECODE = "1"
-python skills/writing-04-references/scripts/self_test.py --out-dir ..\local_test_outputs\writing-04 --compare-baseline
+```sh
+mkdir -p demo/input
+cp examples/example_case.json demo/input/case.json
+python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo/work --output-dir demo/output
+python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo/work --output-dir demo/output --review examples/example_review.json
 ```
 
-## 6 项质检门控 (`qa_report.json`)
+旧编号 `[7]` 在改稿中成为首引 `[1]`。打开 `demo/output/evidence/claim_evidence.json` 可核对审阅前后的区别：第一遍只定位，第二遍将论断与教学摘要中的原句配对，记录理由并填入案例要求的 `editor_note`。输出节选见 `examples/example_result.json`。在 PowerShell 中可用 `New-Item` 创建目录、`Copy-Item` 复制文件，解释器命令可用 `python`。
 
-1. `numbering_continuity`：文内引用序号 `1..N` 严格连续无跳号。
-2. `bidirectional_sync`：正文引用与文末参考文献 100% 双向匹配（零悬空、零冗余）。
-3. `dedup_integrity`：规范库无残留重复 DOI 或同年份高相似重复条目，且防同名同作者不同论文误并。
-4. `metadata_and_doi_validity`：检出缺失关键字段与伪造/语法错误 DOI（`10.0000/...` 等）。
-5. `claim_reference_alignment`：正文引文句与所引文献标题/关键词/摘要主题一致性核查。
-6. `placeholder_and_honesty`：禁止未解析 `[CITE:...]` / `[@...]` 与占位符残留，诚实标注 `offline_syntax_only` 与 `uncertainties`。
+## 输入与依赖
+
+- 支持多层目录、内联 JSON 或显式路径。稿件可为 Markdown、TXT、TeX、PDF 或 DOCX。文献库包括 BibTeX、RIS、EndNote、CSL-JSON、CNKI 常见导出及带表头的 CSV/TSV。输出契约、自测示例与任务说明不作为稿件。
+- 核心文本流程使用 Python 标准库。PDF 读图文层使用 PyMuPDF、Poppler 或 pypdf；扫描稿需结合环境 OCR 校读。生成 Word 时优先保留源 DOCX 的表格和 run 样式；完整预览依赖 LibreOffice 或 Windows 上的 Word。用 PyMuPDF 或 Poppler 导出首页图。
+- 内置 GB/T 7714 顺序制、IEEE、APA 7 的常用字段映射以及 BibTeX。特殊期刊规定、叙述式引文、有定位页码的复杂引注、异体作者名和 Word 文献域需要逐项审阅。在线 Crossref 查验为显式选项，登记元数据与论断内容分别核查。
+
+## 文件与复核
+
+| 路径 | 如何使用 |
+| --- | --- |
+| `synced_manuscript.md` 或 `.tex`，可选 `.docx` | 检查正文、表注、附录、模板格式与文末表。Office 预览用于视觉检查 |
+| `bibliography_*.txt` 或 `.bib`、`references_synced.bib` | 对照正文首次引用顺序或 APA 的作者排序，核查卷、期、页、DOI |
+| `evidence/material_inventory.json`、`raw_library.json`、`canonical_library.json` | 核查材料角色、记录来源、旧号与规范键 |
+| `evidence/dedup_report.json`、`citation_map.json` | 查合并依据、别名、被拒绝的歧义匹配、每处原标记及改后标记 |
+| `evidence/claim_evidence.json`、`qa_report.json` | 按行号和引用点检查论断、原句、文献身份、证据级别和待确认项 |
+| `evidence/manuscript.diff`、`change_log.json` | 逐项复查变更；同输入和同一份审阅表可以重跑 |
+| `result.json` | 案例 ID、状态、指标、产物路径、来源、变更和原始输出契约中的字段 |
+
+第一遍的 `partial` 可用来继续工作。找不到原编号、同一锚点出现数次或引用来源有冲突时，核对原件并在 review 中补足定位。材料不全、字段缺失、无法渲染和无法核实的结论分别记录。review 字段说明和容器调用见 `SKILL.md`。
+
+## 复现测试
+
+```sh
+python3 scripts/self_test.py --out-dir /tmp/writing04-self --compare-baseline
+python3 scripts/regression_cases.py --help
+```
+
+自测覆盖去重、连续编号、未解析引文、元数据问题、引文证据错配和逐字引文的真实性。版本对照工具读取同一组输入，分别调用两个版本的真实入口，再检查实际交付文件。公共样例只用于工程验证；正式的基础 Agent 对照、隐藏案例和分数由平台产生。维护时将新增样式或输入格式加入可重跑的测试。
