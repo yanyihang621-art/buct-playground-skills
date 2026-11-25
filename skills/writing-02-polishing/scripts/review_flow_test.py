@@ -46,6 +46,10 @@ def run(root):
     partial = build("bad_translation", inline, bad_translation)
     checks["translation_numeric_drift_detected"] = partial["status"] == "partial" and any(
         u["code"] == "translation_numeric_values" for u in partial["uncertainties"])
+    bad_translation["sentences"][0]["translation"] = edits["sentences"][0]["translation"].replace("8 Hz", "8 千赫兹")
+    partial = build("bad_unit", inline, bad_translation)
+    checks["translation_wrong_unit_withheld"] = (partial["status"] == "partial" and len(partial["bilingual_alignment"]) == 1
+        and any(u["code"] == "translation_measurement_units" for u in partial["uncertainties"]))
     closed = dict(inline, output_contract={"type": "object", "additionalProperties": False, "properties": {
         "case_id": {"type": "string"}, "polished_manuscript": {"type": "string"},
         "author_query": {"type": "string"}, "review_decision": {"type": "object",
@@ -57,6 +61,44 @@ def run(root):
     checks["exact_nested_contract"] = result["status"] == "completed" and set(saved) == set(closed["output_contract"]["properties"])
     custom["contract_values"]["review_decision"] = {"language": 4}
     checks["wrong_nested_type_detected"] = build("bad_contract", closed, custom)["status"] == "partial"
+
+    # Keep the numerical order unchanged while reversing only the paired subject names.
+    for name, original, wrong in [
+        ("groups_en", "Control and treatment groups reached 12% and 19%, respectively.",
+         "Treatment and control groups reached 12% and 19%, respectively."),
+        ("groups_zh", "对照组与处理组分别达到 12% 和 19%。", "处理组与对照组分别达到 12% 和 19%。"),
+        ("acronym", "We used differential scanning calorimetry (DSC).",
+         "We used dynamic scanning calorimetry (DSC)."),
+    ]:
+        bad = {"sentences": [{"sent_id": "sent_0001", "source_text": original, "polished_text": wrong,
+                              "edit_type": "terminology", "rationale": "Reverse the group order or substitute the method name."}]}
+        result = build(name, {"case_id": name, "draft_text": original}, bad)
+        checks[name + "_rollback"] = result["status"] == "partial" and result["polished_text"] == original
+    source = "The means for control and treatment groups was 12% and 19%, respectively."
+    good = {"sentences": [{"sent_id": "sent_0001", "source_text": source, "polished_text": source.replace(" was ", " were "),
+                           "edit_type": "agreement", "rationale": "Use a plural verb with means and retain both group estimates."}]}
+    accepted = build("matched_groups", {"case_id": "matched_groups", "draft_text": source}, good)
+    checks["group_order_safe_edit_accepted"] = accepted["status"] == "completed" and accepted["metrics"]["edited_count"] == 1
+
+    base = root / "long_review"
+    config = {"case_id": "long_review", "draft_text": "\n\n".join(
+        f"The calibration record for run {i} includes the raw spectrum." for i in range(1, 121))}
+    write_json_atomic(base / "input/case.json", config)
+    prepared = run_polishing_pipeline(base / "input", base / "work", base / "output", prepare_only=True)
+    index = json.loads(Path(prepared["prepared"]["guarded_sentences.json"]).read_text(encoding="utf-8"))
+    verbose = {"sentences": [{"sent_id": r["sent_id"], "source_text": r["source_text"], "polished_text": r["source_text"],
+                              "edit_type": "unchanged", "rationale": "Reviewed and retained."} for r in index["sentences"]]}
+    compact = {"source_sha256": prepared["source_sha256"], "reviewed_unchanged": [r["sent_id"] for r in index["sentences"]]}
+    a = build("long_review", config, verbose)
+    b = build("long_review", config, compact)
+    checks["compact_review_matches_full"] = (a["status"] == b["status"] == "completed" and a["polished_text"] ==
+                                              b["polished_text"] == config["draft_text"] and b["metrics"]["reviewed_prose_count"] == 120)
+    sizes = {k: len(json.dumps(v, separators=(",", ":")).encode()) for k, v in (("explicit_bytes", verbose), ("compact_bytes", compact))}
+    write_json_atomic(base / "manifest_size_comparison.json", sizes)
+    checks["compact_smaller_on_same_input"] = sizes["compact_bytes"] < sizes["explicit_bytes"]
+    stale = dict(config, draft_text=config["draft_text"].replace("raw spectrum", "raw signal", 1))
+    b = build("long_review", stale, compact)
+    checks["stale_review_rejected"] = b["status"] != "completed" and b["verification"]["passed"] is False
 
     # The demo intentionally uses mixed body/table locations and a separate reference.
     from docx import Document

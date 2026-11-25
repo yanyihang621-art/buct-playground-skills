@@ -23,6 +23,8 @@ python3 scripts/build_polish_result.py --input-dir examples --case examples/exam
 
 ## 验证
 
+长稿可按 `work/polishing/review_packet.jsonl` 的来源位置分批阅读，逐句确认后，把无需改动的 ID 放入 `reviewed_unchanged` 列表，并附上准备阶段返回的 `source_sha256`。正文、体裁、案例约束或术语发生变化后，旧确认不能直接套用。需改动或翻译的句子仍提供完整记录。120 句合成回归另存两种输入格式的实际字节数，两者需生成相同稿件、通过相同核验。
+
 ```sh
 python3 scripts/self_test.py --out-dir work/local-regression --compare-baseline
 python3 scripts/review_flow_test.py --out-dir work/editor-regression

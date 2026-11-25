@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,7 +30,8 @@ def edit_rows(payload):
         return [
             {**(v if isinstance(v, dict) else {"polished_text": v}), "sent_id": k}
             for k, v in raw.items()
-            if k not in {"contract_values", "uncertainties", "bilingual_required", "deliverables", "register"}
+            if k not in {"contract_values", "uncertainties", "bilingual_required", "deliverables", "register",
+                         "case_id", "source_sha256", "reviewed_unchanged"}
         ]
     raise ValueError("edits must be a list of sentence records or a map keyed by sent_id")
 
@@ -37,7 +39,21 @@ def edit_rows(payload):
 def checked_edits(payload, guarded):
     original = {s["sent_id"]: s for s in guarded["sentences"]}
     accepted, issues, duplicates = {}, [], set()
-    for index, row in enumerate(edit_rows(payload)):
+    rows = list(edit_rows(payload))
+    if isinstance(payload, dict) and "reviewed_unchanged" in payload:
+        if payload.get("source_sha256") != guarded["source_sha256"]:
+            raise ValueError("Compact decisions require the prepared source_sha256; prepare and review the current document.")
+        unchanged = payload["reviewed_unchanged"]
+        if not isinstance(unchanged, list) or not all(isinstance(sid, str) for sid in unchanged):
+            raise ValueError("reviewed_unchanged must list the individual reviewed IDs.")
+        for sid in unchanged:
+            source = original.get(sid)
+            if source is None:
+                issues.append({"code": "unknown_sentence", "sent_id": sid})
+                continue
+            rows.append({"sent_id": sid, "source_text": source["source_text"], "polished_text": source["source_text"],
+                         "edit_type": "unchanged", "rationale": "Editor reviewed the sentence and retained its wording."})
+    for index, row in enumerate(rows):
         if not isinstance(row, dict) or not isinstance(row.get("sent_id"), str):
             issues.append({"code": "invalid_edit", "row": index})
             continue
@@ -54,6 +70,8 @@ def checked_edits(payload, guarded):
             issues.append({"code": "source_mismatch", "sent_id": sid})
         elif not isinstance(row.get("polished_text"), str) or not row["polished_text"].strip():
             issues.append({"code": "empty_edit", "sent_id": sid})
+        elif src["role"] in ("structural", "verbatim_block") and row["polished_text"] != src["source_text"]:
+            issues.append({"code": "protected_structure_edit", "sent_id": sid})
         elif row["polished_text"] != src["source_text"] and (
             not str(row.get("edit_type") or "").strip() or not str(row.get("rationale") or "").strip()
         ):
@@ -146,14 +164,19 @@ def run_polishing_pipeline(
     guarded = segment_and_guard_manuscript(text, is_latex=materials["is_latex"])
     for s in guarded["sentences"]:
         s["source_location"] = materials["line_map"][s["line"] - 1]
+    packet = "".join(json.dumps([s["sent_id"], s["role"], s["source_location"], s["source_text"]],
+                                ensure_ascii=False, separators=(",", ":")) + "\n" for s in guarded["sentences"])
+    brief = json.dumps([reg, case, materials["context"], glossary], ensure_ascii=False, sort_keys=True)
+    guarded["source_sha256"] = hashlib.sha256((brief + "\n" + packet).encode("utf-8")).hexdigest()
+    write_text_lf(work_p / "review_packet.jsonl", packet)
     work_files = {name: str(work_p / name) for name in [
-        "materials.json", "glossary.json", "guarded_sentences.json", "manuscript.txt"]}
+        "materials.json", "glossary.json", "guarded_sentences.json", "manuscript.txt", "review_packet.jsonl"]}
     write_json_atomic(work_p / "materials.json", materials)
     write_json_atomic(work_p / "glossary.json", glossary)
     write_json_atomic(work_p / "guarded_sentences.json", guarded)
     write_text_lf(work_p / "manuscript.txt", text)
     if prepare_only:
-        return {"prepared": work_files, "case_id": result["case_id"], "sentence_count": guarded["sentence_count"],
+        return {"prepared": work_files, "case_id": result["case_id"], "source_sha256": guarded["source_sha256"], "sentence_count": guarded["sentence_count"],
                 "register": reg, "contract_fields": list(contract_fields(contract)), "warnings": warnings}
 
     try:
@@ -240,11 +263,18 @@ def run_polishing_pipeline(
                            | {"translation": translation.strip()})
         elif bilingual and row["role"] == "prose":
             uncertainties.append({"code": "missing_translation", "sent_id": row["sent_id"]})
-    if aligned:
+    if aligned or bilingual:
         translation_issues = [issue for row in aligned for issue in verify_translation(row, glossary)]
         uncertainties.extend(translation_issues)
         qa["checks"]["translation_fact_preservation"] = not any(i.get("blocking") for i in translation_issues)
         qa["passed"] = all(qa["checks"].values())
+        rejected_ids = {issue["sent_id"] for issue in translation_issues if issue.get("blocking")}
+        if rejected_ids:
+            qa["rejected_translations"] = [row for row in aligned if row["sent_id"] in rejected_ids]
+            aligned = [row for row in aligned if row["sent_id"] not in rejected_ids]
+            for row in doc["sentences"]:
+                if row["sent_id"] in rejected_ids:
+                    row.pop("translation", None)
         write_json_atomic(out_p / "bilingual_alignment.json", aligned)
         write_text_lf(out_p / "bilingual_alignment.md", render_alignment(aligned))
         artifacts["bilingual_json"] = str((out_p / "bilingual_alignment.json").resolve())

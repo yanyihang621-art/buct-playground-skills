@@ -69,6 +69,29 @@ def _fact_key(token: str) -> str:
     return re.sub(r"\s+", "", token) if re.match(r"^[±≈~<>≤≥=+−.\d-]", token) else token
 
 
+def _paired_subjects(sentence):
+    """Identify explicit labels preceding paired results in a 'respectively' clause."""
+    if not re.search(r"\brespectively\b|分别", sentence, re.I):
+        return None
+    # Start with supported, explicit constructions; other cases need the editor's read-back.
+    head = re.split(r"\b(?:were|was|is|are|had|have|has|show(?:ed|s)?|yield(?:ed|s)?|reach(?:ed|es)?|"
+                    r"record(?:ed)?|achiev(?:e[ds]?)|exhibit(?:ed)?)\b|分别", sentence, maxsplit=1, flags=re.I)[0]
+    # Do not infer entity order from an enumerated list of numerical outcomes.
+    if re.search(r"\d\s*[%°]", head):
+        return None
+    pair = re.split(r"\band\b|与|和|及|、", head, flags=re.I)
+    if len(pair) != 2:
+        return None
+    ignore = {"the", "for", "in", "with", "of", "group", "groups", "arm", "arms", "condition", "conditions",
+              "samples", "sample", "both", "cohort", "cohorts", "mean", "means", "rate", "rates"}
+    def labels(side):
+        side = re.sub(r"^(?:在|对于|其中)", "", side.strip())
+        return {w.casefold() for w in re.findall(r"[A-Za-z][\w-]*|[\u3400-\u9fff]+", side, flags=re.ASCII)
+                if w.casefold() not in ignore}
+    a, b = map(labels, pair)
+    return a-b, b-a
+
+
 def verify_translation(row: dict, glossary: dict) -> list[dict]:
     """Check transferable facts and explicit bilingual terminology across one aligned pair."""
     import unicodedata
@@ -88,6 +111,25 @@ def verify_translation(row: dict, glossary: dict) -> list[dict]:
         if before != after:
             issues.append({**location, "code": "translation_" + label, "blocking": True,
                            "missing": list((before-after).elements()), "added": list((after-before).elements())})
+    aliases = {"千赫兹": "kHz", "赫兹": "Hz", "毫秒": "ms", "秒": "s", "分钟": "min", "小时": "h",
+               "千克": "kg", "毫克": "mg", "微克": "μg", "克": "g", "毫升": "mL", "升": "L",
+               "纳米": "nm", "微米": "μm", "毫米": "mm", "厘米": "cm", "米": "m",
+               "千帕": "kPa", "兆帕": "MPa", "摄氏度": "°C", "开尔文": "K",
+               "毫克/升": "mg/L", "微克/升": "μg/L", "毫克/毫升": "mg/mL"}
+    aliases.update({"hertz": "Hz", "kilohertz": "kHz", "kelvin": "K", "degrees Celsius": "°C"})
+    for name, symbol in (("second", "s"), ("millisecond", "ms"), ("minute", "min"), ("hour", "h"),
+                         ("kilogram", "kg"), ("gram", "g"), ("milligram", "mg"), ("microgram", "μg"),
+                         ("liter", "L"), ("litre", "L"), ("milliliter", "mL"), ("millilitre", "mL"),
+                         ("meter", "m"), ("metre", "m"), ("nanometer", "nm"), ("micrometer", "μm")):
+        aliases.update({name: symbol, name + "s": symbol})
+    units = sorted(set(aliases) | set(aliases.values()), key=len, reverse=True)
+    unit_pat = re.compile(r"([+−-]?\d+(?:\.\d+)?)\s*(" + "|".join(map(re.escape, units)) + r")(?![A-Za-z])")
+    def measurements(text):
+        return Counter((m[1].replace("−", "-"), aliases.get(m[2], m[2])) for m in unit_pat.finditer(text))
+    left, right = measurements(src), measurements(tgt)
+    if left != right:
+        issues.append({**location, "code": "translation_measurement_units", "blocking": True,
+                       "missing": list((left-right).elements()), "added": list((right-left).elements())})
     for entry in glossary["entries"]:
         if not entry.get("bilingual"):
             continue
@@ -127,6 +169,7 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
     token_total = token_errors = edited = claim_count = claim_failures = 0
     register_failures = term_failures = 0
     term_first_seen: dict[str, dict] = {}
+    defined = set()
     for row in pol_sents:
         sid = row.get("sent_id")
         if sid not in source_by_id:
@@ -156,6 +199,12 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
         token_errors += len(added) + len(missing) + int(reorder)
         if added or missing or reorder:
             fail(FACTS, loc, "protected_items_changed", removed=missing, added=added, order_changed=reorder)
+        if changed and sum(bool(re.search(r"\d", x)) for x in before) >= 2:
+            first, second = _paired_subjects(original), _paired_subjects(target)
+            if first and second and first[0] & second[1] and first[1] & second[0] and not reorder:
+                fail(FACTS, loc, "paired_entities_swapped_at_unchanged_values",
+                     original_left=sorted(first[0] & second[1]), original_right=sorted(first[1] & second[0]),
+                     protected_items=before)
         audit_row = {**loc, "protected_source_items": before, "protected_target_items": after}
         evidence.append(audit_row)
         if source.get("role") != "prose":
@@ -205,6 +254,16 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
             if entry.get("bilingual"):
                 continue  # A bilingual term pair constrains the translation column.
             canon = entry["canonical"]
+            expansion = entry.get("full_form")
+            if expansion and canon not in defined and _term_pattern(canon).search(target):
+                defined.add(canon)
+                original_definition = re.search(re.escape(expansion) + r"\s*\(" + re.escape(canon) + r"\)", original, re.I)
+                if original_definition and expansion.casefold() not in target.casefold():
+                    term_failures += 1
+                    fail(TERMS, loc, "first_definition_lost_or_changed", abbreviation=canon, source_expansion=expansion)
+                elif not original_definition and expansion.casefold() not in target.casefold():
+                    warnings.append({**loc, "reason": "check_first_use_expansion", "abbreviation": canon,
+                                     "attested_expansion": expansion})
             if any(p.search(target) for _, p in forms):
                 term_first_seen.setdefault(canon, loc)
             # Auto-detected acronyms are not a supplied ban on substituting
