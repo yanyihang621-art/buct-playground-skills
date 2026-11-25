@@ -1,0 +1,24 @@
+{
+  "case_id": "example_writing_02_polishing_01",
+  "sentences": [
+    {
+      "sent_id": "sent_0002",
+      "source_text": "The paired measurements was repeatable at 8 Hz.",
+      "polished_text": "The paired measurements were repeatable at 8 Hz.",
+      "edit_type": "grammar_agreement",
+      "rationale": "The plural subject ‘measurements’ requires ‘were’. The measurement condition stays at 8 Hz.",
+      "translation": "成对测量在 8 Hz 下具有可重复性。"
+    },
+    {
+      "sent_id": "sent_0003",
+      "source_text": "The sampling frequency may affect precision [2].",
+      "polished_text": "The sampling frequency may affect precision [2].",
+      "edit_type": "unchanged",
+      "rationale": "The cited statement already gives the possible effect and identifies the sampling frequency.",
+      "translation": "采样频率可能影响精密度 [2]。"
+    }
+  ],
+  "contract_values": {
+    "author_query": "No author clarification was needed for the two supplied sentences."
+  }
+}

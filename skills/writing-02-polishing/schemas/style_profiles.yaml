@@ -1,11 +1,11 @@
 version: "1.0"
 registers:
   journal_article:
-    description: "Objective, concise, third-person peer-reviewed academic style; prohibits colloquialisms and promotional hype."
-    allow_first_person: false
+    description: "Use the target journal's voice. Distinguish measurements from interpretation and keep scope and citation attachment explicit."
+    allow_first_person: true
   thesis:
     description: "Rigorous, structured academic dissertation tone with explicit scope qualifiers."
-    allow_first_person: false
+    allow_first_person: true
   grant_proposal:
     description: "Clear scientific motivation without exaggerated breakthroughs or unsupported claims."
     allow_first_person: true
@@ -14,7 +14,7 @@ registers:
     allow_first_person: true
   abstract:
     description: "Compact IMRaD density preserving exact numerical findings and certainty level."
-    allow_first_person: false
+    allow_first_person: true
 
 banned_colloquial_or_hype_en:
   - "a lot of"

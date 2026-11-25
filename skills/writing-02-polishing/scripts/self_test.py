@@ -146,21 +146,17 @@ def _run_negative_qa_tests(p1: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def _compare_baseline(p1: Dict[str, Any]) -> Dict[str, Any]:
-    m = p1["qa_report"]["metrics"]
+    # Measure two outputs against identical source spans, terminology and verifier.
+    original = copy.deepcopy(p1["polished_doc"])
+    for row in original["sentences"]:
+        row.update(polished_text=row["source_text"], edit_type="unchanged", rationale="Verbatim input control.")
+    original["edited_count"] = 0
+    control = verify_polish(original, p1["guarded"], p1["glossary"])
     return {
-        "naive_rewrite_baseline": {
-            "sentence_rationale_table": False,
-            "hedge_causality_guard": False,
-            "numeric_citation_invariance": 0.80,
-            "register_cleanliness": 0.65,
-        },
-        "skill_pipeline": {
-            "sentence_rationale_table": True,
-            "hedge_causality_guard": p1["qa_report"]["checks"]["hedging_and_causality_conservation"],
-            "numeric_citation_invariance": m["token_invariance"],
-            "register_cleanliness": m["register_cleanliness"],
-        },
-        "skill_wins": m["token_invariance"] >= 1.0 and p1["qa_report"]["passed"],
+        "comparison": "Local fixture only: verbatim input versus deterministic demo rules, same verifier.",
+        "verbatim_control": {"checks": control["checks"], "metrics": control["metrics"]},
+        "edited_output": {"checks": p1["qa_report"]["checks"], "metrics": p1["qa_report"]["metrics"]},
+        "regression_pass": p1["qa_report"]["passed"] and p1["qa_report"]["metrics"]["edited_count"] > 0,
     }
 
 
@@ -172,21 +168,21 @@ def main() -> int:
 
     root = Path(args.out_dir)
     c1 = _setup_p1_journal_en(root / "p1" / "input")
-    r1 = run_polishing_pipeline(root / "p1" / "input", root / "p1" / "work", root / "p1" / "output", case_path=c1)
+    r1 = run_polishing_pipeline(root / "p1" / "input", root / "p1" / "work", root / "p1" / "output", case_path=c1, demo_rules=True)
     neg = _run_negative_qa_tests(r1)
     p1_ok = r1["result"]["status"] == "completed" and r1["result"]["metrics"]["edited_count"] >= 3 and r1["qa_report"]["passed"] and all(neg.values())
 
     c2 = _setup_p2_latex_fragment(root / "p2" / "input")
-    r2 = run_polishing_pipeline(root / "p2" / "input", root / "p2" / "work", root / "p2" / "output", case_path=c2)
+    r2 = run_polishing_pipeline(root / "p2" / "input", root / "p2" / "work", root / "p2" / "output", case_path=c2, demo_rules=True)
     p2_ms = Path(r2["result"]["artifacts"]["polished_manuscript"]).read_text(encoding="utf-8")
     p2_ok = r2["result"]["status"] == "completed" and r"\cite{zhang2024}" in p2_ms and "3.0 MPa" in p2_ms
 
     c3 = _setup_p3_zh_grant(root / "p3" / "input")
-    r3 = run_polishing_pipeline(root / "p3" / "input", root / "p3" / "work", root / "p3" / "output", case_path=c3)
+    r3 = run_polishing_pipeline(root / "p3" / "input", root / "p3" / "work", root / "p3" / "output", case_path=c3, demo_rules=True)
     p3_ok = r3["result"]["status"] == "completed" and r3["result"]["metrics"]["edited_count"] >= 2
 
     c4 = _setup_p4_glossary_conflict(root / "p4" / "input")
-    r4 = run_polishing_pipeline(root / "p4" / "input", root / "p4" / "work", root / "p4" / "output", case_path=c4)
+    r4 = run_polishing_pipeline(root / "p4" / "input", root / "p4" / "work", root / "p4" / "output", case_path=c4, demo_rules=True)
     p4_ok = r4["result"]["status"] == "partial" and len(r4["result"]["uncertainties"]) >= 1
 
     summary: Dict[str, Any] = {
@@ -200,7 +196,7 @@ def main() -> int:
     }
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r1)
-        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["skill_wins"]
+        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["regression_pass"]
 
     write_json_atomic(root / "self_test_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

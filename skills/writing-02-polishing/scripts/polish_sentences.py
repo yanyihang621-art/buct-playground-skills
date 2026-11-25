@@ -1,237 +1,164 @@
 #!/usr/bin/env python3
-"""Apply glossary-locked, invariant-preserving academic polishing with diffs and rationales."""
-
+"""Apply reviewed sentence edits to exact source spans and produce a human-readable revision history."""
 from __future__ import annotations
 
 import argparse
 import difflib
 import json
 import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
 
 from text_utils import write_json_atomic, write_text_lf
 
-DETERMINISTIC_RULES: List[Tuple[re.Pattern[str], str, str, str]] = [
-    (re.compile(r"\bMore and more researchers\b", re.I), "An increasing number of studies", "register_chinglish", "消除中式英语 `More and more researchers`，改用客观学术表达。"),
-    (re.compile(r"\bIn a word,\s*", re.I), "In summary, ", "register_colloquial", "将口语过渡词 `In a word` 规范化为 `In summary`。"),
-    (re.compile(r"\bNeedless to say,\s*", re.I), "", "register_colloquial", "删除口语化冗余表述 `Needless to say`。"),
-    (re.compile(r"\ba lot of\b", re.I), "numerous", "register_colloquial", "将口语量词 `a lot of` 规范化为 `numerous`。"),
-    (re.compile(r"\blots of\b", re.I), "substantial", "register_colloquial", "将口语量词 `lots of` 规范化为 `substantial`。"),
-    (re.compile(r"\bpretty good\b", re.I), "favorable", "register_colloquial", "将口语评价 `pretty good` 替换为学术中性词 `favorable`。"),
-    (re.compile(r"\bvery obvious\b", re.I), "pronounced", "register_colloquial", "将 `very obvious` 规范化为 `pronounced`。"),
-    (re.compile(r"\brevolutionary breakthrough\b", re.I), "notable advance", "hype_moderation", "消除夸张宣传词 `revolutionary breakthrough`，匹配实际研究证据强度。"),
-    (re.compile(r"\bAs is known to all,\s*", re.I), "Prior studies have established that ", "register_chinglish", "消除中式直译开篇 `As is known to all`。"),
-    (re.compile(r"\bIn order to investigate\b", re.I), "To investigate", "conciseness", "精简冗余目的状语 `In order to` -> `To`。"),
-    (re.compile(r"\bThe results shows\b"), "The results show", "grammar_agreement", "修正主谓一致错误 `The results shows` -> `The results show`。"),
-    (re.compile(r"\bThe catalyst exhibit\b"), "The catalyst exhibits", "grammar_agreement", "修正第三人称单数主谓一致错误 `exhibit` -> `exhibits`。"),
-    (re.compile(r"\bdata shows\b", re.I), "data show", "grammar_agreement", "修正学术复数名词一致 `data shows` -> `data show`。"),
-    (re.compile(r"众所周知[，,]\s*"), "已有研究表明，", "register_chinglish", "消除绝对化/口语开篇 `众所周知`。"),
-    (re.compile(r"毋庸置疑[，,]\s*"), "观测结果表明，", "hype_moderation", "消除绝对化断言 `毋庸置疑`，改为基于证据的客观陈述。"),
-    (re.compile(r"划时代突破"), "显著进展", "hype_moderation", "去除项目申报/论文中的宣传性夸张用词 `划时代突破`。"),
-    (re.compile(r"彻底解决了"), "有效缓解了", "hype_moderation", "降低绝对化宣称强度 `彻底解决` -> `有效缓解`。"),
-    (re.compile(r"非常完美"), "较为理想", "register_colloquial", "消除口语化极端形容词 `非常完美`。"),
+# Small local demonstration. The official workflow uses the editor's reviews.
+DEMO_RULES = [
+    (r"\bMore and more researchers\b", "An increasing number of researchers", "register", "Use a formal trend expression and retain researchers as the subject."),
+    (r"\bIn a word,\s*", "In summary, ", "register", "Replace the conversational transition."),
+    (r"\b(?:As is known to all|Needless to say),\s*", "", "concision", "Delete the unsupported introductory aside."),
+    (r"\ba lot of\b", "many", "register", "Use a concise quantifier for the count noun."),
+    (r"\bpretty good\b", "good", "register", "Remove the conversational modifier."),
+    (r"\bIn order to investigate\b", "To investigate", "concision", "Shorten the purpose clause."),
+    (r"\bThe results shows\b", "The results show", "grammar", "Use a plural verb with results."),
+    (r"众所周知[，,]\s*|毋庸置疑[，,]\s*", "", "concision", "删去句首评述语，直接陈述原文主张。"),
+    (r"划时代突破式的", "", "register", "删去修饰失活现象的不当宣传语，保留原文对失活的判断。"),
 ]
 
-
-def _rule_polish_sentence(sent: Dict[str, Any], glossary: Dict[str, Any]) -> Tuple[str, str, str]:
-    role = sent.get("role", "prose")
-    src = sent["source_text"]
-    if role in ("verbatim_block", "structural", "heading"):
-        return src, "preserved", f"角色 `{role}` 原样保留结构与公式/排版边界。"
-
-    out = src
-    applied_types: List[str] = []
-    reasons: List[str] = []
-
-    # 1. Enforce custom/locked glossary variants
-    for entry in glossary.get("entries", []):
-        canon = entry["canonical"]
-        for var in entry.get("variants", []):
-            pat = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(var)}(?![A-Za-z0-9\-])")
-            if pat.search(out) and var != canon:
-                out = pat.sub(canon, out)
-                applied_types.append("terminology_unification")
-                reasons.append(f"统一术语 `{var}` -> `{canon}`。")
-
-    # 2. Apply deterministic grammar/register/Chinglish fixes (avoid mutating inside $...$)
-    for pat, repl, etype, reason in DETERMINISTIC_RULES:
-        if pat.search(out):
-            new_out = pat.sub(repl, out)
-            if new_out != out:
-                # Capitalize start if sentence began with removed phrase
-                if new_out and not new_out[0].isupper() and src[0].isupper() and new_out[0].isascii():
-                    new_out = new_out[0].upper() + new_out[1:]
-                out = re.sub(r"\s{2,}", " ", new_out).strip()
-                applied_types.append(etype)
-                reasons.append(reason)
-
-    if not applied_types:
-        return src, "unchanged", "原句语法、语气与术语均合规，依最小编辑原则保留原文。"
-    return out, "+".join(dict.fromkeys(applied_types)), " ".join(reasons)
-
-
-def _assemble_manuscript(sentences: List[Dict[str, Any]]) -> str:
-    """Reassemble sentences into paragraphs preserving para_id boundaries and LaTeX/Markdown spacing."""
-    paras: Dict[int, List[str]] = {}
-    order: List[int] = []
-    for s in sentences:
-        pid = int(s["para_id"])
-        if pid not in paras:
-            paras[pid] = []
-            order.append(pid)
-        paras[pid].append(s["polished_text"])
-
-    blocks: List[str] = []
-    for pid in order:
-        parts = paras[pid]
-        joined = parts[0]
-        for nxt in parts[1:]:
-            if joined.endswith("。") or ("\u4e00" <= joined[-1] <= "\u9fff"):
-                joined = f"{joined}{nxt}"
-            else:
-                joined = f"{joined} {nxt}"
-        blocks.append(joined)
-    return "\n\n".join(blocks) + "\n"
-
-
-def _render_revision_report(doc: Dict[str, Any]) -> str:
-    lines: List[str] = [
-        f"# 学术语言润色逐句修改清单 (`{doc['register']}`)",
-        "",
-        f"**运行状态:** `{doc['status']}` | **总句数:** {doc['sentence_count']} | **修改句数:** {doc['edited_count']}",
-        "",
-        "| Sent ID | 行号 | 修改类型 | 原文 (Source) | 改文 (Polished) | 修改理由 (Rationale) |",
-        "|---|---:|---|---|---|---|",
-    ]
-    for s in doc["sentences"]:
-        if s["role"] == "verbatim_block":
+def _demo_edit(source, glossary):
+    text = source
+    types, reasons = [], []
+    for entry in glossary["entries"]:
+        if entry.get("bilingual"):
             continue
-        src = s["source_text"].replace("|", "\\|")
-        pol = s["polished_text"].replace("|", "\\|")
-        rat = s["rationale"].replace("|", "\\|")
-        lines.append(f"| `{s['sent_id']}` | {s['line']} | `{s['edit_type']}` | {src} | {pol} | {rat} |")
-    lines.append("")
-    return "\n".join(lines)
+        for variant in entry.get("variants", []):
+            if variant == entry["canonical"]:
+                continue
+            pattern = r"(?<![A-Za-z0-9-])" + re.escape(variant) + r"(?![A-Za-z0-9-])"
+            revised = re.sub(pattern, lambda _: entry["canonical"], text)
+            if revised != text:
+                types.append("terminology")
+                reasons.append(f"Use the supplied term {entry['canonical']} for {variant}.")
+                text = revised
+    for pattern, replacement, category, reason in DEMO_RULES:
+        revised = re.sub(pattern, replacement, text, flags=re.I)
+        if revised != text:
+            types.append(category)
+            reasons.append(reason)
+            if not replacement and re.match(pattern, text, re.I) and revised[:1].isascii():
+                revised = revised[:1].upper() + revised[1:]
+            text = revised
+    return text, "+".join(dict.fromkeys(types)) or "unchanged", " ".join(reasons) or "No local demonstration rule matched."
 
+def _patch(source, target):
+    lines = difflib.unified_diff(source.splitlines(keepends=True), target.splitlines(keepends=True),
+                                 fromfile="a/manuscript", tofile="b/manuscript")
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
 
-def polish_guarded_sentences(
-    guarded: Dict[str, Any],
-    glossary: Dict[str, Any],
-    *,
-    register: str = "journal_article",
-    edits_override: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Produce polished sentences, reconstructed manuscript, diff patch, and revision report."""
-    overrides: Dict[str, Dict[str, Any]] = {}
-    if isinstance(edits_override, dict):
-        items = edits_override.get("sentences", edits_override)
-        if isinstance(items, list):
-            for it in items:
-                if isinstance(it, dict) and it.get("sent_id"):
-                    overrides[str(it["sent_id"])] = it
-        elif isinstance(items, dict):
-            for k, v in items.items():
-                overrides[str(k)] = v if isinstance(v, dict) else {"polished_text": str(v)}
+def _cell(value):
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
 
-    orig_sentences = guarded.get("sentences", [])
-    out_sentences: List[Dict[str, Any]] = []
-    edited_count = 0
+def render_revision_report(doc):
+    lines = [f"# Revision record · {doc['register']}", "",
+             f"Status: {doc['status']} · {doc['edited_count']} of {doc['sentence_count']} spans changed.", "",
+             "| ID | Source location | Original | Revision | Type | Reason |",
+             "|---|---|---|---|---|---|"]
+    for row in doc["sentences"]:
+        loc = row.get("source_location") or {}
+        if isinstance(loc, dict):
+            loc = " ".join(str(loc.get(k, "")) for k in ("source", "location")).strip()
+        label = loc or f"line {row['line']}"
+        vals = [row["sent_id"], label, row["source_text"], row["polished_text"], row["edit_type"], row["rationale"]]
+        lines.append("| " + " | ".join(_cell(x) for x in vals) + " |")
+    return "\n".join(lines) + "\n"
 
-    for s in orig_sentences:
-        sid = s["sent_id"]
-        if sid in overrides and s["role"] == "prose":
-            ov = overrides[sid]
-            pol = str(ov.get("polished_text", s["source_text"])).strip()
-            etype = str(ov.get("edit_type", "agent_polish"))
-            rationale = str(ov.get("rationale", "Agent 学术语域与句法微调。"))
-            uncertain = bool(ov.get("uncertain", False))
-        else:
-            pol, etype, rationale = _rule_polish_sentence(s, glossary)
-            uncertain = False
+def _edits_by_id(payload):
+    if isinstance(payload, dict):
+        items = payload.get("sentences", payload.get("edits", payload))
+    else:
+        items = payload
+    if isinstance(items, list):
+        return {row["sent_id"]: row for row in items if isinstance(row, dict) and "sent_id" in row}
+    if isinstance(items, dict):
+        return {k: v if isinstance(v, dict) else {"polished_text": v} for k, v in items.items()}
+    return {}
 
-        if pol != s["source_text"]:
-            edited_count += 1
+def _heading_signature(text):
+    prefix = re.match(r"(?:#{1,6}\s+|\\[a-zA-Z]+\*?\{)", text)
+    if not prefix:
+        return None
+    return prefix.group(), (text.count("{"), text.count("}")) if text.startswith("\\") else ()
 
-        out_sentences.append(
-            {
-                "sent_id": sid,
-                "para_id": s["para_id"],
-                "line": s["line"],
-                "role": s["role"],
-                "source_text": s["source_text"],
-                "polished_text": pol,
-                "edit_type": etype,
-                "rationale": rationale,
-                "protected_tokens": s.get("protected_tokens", []),
-                "hedge_tier": s.get("hedge_tier", "neutral"),
-                "relation_type": s.get("relation_type", "none"),
-                "negation_markers": s.get("negation_markers", []),
-                "uncertain": uncertain,
-            }
-        )
+def polish_guarded_sentences(guarded, glossary, *, register="journal_article", edits_override=None):
+    overrides = _edits_by_id(edits_override)
+    rows, gaps = [], []
+    for original in guarded["sentences"]:
+        sid, role, src = (original[k] for k in ("sent_id", "role", "source_text"))
+        row = dict(original)
+        edit = overrides.get(sid)
+        polished, category, reason = src, "preserved", "Source formatting or heading retained."
+        uncertain = False
+        if role in ("prose", "heading") and edit is not None:
+            polished = edit.get("polished_text", src)
+            category = str(edit.get("edit_type", "")).strip()
+            reason = str(edit.get("rationale", "")).strip()
+            uncertain = bool(edit.get("uncertain"))
+            issue = None
+            if not isinstance(polished, str) or not polished.strip():
+                issue = "empty_revision"
+            elif edit.get("source_text", src) != src:
+                issue = "stale_source"
+            elif role == "heading" and _heading_signature(src) != _heading_signature(polished):
+                issue = "heading_markup_changed"
+            elif "\n" in polished or "\r" in polished:
+                issue = "revision_crosses_source_line"
+            if issue:
+                polished, category, reason = src, "needs_review", f"Retained source ({issue})."
+                gaps.append({"code": issue, "sent_id": sid})
+                uncertain = True
+            if isinstance(edit.get("translation"), str):
+                row["translation"] = edit["translation"]
+            if isinstance(edit.get("changes"), list):
+                row["changes"] = edit["changes"]
+        elif role == "prose":
+            if edits_override is None:
+                polished, category, reason = _demo_edit(src, glossary)
+            else:
+                category, reason, uncertain = "unreviewed", "No editor decision received for this sentence.", True
+                gaps.append({"code": "unreviewed_sentence", "sent_id": sid})
+        row.update(polished_text=polished, edit_type=category, rationale=reason, uncertain=uncertain)
+        rows.append(row)
 
-    orig_reconstructed = "\n\n".join(s["source_text"] for s in orig_sentences) + "\n"
-    polished_ms = _assemble_manuscript(out_sentences)
-    diff_text = "\n".join(
-        difflib.unified_diff(
-            [s["source_text"] for s in out_sentences],
-            [s["polished_text"] for s in out_sentences],
-            fromfile="a/manuscript",
-            tofile="b/polished_manuscript",
-            lineterm="",
-        )
-    )
+    source = guarded.get("source_text")
+    if source is None:  # An older serialized guard index does not contain source offsets.
+        source = "\n\n".join(r["source_text"] for r in rows) + "\n"
+        target = "\n\n".join(r["polished_text"] for r in rows) + "\n"
+    else:
+        parts, cursor = [], 0
+        for row in rows:
+            a, b = row["start"], row["end"]
+            if a < cursor or source[a:b] != row["source_text"]:
+                raise ValueError(f"Inconsistent source span {row['sent_id']}")
+            parts.extend([source[cursor:a], row["polished_text"]])
+            cursor = b
+        target = "".join([*parts, source[cursor:]])
 
-    has_conflicts = bool(glossary.get("conflicts"))
-    has_uncertain = any(s["uncertain"] for s in out_sentences)
-    status = "partial" if (has_conflicts or has_uncertain) else "completed"
+    doc = {"schema_version": "writing-02-polish-doc/v1", "register": register,
+           "status": "partial" if glossary.get("conflicts") or any(r["uncertain"] for r in rows) else "completed",
+           "sentence_count": len(rows), "edited_count": sum(r["source_text"] != r["polished_text"] for r in rows),
+           "sentences": rows, "glossary": glossary, "uncertainties": gaps, "qa_report": {}}
+    return {"polished_doc": doc, "polished_manuscript": target, "revision_report_md": render_revision_report(doc),
+            "patch_diff": _patch(source, target), "orig_reconstructed": source}
 
-    doc = {
-        "schema_version": "writing-02-polish-doc/v1",
-        "register": register,
-        "status": status,
-        "sentence_count": len(out_sentences),
-        "edited_count": edited_count,
-        "sentences": out_sentences,
-        "glossary": glossary,
-        "qa_report": {},
-    }
-    return {
-        "polished_doc": doc,
-        "polished_manuscript": polished_ms,
-        "revision_report_md": _render_revision_report(doc),
-        "patch_diff": diff_text + ("\n" if diff_text else ""),
-        "orig_reconstructed": orig_reconstructed,
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Polish guarded sentences and generate revision report.")
-    parser.add_argument("--guarded", required=True)
-    parser.add_argument("--glossary", required=True)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("guarded", "glossary", "edits-json", "out-doc", "out-ms", "out-report"):
+        parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--register", default="journal_article")
-    parser.add_argument("--edits-json", default=None)
-    parser.add_argument("--out-doc", required=True)
-    parser.add_argument("--out-ms", required=True)
-    parser.add_argument("--out-report", required=True)
     args = parser.parse_args()
-
-    guarded = json.loads(Path(args.guarded).read_text(encoding="utf-8"))
-    glos = json.loads(Path(args.glossary).read_text(encoding="utf-8"))
-    ov = json.loads(Path(args.edits_json).read_text(encoding="utf-8")) if (args.edits_json and Path(args.edits_json).exists()) else None
-    res = polish_guarded_sentences(guarded, glos, register=args.register, edits_override=ov)
-    write_json_atomic(Path(args.out_doc), res["polished_doc"])
-    write_text_lf(Path(args.out_ms), res["polished_manuscript"])
-    write_text_lf(Path(args.out_report), res["revision_report_md"])
-    print(json.dumps({"status": res["polished_doc"]["status"], "edited_count": res["polished_doc"]["edited_count"]}, ensure_ascii=False))
-    return 0
-
+    read = lambda p: json.loads(p.read_text(encoding="utf-8-sig"))
+    res = polish_guarded_sentences(read(args.guarded), read(args.glossary), register=args.register, edits_override=read(args.edits_json))
+    write_json_atomic(args.out_doc, res["polished_doc"])
+    write_text_lf(args.out_ms, res["polished_manuscript"])
+    write_text_lf(args.out_report, res["revision_report_md"])
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -1,11 +1,16 @@
 {
   "case_id": "example_writing_02_polishing_01",
-  "task_type": "academic_language_polishing",
-  "register": "journal_article",
+  "register": "abstract",
   "manuscript_file": "draft.md",
+  "instructions": "Synthetic example. Polish the two sentences in English and supply a Chinese alignment.",
+  "bilingual_required": true,
   "custom_glossary": {
-    "catalytic selectivity": "catalytic selectivity",
-    "Cu-ZnO-Al2O3": "Cu-ZnO-Al2O3"
+    "采样频率": "sampling frequency"
   },
-  "instructions": "Polish grammar, register, and Chinglish expressions minimally while preserving all numerical findings, equations, citations, hedging strength, correlational vs causal claims, and locked terminology."
+  "output_contract": {
+    "polished_manuscript": "string",
+    "sentence_edits": "array",
+    "bilingual_alignment": "array",
+    "author_query": "string"
+  }
 }

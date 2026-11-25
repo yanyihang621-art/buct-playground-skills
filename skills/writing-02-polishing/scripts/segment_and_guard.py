@@ -1,173 +1,96 @@
 #!/usr/bin/env python3
-"""Segment manuscript into 1-to-1 guarded sentences with semantic invariants."""
-
+"""Index editable sentence spans without changing the manuscript's layout."""
 from __future__ import annotations
 
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+from text_utils import (classify_hedge_tier, classify_relation_type, extract_protected_tokens,
+                        has_negation_or_scope, load_style_profiles, write_json_atomic)
 
-from text_utils import (
-    classify_hedge_tier,
-    classify_relation_type,
-    extract_protected_tokens,
-    has_negation_or_scope,
-    load_style_profiles,
-    write_json_atomic,
-)
+BOUNDARY = re.compile(r"""[.!?](?:["”’)]*)(?=\s+\S)|[。！？]+[”’」』]*""")
+ABBREVIATION = re.compile(r"(?:\b(?:figs?|tabs?|eqs?|dr|prof|vs|mr|mrs|no|vol|sec|ref|refs|cf|approx)|\bet al|[ei]\.[ge]|\b[A-Z])\.$", re.I)
+LITERAL = re.compile(r"\x60+[^\x60]*\x60+|\$\$.*?\$\$|\$[^$]*\$|\\\(.*?\\\)|https?://\S+")
+ENV = re.compile(r"\\begin\{((?:align|equation|gather|multline|table|figure|tabular|verbatim|lstlisting|tikzpicture)\*?)\}")
+TEX_COMMAND = re.compile(r"\\(?:documentclass|usepackage|begin|end|newcommand|renewcommand|label|bibliography|bibliographystyle|includegraphics|author|maketitle)\b")
+TEX_TITLE = re.compile(r"\\(?:(?:sub)*section|chapter|title|paragraph)\*?\{")
 
-SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\\(\[])|(?<=。)(?=[^\n\r\s])")
+def spans(text):
+    """Yield exact trimmed spans; retain punctuation and leave inter-sentence whitespace untouched."""
+    literals = [m.span() for m in LITERAL.finditer(text)]
+    cursor = 0
+    for match in BOUNDARY.finditer(text):
+        if any(a <= match.start() < b for a, b in literals):
+            continue
+        if match.group().startswith(".") and ABBREVIATION.search(text[:match.start()+1]):
+            continue
+        start = cursor + len(text[cursor:match.end()]) - len(text[cursor:match.end()].lstrip())
+        if start < match.end():
+            yield start, match.end()
+        cursor = match.end()
+    last = len(text.rstrip())
+    start = cursor + len(text[cursor:]) - len(text[cursor:].lstrip())
+    if start < last:
+        yield start, last
 
-
-def _split_sentences_preserving_protected(text: str) -> List[str]:
-    """Split a paragraph into sentences without breaking 'Fig. 1', 'et al.', or 'Eq. (1)'."""
-    protected_abbrevs = ("Fig.", "Figs.", "Tab.", "Eq.", "et al.", "e.g.", "i.e.", "Dr.", "Prof.", "vs.")
-    tmp = text
-    placeholders: Dict[str, str] = {}
-    for idx, ab in enumerate(protected_abbrevs):
-        ph = f"__ABBR{idx}__"
-        if ab in tmp:
-            placeholders[ph] = ab
-            tmp = tmp.replace(ab, ph)
-    raw_parts = [p.strip() for p in SENT_SPLIT_RE.split(tmp) if p.strip()]
-    out: List[str] = []
-    for p in raw_parts:
-        for ph, ab in placeholders.items():
-            p = p.replace(ph, ab)
-        out.append(p)
-    return out or [text.strip()]
-
-
-def segment_and_guard_manuscript(
-    manuscript_text: str,
-    *,
-    is_latex: bool = False,
-    style_path: Path | None = None,
-) -> Dict[str, Any]:
-    """Segment manuscript into ordered sentences while recording protected tokens and hedges."""
+def segment_and_guard_manuscript(manuscript_text, *, is_latex=False, style_path=None):
     profiles = load_style_profiles(style_path)
-    lines = manuscript_text.replace("\r\n", "\n").splitlines()
-
-    sentences: List[Dict[str, Any]] = []
-    sent_counter = 0
-    para_counter = 0
-    in_verbatim = False
-    verbatim_end = ""
-
-    for line_idx, raw_line in enumerate(lines, start=1):
-        stripped = raw_line.strip()
-        if not stripped:
+    rows = []
+    end_marker = ""
+    start = 0
+    for line, full in enumerate(manuscript_text.splitlines(keepends=True), 1):
+        body = full.rstrip("\r\n")
+        txt = body.strip()
+        line_start = start
+        start += len(full)
+        if not txt:
             continue
+        left = len(body) - len(body.lstrip())
+        role = "prose"
+        if end_marker:
+            role = "verbatim_block"
+            if end_marker in txt:
+                end_marker = ""
+        elif txt.startswith(("\x60\x60\x60", "~~~", "$$", r"\[")) or (is_latex and ENV.match(txt)):
+            role = "verbatim_block"
+            marker = re.match(r"^(?:\x60{3,}|~{3,})", txt)
+            if marker:
+                end_marker = marker.group() if marker.group() not in txt[marker.end():] else ""
+            elif txt.startswith(("$$", r"\[")):
+                close = "$$" if txt.startswith("$$") else r"\]"
+                end_marker = close if close not in txt[2:] else ""
+            else:
+                close = r"\end{" + ENV.match(txt).group(1) + "}"
+                end_marker = close if close not in txt else ""
+        elif re.match(r"^#{1,6}\s", txt) or (is_latex and TEX_TITLE.match(txt)):
+            role = "heading"
+        elif (is_latex and (TEX_COMMAND.match(txt) or txt.startswith("%"))) or re.fullmatch(r"[-=*_\s]{3,}", txt):
+            role = "structural"
+        boundaries = spans(txt) if role == "prose" else [(0, len(txt))]
+        for a, b in boundaries:
+            source = txt[a:b]
+            rows.append({
+                "sent_id": f"sent_{len(rows)+1:04d}", "para_id": line, "line": line, "role": role,
+                "start": line_start + left + a, "end": line_start + left + b, "source_text": source,
+                "protected_tokens": extract_protected_tokens(source),
+                "hedge_tier": classify_hedge_tier(source, profiles),
+                "relation_type": classify_relation_type(source, profiles),
+                "negation_markers": has_negation_or_scope(source),
+            })
+    return {"schema_version": "writing-02-guarded-sentences/v2", "is_latex": is_latex,
+            "source_text": manuscript_text, "sentence_count": len(rows), "sentences": rows}
 
-        if in_verbatim:
-            sent_counter += 1
-            para_counter += 1
-            sentences.append(
-                {
-                    "sent_id": f"sent_{sent_counter:04d}",
-                    "para_id": para_counter,
-                    "line": line_idx,
-                    "role": "verbatim_block",
-                    "source_text": raw_line,
-                    "protected_tokens": extract_protected_tokens(raw_line),
-                    "hedge_tier": "neutral",
-                    "relation_type": "none",
-                    "negation_markers": [],
-                }
-            )
-            if verbatim_end in stripped:
-                in_verbatim = False
-                verbatim_end = ""
-            continue
-
-        if stripped.startswith("```") or stripped.startswith("$$") or (is_latex and any(stripped.startswith(x) for x in (r"\begin{equation}", r"\begin{align}", r"\begin{table}", r"\begin{figure}"))):
-            sent_counter += 1
-            para_counter += 1
-            sentences.append(
-                {
-                    "sent_id": f"sent_{sent_counter:04d}",
-                    "para_id": para_counter,
-                    "line": line_idx,
-                    "role": "verbatim_block",
-                    "source_text": raw_line,
-                    "protected_tokens": extract_protected_tokens(raw_line),
-                    "hedge_tier": "neutral",
-                    "relation_type": "none",
-                    "negation_markers": [],
-                }
-            )
-            if stripped.startswith("```"):
-                in_verbatim, verbatim_end = True, "```"
-            elif stripped.startswith("$$") and not (stripped.endswith("$$") and len(stripped) > 2):
-                in_verbatim, verbatim_end = True, "$$"
-            elif stripped.startswith(r"\begin{"):
-                m_env = re.match(r"\\begin\{([^}]+)\}", stripped)
-                if m_env and f"\\end{{{m_env.group(1)}}}" not in stripped:
-                    in_verbatim, verbatim_end = True, f"\\end{{{m_env.group(1)}}}"
-            continue
-
-        is_heading = stripped.startswith("#") or (is_latex and any(stripped.startswith(c) for c in (r"\documentclass", r"\usepackage", r"\begin{document}", r"\end{document}", r"\title{", r"\author{", r"\maketitle", r"\section", r"\subsection")))
-        para_counter += 1
-        if is_heading:
-            sent_counter += 1
-            sentences.append(
-                {
-                    "sent_id": f"sent_{sent_counter:04d}",
-                    "para_id": para_counter,
-                    "line": line_idx,
-                    "role": "structural" if (is_latex and not stripped.startswith(r"\section")) else "heading",
-                    "source_text": raw_line,
-                    "protected_tokens": extract_protected_tokens(raw_line),
-                    "hedge_tier": "neutral",
-                    "relation_type": "none",
-                    "negation_markers": [],
-                }
-            )
-            continue
-
-        for s in _split_sentences_preserving_protected(stripped):
-            sent_counter += 1
-            sentences.append(
-                {
-                    "sent_id": f"sent_{sent_counter:04d}",
-                    "para_id": para_counter,
-                    "line": line_idx,
-                    "role": "prose",
-                    "source_text": s,
-                    "protected_tokens": extract_protected_tokens(s),
-                    "hedge_tier": classify_hedge_tier(s, profiles),
-                    "relation_type": classify_relation_type(s, profiles),
-                    "negation_markers": has_negation_or_scope(s),
-                }
-            )
-
-    return {
-        "schema_version": "writing-02-guarded-sentences/v1",
-        "is_latex": is_latex,
-        "sentence_count": len(sentences),
-        "sentences": sentences,
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Segment manuscript into guarded sentences.")
-    parser.add_argument("--manuscript", required=True)
-    parser.add_argument("--out", required=True)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manuscript", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
-
-    p = Path(args.manuscript)
-    res = segment_and_guard_manuscript(p.read_text(encoding="utf-8", errors="replace"), is_latex=(p.suffix.lower() == ".tex"))
-    write_json_atomic(Path(args.out), res)
-    print(json.dumps({"sentence_count": res["sentence_count"]}, ensure_ascii=False))
+    res = segment_and_guard_manuscript(args.manuscript.read_text(encoding="utf-8"), is_latex=args.manuscript.suffix.lower() == ".tex")
+    write_json_atomic(args.out, res)
+    print(json.dumps({"sentence_count": res["sentence_count"]}))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

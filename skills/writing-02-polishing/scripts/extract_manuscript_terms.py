@@ -16,8 +16,26 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from text_utils import write_json_atomic
 
-PAREN_ACR_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9\-]{2,}(?:\s+[A-Za-z][A-Za-z0-9\-]{1,}){1,4})\s*\(([A-Z][A-Z0-9\-]{1,10})\)")
+PAREN_ACR_RE = re.compile(r"\(([A-Z][A-Z0-9\-]{1,10})\)")
 CHEM_ACR_RE = re.compile(r"\b([A-Z]{2,8}(?:-[A-Z0-9][A-Za-z0-9]+)*)\b")
+
+
+def _abbreviation_definitions(text: str):
+    """Only infer a definition when its initials explain the abbreviation."""
+    for line in text.splitlines():
+        for match in PAREN_ACR_RE.finditer(line):
+            acr = match[1]
+            words = re.search(r"((?:[A-Za-z][A-Za-z-]*[ \t]+){0,10}[A-Za-z][A-Za-z-]*)\s*$", line[:match.start()])
+            if not words:
+                continue
+            tokens = words[1].split()
+            for start in range(len(tokens)-1, -1, -1):
+                candidate = " ".join(tokens[start:])
+                parts = re.split(r"[\s-]+", candidate)
+                significant = [p for p in parts if p.lower() not in {"of", "and", "for", "the", "in", "to"}]
+                if any("".join(p[0].upper() for p in group) == acr.replace("-", "") for group in (parts, significant)):
+                    yield candidate, acr
+                    break
 
 
 def extract_manuscript_glossary(
@@ -56,6 +74,7 @@ def extract_manuscript_glossary(
                     "canonical": vs or ks,
                     "variants": [ks] if vs != ks else [],
                     "source": "custom_glossary",
+                    "bilingual": bool(re.search(r"[\u3400-\u9fff]", ks)) != bool(re.search(r"[\u3400-\u9fff]", vs)),
                     "locked": True,
                 }
             )
@@ -68,7 +87,7 @@ def extract_manuscript_glossary(
 
     # Discover recurring parenthetical acronyms (only first expansion kept locked)
     acr_expansions: Dict[str, set[str]] = {}
-    for phrase, acr in PAREN_ACR_RE.findall(manuscript_text):
+    for phrase, acr in _abbreviation_definitions(manuscript_text):
         acr_expansions.setdefault(acr, set()).add(phrase.strip().lower())
         if acr not in seen_canon:
             seen_canon.add(acr)
@@ -104,6 +123,13 @@ def extract_manuscript_glossary(
                     "locked": True,
                 }
             )
+
+    lines = manuscript_text.splitlines()
+    for entry in entries:
+        forms = [entry["canonical"], *entry["variants"]]
+        if entry.get("full_form"):
+            forms.append(entry["full_form"])
+        entry["source_lines"] = [idx for idx, line in enumerate(lines, 1) if any(form in line for form in forms)]
 
     return {
         "schema_version": "writing-02-glossary/v1",

@@ -1,33 +1,7 @@
 {
-  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test schema, not an undisclosed benchmark output.",
-  "schema_version": "writing-02-polishing-result/v1",
-  "challenge_id": "product-arena-02-7051d92d",
+  "_example_notice": "Illustrative excerpt. Run the example for the complete result, source map, revision report, and translation alignment.",
   "case_id": "example_writing_02_polishing_01",
   "status": "completed",
-  "register": "journal_article",
-  "summary": "Polished 6 sentences in journal_article register (4 edited, 2 preserved) with 100% numeric/formula/citation invariance, hedging/causality conservation, and full sentence-level revision rationale.",
-  "metrics": {
-    "sentence_count": 6,
-    "edited_count": 4,
-    "token_invariance": 1.0,
-    "hedging_causality_conservation": 1.0,
-    "terminology_consistency": 1.0,
-    "register_cleanliness": 1.0
-  },
-  "artifacts": {
-    "glossary_json": "/app/work/polishing/glossary.json",
-    "guarded_sentences_json": "/app/work/polishing/guarded_sentences.json",
-    "polished_doc_json": "/app/work/polishing/polished_doc.json",
-    "polished_manuscript": "/app/output/polished_manuscript.md",
-    "revision_report_md": "/app/output/revision_report.md",
-    "patch_diff": "/app/work/polishing/patch.diff",
-    "qa_report_json": "/app/work/polishing/qa_report.json"
-  },
-  "change_records": [],
-  "uncertainties": [],
-  "verification": {
-    "passed": true,
-    "check_count": 6,
-    "failed_checks": []
-  }
+  "polished_manuscript": "# Repeatability\n\nThe paired measurements were repeatable at 8 Hz. The sampling frequency may affect precision [2].\n",
+  "author_query": "No author clarification was needed for the two supplied sentences."
 }

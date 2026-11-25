@@ -14,19 +14,33 @@ from typing import Any, Dict, List, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 
+# Match long structured items first so a citation year or equation coefficient is
+# compared within its source expression. The last alternative catches unitless
+# sample counts, signed values, thresholds, uncertainties, and percentages.
+_NUMBER = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+_UNIT = (
+    r"(?:wt\.?\s*%|mol\s*%|vol\.?\s*%|[%‰％]|°[CF]|℃|"
+    r"(?:[fpnuμµmkMGT]?)(?:Pa|Hz|mol|Da|J|W|V|A|F|H|N|S|Bq|Gy|Sv|"
+    r"eV|K|g|L|l|m|s|M)|bar|rpm|ppm|ppb|h|min|mmHg|dB|Å|Ω)"
+    r"(?:\^?[−-]?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+)?"
+)
+_QUANTITY = re.compile(
+    r"(?:(?:[<>]=?|[≈~≤≥=±])\s*|(?<![A-Za-z0-9_.]))[+−-]?" + _NUMBER +
+    r"(?:[eE][+−-]?\d+|\s*[×x]\s*10(?:\^?[+−-]?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+))?"
+    r"(?:\s*(?:[–−-]|±)\s*[+−-]?" + _NUMBER + r")?"
+    r"(?:\s*" + _UNIT + r"(?:\s*[/·]\s*" + _UNIT + r")*(?![A-Za-z]))?"
+)
 INVARIANT_PATTERNS: List[re.Pattern[str]] = [
-    re.compile(r"\$\$[^$]+\$\$"),
-    re.compile(r"\$[^$\n]+\$"),
-    re.compile(r"\\(?:cite[pt]?|eqref|ref|label)\{[^}]+\}"),
-    re.compile(r"\[@[^\]]+\]|\[\s*\d+(?:\s*[-–,]\s*\d+)*\s*\]"),
-    re.compile(r"\([A-Z][A-Za-z\-]+(?:\s+et\s+al\.)?,\s*\d{4}[a-z]?\)"),
-    re.compile(r"\b(?:Figs?\.|Figures?|Tables?|Tabs?\.|Eqs?\.|Equations?)\s*\(?\d+(?:\.\d+)*[a-zA-Z]?\)?"),
-    re.compile(r"(?:图|表|式)\s*\d+(?:\.\d+)*"),
-    re.compile(
-        r"(?<![A-Za-z0-9_])(?:[±~<>≤≥]?\s*\d+(?:\.\d+)?(?:\s*[×x]\s*10\^?[−\-]?\d+)?\s*"
-        r"(?:%|wt%|mol%|K|°C|MPa|kPa|bar|mL/min|mL|L|mg|g|kg|h|min|s|ms|nm|μm|mm|cm|m|eV|kJ/mol|s\^-1|h\^-1))\b"
-    ),
-    re.compile(r"(?<![A-Za-z0-9_.])\d+\.\d+(?![A-Za-z0-9_.])"),
+    re.compile(r"\$\$[^$]+\$\$|(?<!\\)\$[^$\n]+(?<!\\)\$"),
+    re.compile(r"\\\(.+?\\\)|\\\[.+?\\\]", re.DOTALL),
+    re.compile(r"\\(?:[Cc]ite\w*|parencite|textcite|autocite|[cC]ref|eqref|autoref|pageref|ref|label)\*?(?:\s*\[[^\]]*\]){0,2}\s*\{[^}]+\}"),
+    re.compile(r"\[@[^\]]+\]|[\[【]\s*\d+(?:\s*[-–—,，;；]\s*\d+)*\s*[\]】]"),
+    re.compile(r"\((?:[A-Z][\w’'-]+(?:[, .&;\w’'-]*?)\s*,?\s*(?:19|20)\d{2}[a-z]?)(?:\s*;\s*[A-Z][^()\n]*?\d{4}[a-z]?)*\)"),
+    re.compile(r"(?i:\b(?:Figs?\.|Figures?|Tables?|Tabs?\.|Eqs?\.|Equations?|Sections?|Appendix))\s*(?:\([A-Z]?\d+(?:\.\d+)*[a-zA-Z]?\)|[A-Z]?\d+(?:\.\d+)*[a-zA-Z]?)"),
+    re.compile(r"(?:图|表|式)\s*[A-Z]?\d+(?:\.\d+)*[a-zA-Z]?"),
+    re.compile(r"https?://[^\s<>()\]]*[^\s<>()\].,;:]|10\.\d{4,9}/[-._;()/:A-Za-z0-9]*[A-Za-z0-9]", re.I),
+    re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9₀-₉-]*[0-9₀-₉])(?:[A-Z][a-z]?[0-9₀-₉]*-?){2,}(?![A-Za-z0-9])"),
+    _QUANTITY,
 ]
 
 
