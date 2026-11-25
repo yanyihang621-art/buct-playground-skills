@@ -9,9 +9,11 @@ from pathlib import Path
 from build_case_scope import apply_scope
 from build_office_artifacts import render_office
 from build_result_contract import artifact_ref, bind_contract
+from coverage_evidence import classify_coverage
 from draft_methods_section import render_methods_chapter, render_parameter_table_md, render_repro_and_questions_md
 from exp_utils import write_json_atomic, write_text_lf
 from extract_experiment_facts import extract_experiment_facts
+from source_labels import expand_labels
 from review_evidence import apply_review
 from verify_methods_exp import verify_methods_and_experiments
 
@@ -96,9 +98,16 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
     values = load_object(contract_values, issues, 'contract_values_unavailable')
     extracted = extract_experiment_facts(inputs, case)
     draft = read_draft(draft_file, issues)
+    draft, inline_links, label_issues = expand_labels(draft, extracted['facts'].get('evidence', []))
+    issues.extend(label_issues)
+    if inline_links and isinstance(review.get('claim_sources', []), list):
+        review['claim_sources'] = review.get('claim_sources', []) + inline_links
     facts, table, claims, review_issues = apply_review(extracted['facts'], extracted['parameter_table'], review, draft)
     issues.extend(review_issues)
     out_of_scope = apply_scope(facts, review, case, inputs, issues)
+    coverage, coverage_issues = classify_coverage(draft, claims, review.get('coverage_links', {}), out_of_scope)
+    facts['coverage_evidence'] = coverage
+    issues.extend(coverage_issues)
     sources = facts.get('scanned_sources', [])
     artifacts = {}
     changes = review_list(review, 'change_records', issues).copy()
@@ -138,11 +147,16 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
         if draft:
             diff_manuscript(original_file, inputs, chapter, output, artifacts, changes, issues)
         missing = [key for key in ('steps', 'datasets', 'baselines', 'limitations')
-                   if key not in out_of_scope and not facts.get(key)]
+                   if key not in out_of_scope and not facts.get(key) and not coverage.get(key)]
         if missing:
             issues.append({'code': 'missing_experiment_elements', 'fields': missing})
         qa = verify_methods_and_experiments(chapter, repro, facts, table,
                                              status_claimed='partial' if issues else 'completed', language=lang)
+        qa['linked_topic_counts'] = {topic: len(rows) for topic, rows in coverage.items()}
+        if coverage_issues:
+            qa['checks']['source_linked_coverage'] = False
+            qa['violations'].extend({'check': 'source_linked_coverage', **item} for item in coverage_issues)
+            qa['passed'] = False
         if not qa['passed']:
             issues.append({'code': 'qa_violations', 'items': qa['violations']})
     else:

@@ -100,21 +100,65 @@ def value_present(value, text):
 def name_pattern(name, aliases=()):
     names = {name, name.replace("_", " "), *ALIASES.get(name.lower(), ()), *aliases}
     parts = [re.escape(word) for word in sorted(names, key=len, reverse=True) if word]
-    return re.compile(r"(?<![A-Za-z0-9_.])(?:" + "|".join(parts) + r")(?![A-Za-z0-9_])", re.I)
+    return re.compile(r"(?<![A-Za-z0-9_.])(?:" + "|".join(parts) + r")(?![A-Za-z0-9_]|\.[A-Za-z_])", re.I)
+
+
+class ParameterNames:
+    """Resolve manuscript labels against all scoped names in this case."""
+
+    def __init__(self, names):
+        self.owners, self.patterns = {}, {}
+        for name in set(names):
+            if not name:
+                continue
+            parts = name.casefold().split(".")
+            terms = {".".join(parts[i:]) for i in range(len(parts))}
+            terms.update(ALIASES.get(parts[-1], ()))
+            terms.update(term.replace("_", " ") for term in list(terms))
+            self.patterns[name] = name_pattern(name, terms)
+            for term in terms:
+                self.owners.setdefault(term, set()).add(name)
+
+    def matches(self, name, text, heading=""):
+        for label in self.patterns[name].finditer(text):
+            owners = self.owners[label[0].casefold()]
+            if len(owners) == 1:
+                yield label
+                continue
+            # Shared suffixes require local scope evidence. Components common to
+            # every competing name (e.g. "runs", "decoder") identify no run.
+            components = {n: set(n.casefold().split(".")[:-1]) for n in owners}
+            shared = set.intersection(*components.values())
+            for context in (text, heading):
+                cues = {token for token in set.union(*components.values()) - shared
+                        if re.search(r"(?<![a-z0-9_])" + re.escape(token) + r"(?![a-z0-9_])", context, re.I)}
+                if cues:
+                    active = {n for n in owners if cues <= components[n]}
+                    if active == {name}:
+                        yield label
+                    break
+
+
+def manuscript_clauses(text):
+    """Keep table rows intact. A new clause may introduce a different run."""
+    heading = ""
+    for number, line in enumerate(plain(text).splitlines(), 1):
+        if re.match(r"^\s*#{1,6}\s+", line):
+            heading = line
+            continue
+        for clause in re.split(r"[;；。]|\.\s+(?=[A-Z\u3400-\u9fff])", line):
+            if clause.strip():
+                yield number, clause, heading
 
 
 def inspect_assignments(chapter, params, facts):
-    lines = plain(chapter).splitlines()
+    clauses = list(manuscript_clauses(chapter))
     sources = set(facts.get("scanned_sources", []))
     evidence = {(str(e.get("source", "")), str(e.get("locator", ""))) for e in facts.get("evidence", [])}
     conflicts = {c.get("parameter"): c.get("values", {}) for c in facts.get("conflicts", [])}
     errors, review, matched = [], [], 0
     missing = 0
-    # A short alias shared by multiple scoped rows would join different runs or phases.
-    leaf_counts = {}
-    for row in params:
-        leaf = str(row.get("name", "")).rsplit(".", 1)[-1]
-        leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+    names = ParameterNames([str(row.get("name", "")) for row in params] + list(conflicts))
     for row in params:
         name = str(row.get("name", "")).strip()
         value = row.get("value")
@@ -127,9 +171,6 @@ def inspect_assignments(chapter, params, facts):
         if (not source or (sources and source not in sources) or
                 (locator and evidence and (source, locator) not in evidence)):
             errors.append({"parameter": name, "reason": "untraceable_parameter_source", "source": source, "locator": locator})
-        leaf = name.rsplit(".", 1)[-1]
-        aliases = [leaf, leaf.replace("_", " ")] if leaf != name and leaf_counts[leaf] == 1 else []
-        pattern = name_pattern(name, aliases)
         pairs = []
         mentioned = False
         candidates = list(conflicts.get(name, {}).values()) if unresolved else [value]
@@ -139,8 +180,8 @@ def inspect_assignments(chapter, params, facts):
         numeric = all(decimal(v) is not None for v in candidates)
         source_unit = str(row.get("unit") or "")
         fractional = bool(re.search(r"dropout|accuracy|fraction|proportion|macro_f1|recall|precision|specificity", name, re.I))
-        for idx, line in enumerate(lines, start=1):
-            for label in pattern.finditer(line):
+        for idx, line, heading in clauses:
+            for label in names.matches(name, line, heading):
                 mentioned = True
                 tail = line[label.end():].lstrip()
                 link = LINK.match(tail)

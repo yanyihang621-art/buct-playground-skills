@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from exp_utils import load_methods_rules, write_json_atomic
-from parameter_claims import inspect_assignments, name_pattern, plain, value_present
+from parameter_claims import ParameterNames, inspect_assignments, manuscript_clauses, plain, value_present
 
 
 # These are section meanings, not required literal titles or a required ordering.
@@ -118,25 +118,33 @@ def same_line(text, first, second):
     return any(re.search(first, line, re.I) and re.search(second, line, re.I) for line in text.splitlines())
 
 
-def conflict_disclosures(chapter, facts, status):
+def conflict_disclosures(chapter, facts, status, params=()):
     errors = []
-    lines = plain(chapter).splitlines()
-    for conflict in facts.get("conflicts", []):
+    clauses = list(manuscript_clauses(chapter))
+    conflicts = facts.get("conflicts", [])
+    names = ParameterNames([str(row.get("name", "")) for row in params] +
+                           [str(issue.get("parameter", "")) for issue in conflicts])
+    for conflict in conflicts:
         name = str(conflict.get("parameter", ""))
-        aliases = [name.removeprefix("setup.").replace("_", " ")] if name.startswith("setup.") else []
-        pattern = name_pattern(name, aliases)
         values = conflict.get("values", {})
         if not name or not isinstance(values, dict) or not values:
             errors.append({"reason": "missing_conflict_evidence", "parameter": name})
             continue
         disclosed = False
-        for i, line in enumerate(lines):
-            if pattern.search(line):
-                # A multiline footnote/table may follow; don't borrow a warning about another parameter.
-                window = "\n".join(lines[i:i + 4])
-                if not re.search(CONFLICT, line, re.I):
-                    if not re.search(CONFLICT, line + "\n" + " ".join(lines[max(0, i-1):i]), re.I):
-                        continue
+        for i, (line_no, clause, heading) in enumerate(clauses):
+            if any(names.matches(name, clause, heading)):
+                nearby = [clause]
+                for next_no, continuation, next_heading in clauses[i+1:i+4]:
+                    if next_heading != heading or next_no > line_no + 1:
+                        break
+                    # A second parameter/section starts a different disclosure.
+                    if any(pattern.search(continuation) for pattern in names.patterns.values()):
+                        break
+                    nearby.append(continuation)
+                    line_no = next_no
+                window = "\n".join(nearby)
+                if not re.search(CONFLICT, window + "\n" + heading, re.I):
+                    continue
                 if all(value_present(val, window) for val in values.values()):
                     disclosed = True
                     break
@@ -231,7 +239,7 @@ def verify_methods_and_experiments(chapter_md, repro_md, facts, param_table, *, 
     review.extend(p_review)
     if p_issues:
         issues["parameter_prose_consistency"] = p_issues
-    if conflict_issues := conflict_disclosures(chapter_md, facts, status_claimed):
+    if conflict_issues := conflict_disclosures(chapter_md, facts, status_claimed, params):
         issues["cross_source_conflict_disclosure"] = conflict_issues
 
     check = "train_val_test_separation_and_seeds"

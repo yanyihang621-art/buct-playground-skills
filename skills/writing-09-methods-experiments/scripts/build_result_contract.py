@@ -86,6 +86,21 @@ def _validated_paths(value, key, out_dir, issues):
     return value
 
 
+def _resolve_references(value, catalog, field, issues):
+    if isinstance(value, list):
+        return [_resolve_references(item, catalog, f'{field}[{i}]', issues) for i, item in enumerate(value)]
+    if not isinstance(value, dict):
+        return value
+    if '$from' in value:
+        name = value['$from']
+        if len(value) == 1 and isinstance(name, str) and name in catalog and catalog[name] is not None:
+            return catalog[name]
+        issues.append({'code': 'invalid_contract_value_reference', 'field': field,
+                       'detail': 'Expected only $from with the name of an available generated value.'})
+        return None
+    return {k: _resolve_references(v, catalog, f'{field}.{k}', issues) for k, v in value.items()}
+
+
 def bind_contract(result, contract, provided, catalog, out_dir):
     """Never use schema descriptions or example/default values as answers."""
     issues = []
@@ -96,7 +111,7 @@ def bind_contract(result, contract, provided, catalog, out_dir):
         if key in result:
             value = result[key]
         elif key in provided:
-            value = provided[key]
+            value = _resolve_references(provided[key], catalog, key, issues)
         elif key in catalog and catalog[key] is not None:
             value = catalog[key]
         else:

@@ -118,20 +118,40 @@ def apply_review(facts, param_table, review, chapter_md):
     claims = review.get("claim_sources", []) if isinstance(review, dict) else None
     if not isinstance(claims, list):
         return facts, table, [], [{"code": "invalid_claim_sources"}]
-    manuscript = normalized(chapter_md)
+    lines = [normalized(line) for line in chapter_md.splitlines()]
+    offsets = []
+    pos = 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line) + 1
+    manuscript = " ".join(lines)
+    covered = []
     for i, entry in enumerate(claims):
         if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("claim", "source", "locator", "quote")):
             issues.append({"code": "incomplete_claim_link", "row": i})
             continue
         claim, quote = normalized(entry["claim"]), normalized(entry["quote"])
-        if claim not in manuscript:
+        line_no = entry.get("line")
+        if line_no is None:
+            first, scope = 0, manuscript
+        elif type(line_no) is int and 1 <= line_no <= len(lines):
+            first, scope = offsets[line_no-1], lines[line_no-1]
+        else:
+            issues.append({"code": "invalid_claim_line", "row": i})
+            continue
+        hits = list(re.finditer(re.escape(claim), scope))
+        occurrence = entry.get("occurrence", 1)
+        if not hits or type(occurrence) is not int or not 1 <= occurrence <= len(hits):
             issues.append({"code": "claim_absent_from_manuscript", "row": i, "claim": claim})
+        elif len(hits) > 1 and "occurrence" not in entry:
+            issues.append({"code": "ambiguous_claim_location", "row": i, "claim": claim})
         elif not any(quote in text for text in evidence[(entry["source"], entry["locator"])]):
             issues.append({"code": "quote_or_locator_not_found", "row": i, "source": entry["source"], "locator": entry["locator"]})
         else:
-            groups[claim].append(entry)
+            hit = hits[occurrence-1]
+            groups[(claim, first + hit.start(), first + hit.end())].append(entry)
 
-    for claim, entries in groups.items():
+    for (claim, start, end), entries in groups.items():
         quotes = " ".join(normalized(entry["quote"]) for entry in entries)
         unsupported = numbers(claim) - numbers(quotes)
         if unsupported:
@@ -139,9 +159,14 @@ def apply_review(facts, param_table, review, chapter_md):
         if unsupported:
             issues.append({"code": "unsupported_claim_numbers", "claim": claim, "numbers": sorted(map(str, unsupported))})
             continue
+        covered.append((start, end))
+        seen_links = set()
         for entry in entries:
-            link = {key: entry[key] for key in ("claim", "source", "locator", "quote")}
-            valid.append(link)
+            link = {key: entry[key] for key in ("claim", "source", "locator", "quote", "line", "occurrence") if key in entry}
+            key = (link["source"], link["locator"], link["quote"])
+            if key not in seen_links:
+                valid.append(link)
+                seen_links.add(key)
             if "fact" in entry:
                 annotation = entry["fact"]
                 reason = add_annotation(facts, table, annotation, link, quotes) if isinstance(annotation, dict) else "invalid_fact"
@@ -150,14 +175,15 @@ def apply_review(facts, param_table, review, chapter_md):
     if claims:
         # Every quantitative statement needs its own source. A number found in
         # an unrelated paragraph or merely somewhere in the paper cannot cover it.
-        supported = sorted({normalized(link["claim"]) for link in valid}, key=len, reverse=True)
-        for line_no, line in enumerate(chapter_md.splitlines(), 1):
-            line = normalized(line).strip()
+        remaining = list(manuscript)
+        for start, end in covered:
+            remaining[start:end] = " " * (end - start)
+        unchecked = "".join(remaining)
+        for line_no, (offset, line) in enumerate(zip(offsets, lines), 1):
             if not line or line.startswith(("#", "|---", "```")):
                 continue
-            rest = re.sub(r"^\s*(?:[-*]|\d+[.)、])\s+", "", line)
-            for fragment in supported:
-                rest = rest.replace(fragment, " ")
+            rest = unchecked[offset:offset + len(line)]
+            rest = re.sub(r"^\s*(?:[-*]|\d+[.)、])\s+", "", rest)
             rest = re.sub(r"\[(?:[A-Za-z]?\d+(?:[-–, ]+[A-Za-z]?\d+)*)\]", "", rest)
             if numbers(rest):
                 issues.append({"code": "unmapped_manuscript_numbers", "line": line_no, "excerpt": rest[:220]})

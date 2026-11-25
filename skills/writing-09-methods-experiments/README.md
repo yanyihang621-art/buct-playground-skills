@@ -12,16 +12,16 @@ mkdir -p "$T/input"
 cp examples/example_case.json "$T/input/case.json"
 python3 scripts/extract_experiment_facts.py --input-dir "$T/input" --out-facts "$T/facts.json" --out-params "$T/params.json"
 python3 scripts/read_evidence.py --facts "$T/facts.json" --source case.json --query window
-python3 scripts/build_methods_result.py --input-dir "$T/input" --work-dir "$T/work" --output-dir "$T/output" --draft-file examples/tutorial_draft.md --review-file examples/tutorial_review.json --contract-values examples/tutorial_contract.json
+python3 scripts/build_methods_result.py --input-dir "$T/input" --work-dir "$T/work" --output-dir "$T/output" --draft-file examples/tutorial_annotated.md --contract-values examples/tutorial_contract.json
 ~~~
 
-打开 output/result.json 的 manuscript、evidence 和 data_release。output/parameter_table.md 可逐行核对每条参数的取值和位置。示例的真实复现测试会打开全部产物，篡改一条定位并添加一句无来源的数字，检查是否能报告对应问题。
+示例稿每句话末尾的 ⟦…⟧ 由真实材料索引生成。打开 output/result.json 的 manuscript、evidence 和 data_release，可看到已去除侧注的稿件和完整来源。examples/tutorial_draft.md 与 examples/tutorial_review.json 给出同一案例的手工引用形式。output/parameter_table.md 可逐行核对每条参数的取值和位置。示例的真实复现测试会打开全部产物，篡改一条定位并添加一句无来源的数字，检查是否能报告对应问题。
 
 ## 实际案例
 
 1. 按 SKILL.md 在 Harbor 中读取案例和契约，建立材料目录。read_evidence.py 支持按主题、路径或短语查看摘录。若文档为扫描件，核对原页并保留页码。找不到来源的参数不可写成已使用值。
 2. 结合读者、所需语言和论文格式撰写 agent_draft.md。研究设计、样品与数据集、比较对象、评估指标均以原材料为准。校验器允许整合标题，关键数字和结论仍要逐项对回证据。
-3. 对照 examples/tutorial_review.json 填写 claim_sources。每条取证记录最小需要 claim、source、locator 和 quote。幻灯、PDF 或 Word 的技术预览不能替代可编辑原件。修订现有文本可传 --original-file，逐行差异作为独立附件返回。关于缺材料、适用范围与字段类型见 SKILL.md。
+3. 根据 read_evidence.py 提供的 ID 就地标注关键断言，也可对照 examples/tutorial_review.json 填写 claim_sources。每条取证记录最小需要 claim、source、locator 和 quote。幻灯、PDF 或 Word 的技术预览不能替代可编辑原件。修订现有文本可传 --original-file，逐行差异作为独立附件返回。关于缺材料、适用范围与字段类型见 SKILL.md。
 4. 使用 --contract-values 传入案例自定义字段。生成 Word 或 PDF 时分别传 --docx 和 --pdf；PDF 预览应由实际 Word 稿渲染。qa_report.json 中 violations 是发现的问题，review_items 包含需要人工语义复核的事项。无成稿时脚本可生成抽取提纲，标为 partial。
 5. 维护词表、来源类型或规则后重跑下面的本地对照。对代码默认值和日志不一致的案例，核对双方原文并向作者询问对应运行标识。
 

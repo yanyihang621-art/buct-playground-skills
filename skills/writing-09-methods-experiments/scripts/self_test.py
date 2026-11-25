@@ -18,6 +18,8 @@ if str(SCRIPT_DIR) not in sys.path:
 from build_methods_result import run_methods_pipeline
 from exp_utils import write_json_atomic, write_text_lf
 from verify_methods_exp import verify_methods_and_experiments
+from source_labels import label_for
+from extract_experiment_facts import extract_experiment_facts
 
 
 def _setup_m1_ml_experiment(d: Path) -> Path:
@@ -207,6 +209,14 @@ def _test_authored_case(root: Path) -> Dict[str, bool]:
 
     result = package("valid")
     links = result["claim_sources"]
+    annotated = examples / "tutorial_annotated.md"
+    compact = package("inline", draft_file=annotated, review_file=None)
+    repeated_text = annotated.read_text(encoding="utf-8") + "\nThe smoother used a window of 5 samples.\n"
+    write_text_lf(root / "repeated_claim.md", repeated_text)
+    repeated = package("repeated", draft_file=root / "repeated_claim.md", review_file=None)
+    unknown = re.sub(r"⟦E[0-9a-f]+", "⟦ESTALE", repeated_text, count=1)
+    write_text_lf(root / "stale_label.md", unknown)
+    stale = package("stale", draft_file=root / "stale_label.md", review_file=None)
     damaged = json.loads(review.read_text(encoding="utf-8"))
     damaged["claim_sources"][0]["locator"] = "/missing/field"
     write_json_atomic(root / "bad_review.json", damaged)
@@ -216,6 +226,10 @@ def _test_authored_case(root: Path) -> Dict[str, bool]:
     drift = package("invented_value", draft_file=root / "bad_value.md")
     missing = package("missing_contract", contract_values=None)
     return {
+        "inline_manuscript_exact": compact["status"] == "completed" and compact["manuscript"] == content,
+        "all_inline_locations_resolved": {(r["source"], r["locator"]) for r in compact["claim_sources"]} == {(r["source"], r["locator"]) for r in links} and all("line" in r for r in compact["claim_sources"]),
+        "unlinked_repeat_rejected": repeated["status"] == "partial" and any(i.get("code") == "unmapped_manuscript_numbers" for i in repeated["uncertainties"]),
+        "unknown_label_rejected": stale["status"] == "partial" and any(i.get("code") == "invalid_evidence_label" for i in stale["uncertainties"]),
         "authored_chapter_complete": result["status"] == "completed" and result["verification"]["passed"],
         "contract_content_and_provenance": result.get("case_id") == case["case_id"] and result.get("manuscript") == content
         and result.get("data_release") == "BenchTrace release A" and bool(links) and result.get("evidence") == links,
@@ -223,6 +237,50 @@ def _test_authored_case(root: Path) -> Dict[str, bool]:
         "wrong_location_rejected": any(i.get("code") == "quote_or_locator_not_found" for i in bad["uncertainties"]),
         "unmapped_number_rejected": any(i.get("code") == "unmapped_manuscript_numbers" for i in drift["uncertainties"]),
         "missing_contract_value_reported": bool(missing["verification"]["contract_issues"]),
+    }
+
+
+def _test_narrative_sources(root: Path) -> Dict[str, bool]:
+    # Only setup, dataset metadata and the window are structured. The method,
+    # comparator and limits must be recovered from the supplied lab notebook.
+    example = SCRIPT_DIR.parent / "examples"
+    case = json.loads((example / "example_case.json").read_text(encoding="utf-8"))
+    for topic in ("steps", "baselines", "limitations"):
+        del case["materials"][topic]
+    case["output_contract"]["properties"]["editable_text"] = {"type": "string"}
+    inputs = root / "input"
+    write_json_atomic(inputs / "case.json", case)
+    sections = [
+        ("Method steps", "We aligned paired timestamps and filtered the residual traces."),
+        ("Experimental setup", "We selected the window on validation sensors and scored held-out sensors once."),
+        ("Parameters", "The smoother used a window of 5 samples."),
+        ("Dataset", "We partitioned release A of BenchTrace by sensor."),
+        ("Baselines", "We compared the smoother with the raw residual on the same sensor partition."),
+        ("Limitations", "The evaluation was limited to measurements collected indoors."),
+    ]
+    write_text_lf(inputs / "records" / "notebook.md", "\n".join(text for _, text in sections))
+    papers = extract_experiment_facts(inputs, case)["facts"]["evidence"]
+    by_text = {row["text"]: label_for(row) for row in papers if row["source"] == "records/notebook.md"}
+    annotated = "\n\n".join("## " + title + "\n" + text + "⟦" + by_text[text] + "⟧" for title, text in sections)
+    draft = root / "annotated.md"
+    options = root / "values.json"
+    write_text_lf(draft, annotated)
+    write_json_atomic(options, {"editable_text": {"$from": "manuscript"}, "data_release": "BenchTrace release A"})
+    args = dict(draft_file=draft, contract_values=options)
+    built = run_methods_pipeline(inputs, root / "work", root / "out", **args)
+    good = built["result"]
+    review = root / "review.json"
+    write_json_atomic(review, {"coverage_links": {"baselines": ["An unverified comparator."]}})
+    wrong_topic = run_methods_pipeline(inputs, root / "work", root / "bad-topic", review_file=review, **args)["result"]
+    write_json_atomic(options, {"editable_text": {"$from": "unavailable"}, "data_release": "BenchTrace release A"})
+    wrong_ref = run_methods_pipeline(inputs, root / "work", root / "bad-ref", **args)["result"]
+    return {
+        "published_free_text": good["status"] == "completed" and good["verification"]["passed"],
+        "body_has_linked_evidence": all(built["facts"]["coverage_evidence"].get(k)
+                                        and not built["facts"][k] for k in ("steps", "baselines", "limitations")),
+        "rendered_text_reference": good["editable_text"] == good["manuscript"] and "⟦" not in good["editable_text"],
+        "unverified_topic_rejected": any(i.get("code") == "unverified_coverage_claim" for i in wrong_topic["uncertainties"]),
+        "unknown_reference_rejected": any(i.get("code") == "invalid_contract_value_reference" for i in wrong_ref["uncertainties"]),
     }
 
 
@@ -267,6 +325,9 @@ def main() -> int:
     authored = _test_authored_case(root / "authored")
     summary["suites"]["authored_draft_and_contract"] = authored
     summary["all_passed"] = summary["all_passed"] and all(authored.values())
+    narrative = _test_narrative_sources(root / "narrative")
+    summary["suites"]["narrative_sources"] = narrative
+    summary["all_passed"] = summary["all_passed"] and all(narrative.values())
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r1)
         summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["regression_passed"]

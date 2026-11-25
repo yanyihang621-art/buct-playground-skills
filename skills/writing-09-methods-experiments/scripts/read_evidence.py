@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import re
 
+from source_labels import label_for
+
 TOPICS = {
     "procedure": r"protocol|prepar|preprocess|algorithm|procedure|align|filter|exclude|流程|步骤|预处理|筛选|剔除",
     "setup": r"software|hardware|version|environment|instrument|apparatus|package|seed|replicat|repeat|环境|仪器|重复|种子|批次",
@@ -48,12 +50,13 @@ def main():
     p.add_argument("--topic", choices=TOPICS)
     p.add_argument("--query", default="")
     p.add_argument("--source", default="")
+    p.add_argument("--passages", action="store_true", help="Show material passages and their citation IDs.")
     p.add_argument("--offset", type=int, default=0)
     p.add_argument("--limit", type=int, default=18)
     opts = p.parse_args()
     facts = json.loads(Path(opts.facts).read_text(encoding="utf-8"))
     rows = facts.get("evidence", [])
-    if not (opts.topic or opts.query or opts.source):
+    if not (opts.topic or opts.query or opts.source or opts.passages):
         print(json.dumps({"passages_per_source": Counter(r["source"] for r in rows),
                           "ingestion_issues": facts.get("ingestion_issues", []),
                           "topics": list(TOPICS)}, ensure_ascii=False))
@@ -61,7 +64,7 @@ def main():
     from itertools import islice
     start = max(opts.offset, 0)
     for row in islice(select_rows(rows, opts.topic, opts.query, opts.source), start, start + max(opts.limit, 0)):
-        print(json.dumps({k: row[k] for k in ("source", "locator", "text")}, ensure_ascii=False))
+        print(json.dumps({"id": label_for(row), **{k: row[k] for k in ("source", "locator", "text")}}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
