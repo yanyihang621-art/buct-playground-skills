@@ -12,6 +12,7 @@
     "metrics",
     "artifacts",
     "sources",
+    "claim_sources",
     "change_records",
     "uncertainties",
     "author_questions",
@@ -20,13 +21,26 @@
   "properties": {
     "schema_version": {"type": "string"},
     "challenge_id": {"type": "string"},
-    "case_id": {"type": "string"},
+    "case_id": {"description": "Original case identifier; null when absent, with a diagnostic."},
     "status": {"type": "string", "enum": ["completed", "partial", "refused"]},
     "language": {"type": "string"},
     "summary": {"type": "string"},
     "metrics": {"type": "object"},
-    "artifacts": {"type": "object"},
+    "artifacts": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Existing files relative to the output directory."},
     "sources": {"type": "array"},
+    "claim_sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "source", "locator", "quote"],
+        "properties": {
+          "claim": {"type": "string"},
+          "source": {"type": "string"},
+          "locator": {"type": "string"},
+          "quote": {"type": "string"}
+        }
+      }
+    },
     "change_records": {"type": "array"},
     "uncertainties": {"type": "array"},
     "author_questions": {"type": "array"},

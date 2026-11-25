@@ -1,7 +1,77 @@
 {
-  "case_id": "example_writing_09_methods_01",
-  "task_type": "methods_and_experiments_writing",
+  "case_id": "tutorial-sensor",
   "language": "en",
-  "spec_file": "experiment_spec.json",
-  "instructions": "Extract experimental steps, setup, datasets/splits, baselines, and parameter provenance across configs, logs, and scripts; detect cross-source conflicts and missing reproducibility items; draft an executable 6-section Methods & Experiments chapter."
+  "instructions": "Write a short editable Methods and Experiments chapter for a sensor-validation report. Preserve the distinction between selection and held-out evaluation.",
+  "output_contract": {
+    "type": "object",
+    "required": [
+      "case_id",
+      "manuscript",
+      "evidence",
+      "data_release"
+    ],
+    "properties": {
+      "case_id": {
+        "type": "string"
+      },
+      "manuscript": {
+        "type": "string"
+      },
+      "evidence": {
+        "type": "array"
+      },
+      "data_release": {
+        "type": "string"
+      }
+    }
+  },
+  "materials": {
+    "datasets": [
+      {
+        "name": "BenchTrace",
+        "version": "A",
+        "splits": "by sensor",
+        "split_method": "by sensor",
+        "preprocessing": "subtract the reference trace"
+      }
+    ],
+    "steps": [
+      {
+        "name": "Reference subtraction",
+        "operation": "Subtract the reference trace before smoothing.",
+        "input": "paired sensor traces",
+        "output": "residual traces",
+        "criterion": "paired timestamps"
+      }
+    ],
+    "setup": {
+      "software": "TraceKit",
+      "hardware": "bench logger",
+      "seeds": "fixed order",
+      "repeats": 3,
+      "command": "tracekit eval --plan bench",
+      "train_protocol": "Fit the offset with calibration sensors.",
+      "val_protocol": "Select the window on validation sensors.",
+      "test_protocol": "Score held-out sensors once."
+    },
+    "parameters": [
+      {
+        "name": "window",
+        "value": 5,
+        "unit": "samples",
+        "target_component": "smoother"
+      }
+    ],
+    "baselines": [
+      {
+        "name": "raw residual",
+        "matched_budget": "same sensor partition",
+        "metric": "absolute error",
+        "statistical_test": "median across sensors"
+      }
+    ],
+    "limitations": [
+      "The log contains no outdoor measurements."
+    ]
+  }
 }

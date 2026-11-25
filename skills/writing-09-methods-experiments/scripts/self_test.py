@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -158,7 +159,8 @@ def _run_negative_qa_tests(m1: Dict[str, Any]) -> Dict[str, bool]:
     # 4. Generic banned limitation cliche
     q4 = verify_methods_and_experiments(ch + "\n- There is still room for improvement in future.\n", rp, fc, pr)
     # 5. Missing Baselines & Controls section
-    q5 = verify_methods_and_experiments(ch.replace("## Baselines & Controls", "## Other"), rp, fc, pr)
+    without_controls = re.sub(r"(?ms)^## Baselines & Controls.*?(?=^## |\Z)", "", ch)
+    q5 = verify_methods_and_experiments(without_controls, rp, fc, pr)
 
     return {
         "neg_1_altered_param_caught": (not q1["passed"]) and (not q1["checks"]["parameter_prose_consistency"]),
@@ -170,21 +172,57 @@ def _run_negative_qa_tests(m1: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def _compare_baseline(m1: Dict[str, Any]) -> Dict[str, Any]:
-    m = m1["qa_report"]["metrics"]
+    """Run the original global substring rule and the revised verifier on identical edits."""
+    chapter, table = m1["chapter_md"], m1["param_table"]
+    replacement = chapter.replace("`batch_size` = `32`", "`batch_size` = `42`")
+    replacement = replacement.replace("`seed` = `42`", "`seed` = `32`")
+    cases = {"unchanged_control": chapter, "swapped_values": replacement,
+             "contradictory_second_assignment": chapter + "\nThe batch_size = 42 for this run.\n"}
+    records = {}
+    for name, prose in cases.items():
+        legacy_pass = all(str(row["name"]) in prose and str(row["value"]) in prose
+                          for row in table["parameters"])
+        revised = verify_methods_and_experiments(prose, m1["repro_md"], m1["facts"], table)
+        records[name] = {"old_global_substring_check_passed": legacy_pass,
+                         "revised_value_check_passed": revised["checks"]["parameter_prose_consistency"]}
+    return {"scope": "Same local manuscript, evidence and controlled edits. Compares parameter validators only.",
+            "observed": records,
+            "regression_passed": replacement != chapter and records["unchanged_control"]["revised_value_check_passed"]
+            and all(row["old_global_substring_check_passed"] and not row["revised_value_check_passed"]
+                    for name, row in records.items() if name != "unchanged_control")}
+
+
+def _test_authored_case(root: Path) -> Dict[str, bool]:
+    examples = SCRIPT_DIR.parent / "examples"
+    case = json.loads((examples / "example_case.json").read_text(encoding="utf-8"))
+    inputs = root / "input"
+    path = inputs / "case.json"
+    write_json_atomic(path, case)
+    draft = examples / "tutorial_draft.md"
+    review = examples / "tutorial_review.json"
+    opts = {"draft_file": draft, "review_file": review, "contract_values": examples / "tutorial_contract.json"}
+
+    def package(label, **overrides):
+        return run_methods_pipeline(inputs, root / label / "work", root / label / "output", **dict(opts, **overrides))["result"]
+
+    result = package("valid")
+    links = result["claim_sources"]
+    damaged = json.loads(review.read_text(encoding="utf-8"))
+    damaged["claim_sources"][0]["locator"] = "/missing/field"
+    write_json_atomic(root / "bad_review.json", damaged)
+    bad = package("bad_link", review_file=root / "bad_review.json")
+    content = draft.read_text(encoding="utf-8")
+    write_text_lf(root / "bad_value.md", content + "\nThe logger sampled at 999 Hz.\n")
+    drift = package("invented_value", draft_file=root / "bad_value.md")
+    missing = package("missing_contract", contract_values=None)
     return {
-        "naive_template_baseline": {
-            "cross_source_conflict_check": False,
-            "parameter_prose_consistency": 0.60,
-            "author_question_generation": False,
-            "repro_checklist_completeness": 0.45,
-        },
-        "skill_pipeline": {
-            "cross_source_conflict_check": True,
-            "parameter_prose_consistency": m["parameter_prose_consistency"],
-            "author_question_generation": True,
-            "repro_checklist_completeness": 1.0 if m["missing_repro_count"] == 0 else 0.7,
-        },
-        "skill_wins": m["parameter_prose_consistency"] >= 1.0 and m1["qa_report"]["passed"],
+        "authored_chapter_complete": result["status"] == "completed" and result["verification"]["passed"],
+        "contract_content_and_provenance": result.get("case_id") == case["case_id"] and result.get("manuscript") == content
+        and result.get("data_release") == "BenchTrace release A" and bool(links) and result.get("evidence") == links,
+        "published_files_open": all((root / "valid" / "output" / p).is_file() for p in result["artifacts"].values()),
+        "wrong_location_rejected": any(i.get("code") == "quote_or_locator_not_found" for i in bad["uncertainties"]),
+        "unmapped_number_rejected": any(i.get("code") == "unmapped_manuscript_numbers" for i in drift["uncertainties"]),
+        "missing_contract_value_reported": bool(missing["verification"]["contract_issues"]),
     }
 
 
@@ -198,7 +236,7 @@ def main() -> int:
     c1 = _setup_m1_ml_experiment(root / "m1" / "input")
     r1 = run_methods_pipeline(root / "m1" / "input", root / "m1" / "work", root / "m1" / "output", case_path=c1)
     neg = _run_negative_qa_tests(r1)
-    m1_ok = r1["result"]["status"] == "completed" and r1["qa_report"]["passed"] and r1["result"]["metrics"]["parameter_count"] >= 6 and all(neg.values())
+    m1_ok = r1["result"]["status"] == "partial" and r1["qa_report"]["passed"] and r1["result"]["metrics"]["parameter_count"] >= 6 and all(neg.values())
 
     c2 = _setup_m2_conflict_partial(root / "m2" / "input")
     r2 = run_methods_pipeline(root / "m2" / "input", root / "m2" / "work", root / "m2" / "output", case_path=c2)
@@ -211,7 +249,7 @@ def main() -> int:
 
     c3 = _setup_m3_chem_zh(root / "m3" / "input")
     r3 = run_methods_pipeline(root / "m3" / "input", root / "m3" / "work", root / "m3" / "output", case_path=c3)
-    m3_ok = r3["result"]["status"] == "completed" and r3["qa_report"]["passed"] and r3["result"]["metrics"]["parameter_count"] == 2
+    m3_ok = r3["result"]["status"] == "partial" and r3["qa_report"]["passed"] and r3["result"]["metrics"]["parameter_count"] == 2
 
     c4 = _setup_m4_empty(root / "m4" / "input")
     r4 = run_methods_pipeline(root / "m4" / "input", root / "m4" / "work", root / "m4" / "output", case_path=c4)
@@ -226,9 +264,12 @@ def main() -> int:
             "m4_empty_inputs_refused": {"passed": m4_ok, "status": r4["result"]["status"]},
         },
     }
+    authored = _test_authored_case(root / "authored")
+    summary["suites"]["authored_draft_and_contract"] = authored
+    summary["all_passed"] = summary["all_passed"] and all(authored.values())
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r1)
-        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["skill_wins"]
+        summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["regression_passed"]
 
     write_json_atomic(root / "self_test_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

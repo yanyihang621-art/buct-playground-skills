@@ -16,52 +16,59 @@ if str(SCRIPT_DIR) not in sys.path:
 from exp_utils import write_text_lf
 
 
+def display(value, missing="—"):
+    if value in (None, "", []):
+        return missing
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def cell(value):
+    return display(value).replace("|", "\\|").replace("\n", " ")
+
+
 def render_parameter_table_md(param_table: Dict[str, Any], is_zh: bool = False) -> str:
-    lines: List[str] = [
-        "# 参数与来源对照表 (Parameter Provenance Table)" if is_zh else "# Parameters & Provenance Table",
-        "",
-        "| 参数名 (Name) | 取值 (Value) | 单位 (Unit) | 作用对象 (Target) | 证据来源 (Source) |"
-        if is_zh
-        else "| Name | Value | Unit | Target Component | Source Provenance |",
-        "|---|---|---|---|---|",
-    ]
-    for p in param_table.get("parameters", []):
-        lines.append(
-            f"| `{p['name']}` | `{p['value']}` | `{p['unit']}` | {p['target_component']} | `{p['source']}` |"
-        )
+    title = "参数、适用条件与出处" if is_zh else "Parameter values, scope and provenance"
+    headers = ("参数名", "取值", "单位", "作用对象", "原始材料与位置") if is_zh else (
+        "Parameter", "Value", "Unit", "Applies to", "Source and location")
+    lines = [f"# {title}", "", "| " + " | ".join(headers) + " |", "|---|---|---|---|---|"]
+    for param in param_table.get("parameters", []):
+        observations = param.get("observations", []) or [param]
+        for obs in observations:
+            unresolved = param.get("status") == "unresolved"
+            note = ("（待确认）" if is_zh else " (unresolved)") if unresolved else ""
+            source = display(obs.get("source", param.get("source")))
+            location = display(obs.get("locator", param.get("locator")), "")
+            fields = [param["name"], display(obs.get("value", param.get("value"))) + note,
+                      obs.get("unit") or param.get("unit"), obs.get("target_component") or param.get("target_component"),
+                      source + " " + location]
+            lines.append("| " + " | ".join(cell(v) for v in fields) + " |")
     if not param_table.get("parameters"):
-        lines.append("| `[NONE]` | - | - | - | No parameters extracted |")
-    lines.append("")
-    return "\n".join(lines)
+        lines.extend(["", "材料中未抽取到可定位参数。" if is_zh else "No parameter with a source was extracted."])
+    return "\n".join(lines) + "\n"
 
 
 def render_repro_and_questions_md(facts: Dict[str, Any], is_zh: bool = False) -> str:
     setup = facts.get("setup", {})
-    lines: List[str] = [
-        "# 复现清单与待作者确认项 (Reproducibility & Author Questions)" if is_zh else "# Reproducibility Checklist & Author Questions",
-        "",
-        "## 复现配置清单" if is_zh else "## Reproducibility Checklist",
-        f"- **Software:** {setup.get('software') or '[MISSING - author confirmation required]'}",
-        f"- **Hardware:** {setup.get('hardware') or '[MISSING - author confirmation required]'}",
-        f"- **Seeds:** {setup.get('seeds') or '[MISSING - author confirmation required]'}",
-        f"- **Repeats:** {setup.get('repeats') or '[MISSING - author confirmation required]'}",
-        f"- **Command:** `{setup.get('command') or 'MISSING'}`",
-        "",
-        "## 跨文件参数冲突" if is_zh else "## Cross-Source Parameter Conflicts",
-    ]
-    if facts.get("conflicts"):
-        for cf in facts["conflicts"]:
-            lines.append(f"- **[CONFLICT] `{cf['parameter']}`**: {cf['message']}")
-    else:
-        lines.append("- None detected." if not is_zh else "- 未检出跨文件参数冲突。")
-    lines.extend(["", "## 需作者确认的问题" if is_zh else "## Open Author Questions"])
-    if facts.get("author_questions"):
-        for q in facts["author_questions"]:
-            lines.append(f"- **`{q['field']}`**: {q['question']}")
-    else:
-        lines.append("- None." if not is_zh else "- 无待确认缺口。")
-    lines.append("")
-    return "\n".join(lines)
+    lines = ["# " + ("复现清单与作者确认项" if is_zh else "Reproducibility checklist and open questions"), ""]
+    labels = [("software", "软件版本", "Software"), ("hardware", "硬件或仪器", "Hardware"),
+              ("seeds", "随机种子", "Seeds"), ("repeats", "独立重复", "Repeats"),
+              ("code_version", "代码版本", "Code revision"), ("command", "执行命令或操作规程", "Command or protocol"),
+              ("data_access", "数据来源与获取方式", "Data access")]
+    missing = "材料未说明" if is_zh else "Not reported in the materials"
+    for key, zh, en in labels:
+        lines.append(f"- **{zh if is_zh else en}** — {display(setup.get(key), missing)}")
+    for dataset in facts.get("datasets", []):
+        if isinstance(dataset, dict):
+            lines.append(f"- **{display(dataset.get('name'))}** — {display(dataset.get('version'), missing)}")
+    for title, items in [
+        ("跨来源冲突" if is_zh else "Discrepancies", [c.get("message") or display(c.get("values")) for c in facts.get("conflicts", [])]),
+        ("待作者确认" if is_zh else "Questions for the author", [q.get("question") if isinstance(q, dict) else q for q in facts.get("author_questions", [])]),
+    ]:
+        if items:
+            lines.extend(["", "## " + title, *["- " + display(item) for item in items]])
+    return "\n".join(lines) + "\n"
 
 
 def render_methods_chapter(facts: Dict[str, Any], param_table: Dict[str, Any], *, language: str = "en") -> str:
@@ -106,8 +113,8 @@ def render_methods_chapter(facts: Dict[str, Any], param_table: Dict[str, Any], *
     # 3. Parameters & Provenance
     lines.append("## 参数与来源" if is_zh else "## Parameters & Provenance")
     if params:
-        param_summary = "; ".join(f"`{p['name']}` = `{p['value']}` ({p['unit']}, source: `{p['source']}`)" for p in params)
-        lines.append(f"All experimental parameters are traceably synchronized with source artifacts: {param_summary}.")
+        param_summary = "; ".join(f"`{p['name']}` = `{display(p['value'])}` ({display(p.get('unit'))}, source: `{p.get('source', '')} {p.get('locator', '')}`)" for p in params if p.get('value') is not None)
+        lines.append(f"{param_summary}")
     else:
         lines.append("[No parameters found across input configs/logs/code.]")
     if facts.get("conflicts"):
@@ -124,7 +131,7 @@ def render_methods_chapter(facts: Dict[str, Any], param_table: Dict[str, Any], *
             lines.append(
                 f"- **{ds.get('name', 'Dataset')}** (version `{ds.get('version', 'UNSPECIFIED')}` | size: {ds.get('size', 'UNSPECIFIED')}): "
                 f"splits={ds.get('splits', 'UNSPECIFIED')}; split_method={ds.get('split_method', 'UNSPECIFIED')}; "
-                f"preprocessing={ds.get('preprocessing', 'none')}."
+                f"preprocessing={ds.get('preprocessing', 'UNSPECIFIED')}."
             )
     else:
         lines.append("[Material gap: dataset/sample specification not provided.]")
@@ -154,6 +161,16 @@ def render_methods_chapter(facts: Dict[str, Any], param_table: Dict[str, Any], *
         lines.append("- **Failure Mode / Scope Limit:** [Author confirmation required for concrete failure boundaries; missing items: " + (", ".join(facts.get("missing_repro_fields", [])) or "none") + "].")
     lines.append("")
 
+    if not steps and facts.get("evidence"):
+        lines.extend(["## " + ("待编入正文的材料摘录" if is_zh else "Source excerpts for drafting"), ""])
+        seen = set()
+        for row in facts["evidence"]:
+            if row["source"] in seen:
+                continue
+            seen.add(row["source"])
+            lines.append(f"- {row['source']} {row['locator']} — {row['text'][:350]}")
+            if len(seen) == 8:
+                break
     return "\n".join(lines)
 
 

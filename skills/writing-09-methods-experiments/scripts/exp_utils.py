@@ -60,7 +60,7 @@ def load_methods_rules(path: Optional[Path] = None) -> Dict[str, Any]:
     p = path or (SKILL_DIR / "schemas" / "methods_rules.yaml")
     if p.exists():
         data = load_yaml_safe(p)
-        if isinstance(data, dict) and "required_sections_en" in data:
+        if isinstance(data.get("required_sections_en"), list) and isinstance(data.get("banned_generic_limitations"), list):
             return data
     return {
         "required_sections_en": [

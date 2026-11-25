@@ -1,0 +1,136 @@
+{
+  "claim_sources": [
+    {
+      "claim": "After matching timestamps, we subtracted the reference trace from each paired sensor trace and smoothed the residuals.",
+      "source": "case.json",
+      "locator": "/materials/steps/0/operation",
+      "quote": "Subtract the reference trace before smoothing."
+    },
+    {
+      "claim": "After matching timestamps, we subtracted the reference trace from each paired sensor trace and smoothed the residuals.",
+      "source": "case.json",
+      "locator": "/materials/steps/0/input",
+      "quote": "paired sensor traces"
+    },
+    {
+      "claim": "After matching timestamps, we subtracted the reference trace from each paired sensor trace and smoothed the residuals.",
+      "source": "case.json",
+      "locator": "/materials/steps/0/output",
+      "quote": "residual traces"
+    },
+    {
+      "claim": "After matching timestamps, we subtracted the reference trace from each paired sensor trace and smoothed the residuals.",
+      "source": "case.json",
+      "locator": "/materials/steps/0/criterion",
+      "quote": "paired timestamps"
+    },
+    {
+      "claim": "We fitted the offset using calibration sensors, selected the window on validation sensors, and evaluated the held-out sensors once.",
+      "source": "case.json",
+      "locator": "/materials/setup/train_protocol",
+      "quote": "Fit the offset with calibration sensors."
+    },
+    {
+      "claim": "We fitted the offset using calibration sensors, selected the window on validation sensors, and evaluated the held-out sensors once.",
+      "source": "case.json",
+      "locator": "/materials/setup/val_protocol",
+      "quote": "Select the window on validation sensors."
+    },
+    {
+      "claim": "We fitted the offset using calibration sensors, selected the window on validation sensors, and evaluated the held-out sensors once.",
+      "source": "case.json",
+      "locator": "/materials/setup/test_protocol",
+      "quote": "Score held-out sensors once."
+    },
+    {
+      "claim": "The smoother used a window of 5 samples.",
+      "source": "case.json",
+      "locator": "/materials/parameters/0/value",
+      "quote": "5"
+    },
+    {
+      "claim": "The smoother used a window of 5 samples.",
+      "source": "case.json",
+      "locator": "/materials/parameters/0/unit",
+      "quote": "samples"
+    },
+    {
+      "claim": "The smoother used a window of 5 samples.",
+      "source": "case.json",
+      "locator": "/materials/parameters/0/target_component",
+      "quote": "smoother"
+    },
+    {
+      "claim": "We partitioned release A of BenchTrace by sensor.",
+      "source": "case.json",
+      "locator": "/materials/datasets/0/name",
+      "quote": "BenchTrace"
+    },
+    {
+      "claim": "We partitioned release A of BenchTrace by sensor.",
+      "source": "case.json",
+      "locator": "/materials/datasets/0/version",
+      "quote": "A"
+    },
+    {
+      "claim": "We partitioned release A of BenchTrace by sensor.",
+      "source": "case.json",
+      "locator": "/materials/datasets/0/splits",
+      "quote": "by sensor"
+    },
+    {
+      "claim": "On the same sensor partition, we compared the smoothed residual with the raw residual using the median absolute error across sensors.",
+      "source": "case.json",
+      "locator": "/materials/baselines/0/name",
+      "quote": "raw residual"
+    },
+    {
+      "claim": "On the same sensor partition, we compared the smoothed residual with the raw residual using the median absolute error across sensors.",
+      "source": "case.json",
+      "locator": "/materials/baselines/0/matched_budget",
+      "quote": "same sensor partition"
+    },
+    {
+      "claim": "On the same sensor partition, we compared the smoothed residual with the raw residual using the median absolute error across sensors.",
+      "source": "case.json",
+      "locator": "/materials/baselines/0/metric",
+      "quote": "absolute error"
+    },
+    {
+      "claim": "On the same sensor partition, we compared the smoothed residual with the raw residual using the median absolute error across sensors.",
+      "source": "case.json",
+      "locator": "/materials/baselines/0/statistical_test",
+      "quote": "median across sensors"
+    },
+    {
+      "claim": "The bench logger supplied the measurements for three repeats in fixed order. The log contains no outdoor measurements.",
+      "source": "case.json",
+      "locator": "/materials/setup/hardware",
+      "quote": "bench logger"
+    },
+    {
+      "claim": "The bench logger supplied the measurements for three repeats in fixed order. The log contains no outdoor measurements.",
+      "source": "case.json",
+      "locator": "/materials/setup/repeats",
+      "quote": "3"
+    },
+    {
+      "claim": "The bench logger supplied the measurements for three repeats in fixed order. The log contains no outdoor measurements.",
+      "source": "case.json",
+      "locator": "/materials/setup/seeds",
+      "quote": "fixed order"
+    },
+    {
+      "claim": "The bench logger supplied the measurements for three repeats in fixed order. The log contains no outdoor measurements.",
+      "source": "case.json",
+      "locator": "/materials/limitations/0",
+      "quote": "The log contains no outdoor measurements."
+    }
+  ],
+  "change_records": [
+    {
+      "action": "documented_sensor_partition_and_reference_subtraction",
+      "artifact": "methods_and_experiments.md"
+    }
+  ]
+}

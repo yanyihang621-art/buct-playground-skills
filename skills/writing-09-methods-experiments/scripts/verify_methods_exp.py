@@ -1,149 +1,311 @@
 #!/usr/bin/env python3
-"""6-check deterministic verifier for Methods & Experiments chapters."""
+"""Verify the editable methods chapter against the experiment ledger."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
 
 from exp_utils import load_methods_rules, write_json_atomic
+from parameter_claims import inspect_assignments, name_pattern, plain, value_present
 
 
-def verify_methods_and_experiments(
-    chapter_md: str,
-    repro_md: str,
-    facts: Dict[str, Any],
-    param_table: Dict[str, Any],
-    *,
-    status_claimed: str = "completed",
-    language: str = "en",
-    rules_path: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Verify completeness, parameter-prose consistency, conflicts, separation, baselines, and limitations."""
-    rules = load_methods_rules(rules_path)
-    is_zh = language.lower().startswith("zh")
-    violations: List[Dict[str, Any]] = []
+# These are section meanings, not required literal titles or a required ordering.
+TOPICS = {
+    "steps": r"procedur|protocol|method|workflow|process|方法|步骤|工艺|操作|实施|流程|制备",
+    "setup": r"experimental|setup|apparatus|equipment|environment|design|setting|实验|设置|装置|环境|仪器|设计",
+    "parameters": r"parameter|hyperparameter|setting|condition|dose|measurement|参数|设置|条件|剂量|测量",
+    "datasets": r"dataset|splits?|cohort|samples?|population|specimen|participants?|materials|数据|划分|样品|样本|材料|受试|队列|试件",
+    "baselines": r"baseline|control|compar(?:ison|ator)|ablation|对照|消融|基线|比较|对比",
+    "limits": r"reproduc|limitation|scope|uncertaint|boundar|repeatab|限制|局限|复现|适用|边界|不确定",
+}
+GAP = r"not (?:reported|provided|recorded|available|specified|applicable)|unreported|unspecified|missing|material gap|confirm|unknown|unavailable|未(?:记录|说明|报告|提供|披露|指定|知)|待(?:核实|确认|补充)|缺(?:失|少|口)|不适用|无法(?:确认|判断)"
+CONFLICT = r"conflict|differ(?:ent|s|ed)?|discrepan|mismatch|inconsisten|override|whereas|versus|\bvs\.?\b|冲突|不同|不一[致同]|不符|覆盖|分歧|待确认"
+HEAD = re.compile(r"^\s*#{1,6}\s+(.+)$")
+PHASES = {
+    "train_protocol": r"\btrain(?:ing)?\b|fit(?:ting)?\b|prepar(?:ation|ed)|synthesis|训练|拟合|制备|合成",
+    "val_protocol": r"\bval(?:idat(?:ion|ed|ing|e))?\b|calibrat|验证|校准|校正|标定|复校",
+    "test_protocol": r"\btest(?:ing|ed)?\b|evaluat|measur|assay|测(?:试|量|定)|评价|评估",
+}
+TEST_GROUP = r"(?:\btest(?:ing)?\s+(?:set|split|fold|data|cohort|samples?)\b|测试(?:数据|集|组|样本))"
+TUNING = r"(?:\b(?:tun(?:e|ing|ed)|model selection|threshold selection|hyperparameter selection)\b|(?:调参|调优|选择(?:模型|阈值|超参数)))"
+NEGATION = r"\b(?:not|never|without|excluded|no)\b|未(?:曾|被)?|不(?:得|曾|被|参与|用于|使用|作)|禁止|排除"
+TEST_FOR_TUNING = re.compile(
+    TEST_GROUP + r"[^.;。；\n]{0,50}?(?:used|employed|用于|参与|用来|without)\s*[^.;。；\n]{0,32}?" + TUNING +
+    r"|" + r"(?:used?|using|employed?|使用|利用|用)\s*(?:the\s+|独立的?)?" + TEST_GROUP +
+    r"\s*(?:to|for|以|来|进行|做|用于)\s*(?:hyperparameter\s+)?" + TUNING +
+    r"|" + TUNING + r"\s+(?:on|using|with)\s+(?:the\s+)?" + TEST_GROUP, re.I)
+FIELD_WORDS = {"software": "software|软件", "hardware": "hardware|硬件", "seeds": "seeds?|随机种子",
+               "repeats": "repeat|replicat|重复", "command": "command|命令", "dataset_version": "version|版本"}
 
-    # 1. Six-element completeness
-    req_secs = rules.get("required_sections_zh" if is_zh else "required_sections_en", [])
-    missing_secs = [s for s in req_secs if not re.search(rf"^#{{1,3}}\s*{re.escape(s)}", chapter_md, re.MULTILINE | re.IGNORECASE)]
-    six_ok = (len(missing_secs) == 0)
-    if not six_ok:
-        violations.append({"check": "six_element_completeness", "missing_sections": missing_secs})
 
-    # 2. Parameter-prose consistency (every extracted parameter name & exact value must appear in prose)
-    params = param_table.get("parameters", [])
-    matched_params = 0
-    for p in params:
-        nm = str(p["name"])
-        val = str(p["value"])
-        # Check name present and exact value substring present nearby or in section
-        if nm in chapter_md and val in chapter_md:
-            matched_params += 1
+def sections(text):
+    title, body = "", []
+    result = []
+    for line in plain(text).splitlines():
+        heading = HEAD.match(line)
+        if heading:
+            result.append((title, "\n".join(body)))
+            title, body = heading[1], []
         else:
-            violations.append(
-                {
-                    "check": "parameter_prose_consistency",
-                    "parameter": nm,
-                    "expected_value": val,
-                    "source": p.get("source"),
-                    "reason": "missing_or_mismatched_value_in_prose",
-                }
-            )
-    param_ratio = 1.0 if not params else round(matched_params / len(params), 4)
-    param_ok = (matched_params == len(params)) and (len(params) > 0)
+            body.append(line)
+    result.append((title, "\n".join(body)))
+    return result
 
-    # 3. Cross-source conflict disclosure & honest status
+
+def text_content(text):
+    """Exclude empty markup and table dividers from substantive-content checks."""
+    return bool(re.search(r"[a-zA-Z0-9\u3400-\u9fff]{2}", text))
+
+
+def row_names(records):
+    return [str(r["name"]) for r in records if isinstance(r, dict) and r.get("name")]
+
+
+def includes(text, terms):
+    return any(term and str(term).casefold() in text.casefold() for term in terms)
+
+
+def procedure_matches(prose, steps):
+    # Cases often name sections after the operation. Look for the sourced action
+    # and an associated material/object even when the author conjugates its name.
+    def keywords(value):
+        words = re.findall(r"[a-z]{3,}|[\u3400-\u9fff]{2,}", str(value).casefold())
+        return [re.sub(r"(?:ing|ed|s)$", "", w) for w in words
+                if w not in {"the", "and", "with", "after", "before", "using", "were", "was", "then", "into", "from", "each"}]
+
+    for step in steps:
+        if not isinstance(step, dict) or not step.get("operation"):
+            continue
+        operation = keywords(step["operation"])
+        if not operation:
+            continue
+        for line in prose.splitlines():
+            words = set(keywords(line))
+            if operation[0] in words and len(set(operation) & words) >= min(2, len(operation)):
+                return True
+    return False
+
+
+def changed_negation(prose, source_statements):
+    """Catch a directly reversed source statement; unfamiliar paraphrases need semantic review."""
+    negation = re.compile(r"\b(?:no|not|never|without)\b|并未|没有|不曾|未曾|未|不", re.I)
+
+    def signature(sentence):
+        lower = negation.sub("", sentence.casefold())
+        tokens = re.findall(r"[a-z]+|[0-9.]+|[\u3400-\u9fff]", lower)
+        return tuple(w for w in tokens if w not in {"a", "an", "the", "do", "does", "did", "."})
+
+    propositions = {}
+    for source in source_statements:
+        for statement in re.split(r"[。!！?？;；]|\.\s|[\r\n]", plain(source)):
+            key = signature(statement)
+            if len(key) >= 3:
+                propositions.setdefault(key, set()).add(bool(negation.search(statement)))
+    errors = []
+    for i, line in enumerate(plain(prose).splitlines(), 1):
+        for statement in re.split(r"[。!！?？;；]|\.\s", line):
+            key = signature(statement)
+            known = propositions.get(key, set())
+            if len(known) == 1 and bool(negation.search(statement)) not in known:
+                errors.append({"reason": "source_statement_negation_reversed", "line": i, "excerpt": statement[:220]})
+    return errors
+
+
+def same_line(text, first, second):
+    return any(re.search(first, line, re.I) and re.search(second, line, re.I) for line in text.splitlines())
+
+
+def conflict_disclosures(chapter, facts, status):
+    errors = []
+    lines = plain(chapter).splitlines()
+    for conflict in facts.get("conflicts", []):
+        name = str(conflict.get("parameter", ""))
+        aliases = [name.removeprefix("setup.").replace("_", " ")] if name.startswith("setup.") else []
+        pattern = name_pattern(name, aliases)
+        values = conflict.get("values", {})
+        if not name or not isinstance(values, dict) or not values:
+            errors.append({"reason": "missing_conflict_evidence", "parameter": name})
+            continue
+        disclosed = False
+        for i, line in enumerate(lines):
+            if pattern.search(line):
+                # A multiline footnote/table may follow; don't borrow a warning about another parameter.
+                window = "\n".join(lines[i:i + 4])
+                if not re.search(CONFLICT, line, re.I):
+                    if not re.search(CONFLICT, line + "\n" + " ".join(lines[max(0, i-1):i]), re.I):
+                        continue
+                if all(value_present(val, window) for val in values.values()):
+                    disclosed = True
+                    break
+                if re.search(r"parameter table|conflict table|provenance table|参数表|冲突表|来源表", window, re.I):
+                    disclosed = True
+                    break
+        if not disclosed:
+            errors.append({"reason": "conflict_requires_values_or_reference_to_conflict_table",
+                           "parameter": name, "sources": list(values)})
+    if facts.get("conflicts") and status == "completed":
+        errors.append({"reason": "unresolved_conflict_cannot_claim_completed"})
+    return errors
+
+
+def inspect_datasets(text, datasets):
+    issues = []
+    for dataset in datasets:
+        if not isinstance(dataset, dict) or not dataset.get("name"):
+            continue
+        name = str(dataset["name"])
+        expected_version = str(dataset.get("version") or "")
+        expected_split = re.findall(r"\d+(?:\.\d+)?", str(dataset.get("splits") or ""))
+        for num, line in enumerate(plain(text).splitlines(), 1):
+            if name.casefold() not in line.casefold():
+                continue
+            if sum(n.casefold() in line.casefold() for n in row_names(datasets)) != 1:
+                continue
+            version = re.search(re.escape(name) + r"\s*[(,（]?\s*(?:version|版本)\s*[:=]?\s*(v?\d[\w.-]*)", line, re.I)
+            if expected_version and version and version[1].rstrip(".").casefold().removeprefix("v") != expected_version.casefold().removeprefix("v"):
+                issues.append({"reason": "dataset_version_disagrees", "dataset": name, "expected": expected_version,
+                               "observed": version[1], "line": num})
+            # Require an explicit ratio in BOTH source and prose; ignore ratios in sizes or dates.
+            ratio = re.search(r"(?:splits?|划分(?:比例)?)[\s=:为]*((?:\d+(?:\.\d+)?%?\s*[/：:]\s*){1,3}\d+(?:\.\d+)?%?)", line, re.I)
+            if ratio and re.fullmatch(r"\s*(?:\d+(?:\.\d+)?%?\s*[/：:]\s*){1,3}\d+(?:\.\d+)?%?\s*", str(dataset.get("splits") or "")):
+                observed = re.findall(r"\d+(?:\.\d+)?", ratio[1])
+                # 8:1:1 and 80/10/10 represent the same shares.
+                a, b = [float(v) for v in expected_split], [float(v) for v in observed]
+                if len(a) != len(b) or not sum(a) or not sum(b) or any(abs(x / sum(a) - y / sum(b)) > 1e-9 for x, y in zip(a, b)):
+                    issues.append({"reason": "split_ratio_disagrees", "dataset": name, "expected": dataset["splits"],
+                                   "observed": ratio[1], "line": num})
+    return issues
+
+
+def tuning_claims(text):
+    """Only compare explicit statements about the held-out group's role."""
+    out = []
+    for i, line in enumerate(plain(text).splitlines(), 1):
+        for part in re.split(r"[。；;]|\.\s+(?=[A-Z])", line):
+            for match in TEST_FOR_TUNING.finditer(part):
+                context = part[max(0, match.start()-18):match.end()]
+                # Don't carry a negated statement across "but" into a new clause.
+                context = re.split(r",\s*(?:but|whereas)\b|，但", context, flags=re.I)[-1]
+                out.append((not bool(re.search(NEGATION, context, re.I)), i, match[0]))
+    return out
+
+
+def verify_methods_and_experiments(chapter_md, repro_md, facts, param_table, *, status_claimed="completed", language="en", rules_path=None):
+    """Run conservative mechanical checks. Unverified paraphrases remain visible for review."""
+    rules = load_methods_rules(rules_path)
+    params = param_table.get("parameters", [])
+    datasets, baselines = facts.get("datasets", []), facts.get("baselines", [])
+    steps, limits = facts.get("steps", []), facts.get("limitations", [])
+    setup, missing = facts.get("setup", {}), facts.get("missing_repro_fields", [])
     conflicts = facts.get("conflicts", [])
-    conflict_ok = True
-    for cf in conflicts:
-        pname = str(cf.get("parameter", ""))
-        if pname not in chapter_md or ("CONFLICT" not in chapter_md.upper() and "冲突" not in chapter_md):
-            conflict_ok = False
-            violations.append({"check": "cross_source_conflict_disclosure", "parameter": pname, "reason": "suppressed_conflict_in_prose"})
-    if conflicts and status_claimed == "completed":
-        conflict_ok = False
-        violations.append({"check": "cross_source_conflict_disclosure", "reason": "unresolved_conflict_cannot_claim_completed"})
+    excluded = {str(item.get("field")) for item in facts.get("scope_exclusions", []) if isinstance(item, dict)}
+    report_sections = sections(chapter_md)
+    prose = "\n".join(body for _, body in report_sections)
+    review = []
+    issues = {}
+    check = "six_element_completeness"
+    records = {"steps": row_names(steps), "setup": [setup.get("hardware"), setup.get("software")],
+               "parameters": row_names(params), "datasets": row_names(datasets), "baselines": row_names(baselines),
+               "limits": [s for s in limits if isinstance(s, str)]}
+    coverage = {}
+    for key, pattern in TOPICS.items():
+        in_section = any((re.search(pattern, title, re.I) or includes(title, records[key])) and text_content(body)
+                         for title, body in report_sections)
+        in_prose = bool(re.search(pattern, prose, re.I)) or includes(prose, records[key])
+        if key == "steps" and not in_prose and not in_section:
+            in_prose = procedure_matches(prose, steps)
+        coverage[key] = in_section or in_prose
+        if not coverage[key] and ("limitations" if key == "limits" else key) not in excluded:
+            target = [v for v in records[key] if v]
+            if target:
+                issues.setdefault(check, []).append({"reason": "topic_has_no_identifiable_content", "topic": key})
+            else:
+                review.append({"reason": "check_topic_applicability_against_task", "topic": key})
+    if not text_content(prose):
+        issues.setdefault(check, []).append({"reason": "empty_chapter"})
 
-    # 4. Train / Val / Test separation & seeds/dataset_version coverage
-    setup = facts.get("setup", {})
-    datasets = facts.get("datasets", [])
-    has_split_sep = bool(setup.get("train_protocol") and setup.get("test_protocol"))
-    missing_repro = facts.get("missing_repro_fields", [])
-    sep_ok = has_split_sep and (len(datasets) > 0)
-    if not sep_ok:
-        violations.append({"check": "train_val_test_separation_and_seeds", "has_split_sep": has_split_sep, "dataset_count": len(datasets)})
-    if missing_repro and status_claimed == "completed":
-        sep_ok = False
-        violations.append({"check": "train_val_test_separation_and_seeds", "missing_repro_fields": missing_repro})
+    p_issues, p_review, p_metrics = inspect_assignments(chapter_md, params, facts)
+    review.extend(p_review)
+    if p_issues:
+        issues["parameter_prose_consistency"] = p_issues
+    if conflict_issues := conflict_disclosures(chapter_md, facts, status_claimed):
+        issues["cross_source_conflict_disclosure"] = conflict_issues
 
-    # 5. Baseline fairness & reproducibility checklist
-    baselines = facts.get("baselines", [])
-    base_ok = (len(baselines) > 0) and bool(repro_md.strip())
-    if not base_ok:
-        violations.append({"check": "baseline_fairness_and_repro_checklist", "baseline_count": len(baselines)})
+    check = "train_val_test_separation_and_seeds"
+    data_errors = inspect_datasets(chapter_md, datasets)
+    combined = plain(chapter_md + "\n" + repro_md)
+    for key in missing:
+        # Stochastic seeds / software / dataset versions can genuinely be inapplicable.
+        na = same_line(combined, FIELD_WORDS.get(key, re.escape(key)), r"not applicable|inapplicable|不适用|无需")
+        if status_claimed == "completed" and key not in excluded and not na:
+            data_errors.append({"reason": "completion_claim_with_unresolved_requirement", "field": key})
+    for field, pattern in PHASES.items():
+        if field not in excluded and "setup" not in excluded and setup.get(field) and not re.search(pattern, prose, re.I) and not includes(prose, [setup[field]]):
+            review.append({"reason": "verify_rephrased_protocol", "field": field})
+    source_roles = {eligible for statement in PHASES for eligible, _, _ in tuning_claims(str(setup.get(statement) or ""))}
+    if len(source_roles) == 1:
+        for eligible, line, quote in tuning_claims(chapter_md):
+            if eligible not in source_roles:
+                data_errors.append({"reason": "test_set_tuning_polarity_disagrees", "line": line,
+                                    "excerpt": quote, "check_source": "setup protocols"})
+    if data_errors:
+        issues[check] = data_errors
 
-    # 6. Concrete limitations (anti-cliche) & honesty
-    cliche_hits = [pat for pat in rules.get("banned_generic_limitations", []) if re.search(pat, chapter_md, re.IGNORECASE)]
-    limitations = facts.get("limitations", [])
-    lim_ok = (not cliche_hits) and (len(limitations) > 0 or bool(missing_repro))
-    if not lim_ok:
-        violations.append({"check": "concrete_limitations_and_honesty", "cliche_hits": cliche_hits, "limitations_count": len(limitations)})
+    check = "baseline_fairness_and_repro_checklist"
+    if not text_content(repro_md):
+        issues[check] = [{"reason": "empty_reproducibility_checklist"}]
+    if baselines and "baselines" not in excluded and not coverage["baselines"]:
+        issues.setdefault(check, []).append({"reason": "missing_comparison_or_control_description"})
+    command = str(setup.get("command") or "")
+    if command and " ".join(command.split()) not in " ".join(combined.split()):
+        review.append({"reason": "verify_command_and_options_against_original", "expected": command})
+    for row in baselines:
+        if isinstance(row, dict) and row.get("name") and not includes(prose, [row["name"]]):
+            review.append({"reason": "verify_comparator_is_identifiable", "baseline": row["name"]})
 
-    checks = {
-        "six_element_completeness": six_ok,
-        "parameter_prose_consistency": param_ok,
-        "cross_source_conflict_disclosure": conflict_ok,
-        "train_val_test_separation_and_seeds": sep_ok,
-        "baseline_fairness_and_repro_checklist": base_ok,
-        "concrete_limitations_and_honesty": lim_ok,
-    }
-    passed = all(checks.values())
-
+    check = "concrete_limitations_and_honesty"
+    cliches = [p for p in (rules.get("banned_generic_limitations") or []) if re.search(p, prose, re.I)]
+    if cliches:
+        issues[check] = [{"reason": "generic_limitation", "patterns": cliches}]
+    if not coverage["limits"] and limits and "limitations" not in excluded:
+        issues.setdefault(check, []).append({"reason": "missing_scope_or_limitations"})
+    if not limits and not re.search(GAP, prose, re.I):
+        review.append({"reason": "verify_inferred_limit_is_grounded_in_material_scope"})
+    statements = [s for s in limits if isinstance(s, str)] + [setup[k] for k in PHASES if isinstance(setup.get(k), str)]
+    if reversals := changed_negation(chapter_md, statements):
+        issues.setdefault(check, []).extend(reversals)
+    checks = {c: not bool(issues.get(c)) for c in (
+        "six_element_completeness", "parameter_prose_consistency", "cross_source_conflict_disclosure",
+        "train_val_test_separation_and_seeds", "baseline_fairness_and_repro_checklist", "concrete_limitations_and_honesty")}
     return {
         "schema_version": "writing-09-qa/v1",
-        "passed": passed,
-        "metrics": {
-            "parameter_count": len(params),
-            "conflict_count": len(conflicts),
-            "step_count": len(facts.get("steps", [])),
-            "dataset_count": len(datasets),
-            "baseline_count": len(baselines),
-            "missing_repro_count": len(missing_repro),
-            "parameter_prose_consistency": param_ratio,
-        },
-        "checks": checks,
-        "violations": violations,
+        "passed": all(checks.values()),
+        "metrics": {**p_metrics, "parameter_count": len(params), "conflict_count": len(conflicts), "step_count": len(steps),
+                    "dataset_count": len(datasets), "baseline_count": len(baselines), "missing_repro_count": len(missing)},
+        "checks": checks, "coverage": coverage,
+        "violations": [{"check": c, **item} for c, items in issues.items() for item in items],
+        "review_items": review,
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify drafted Methods & Experiments chapter.")
-    parser.add_argument("--chapter", required=True)
-    parser.add_argument("--repro", required=True)
-    parser.add_argument("--facts", required=True)
-    parser.add_argument("--params", required=True)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for arg in ("chapter", "repro", "facts", "params", "out"):
+        parser.add_argument("--" + arg, required=True, type=Path)
     parser.add_argument("--status", default="completed")
     parser.add_argument("--language", default="en")
-    parser.add_argument("--out", required=True)
     args = parser.parse_args()
-
-    ch = Path(args.chapter).read_text(encoding="utf-8")
-    rp = Path(args.repro).read_text(encoding="utf-8")
-    fc = json.loads(Path(args.facts).read_text(encoding="utf-8"))
-    pr = json.loads(Path(args.params).read_text(encoding="utf-8"))
-    rep = verify_methods_and_experiments(ch, rp, fc, pr, status_claimed=args.status, language=args.language)
-    write_json_atomic(Path(args.out), rep)
-    print(json.dumps({"passed": rep["passed"], "checks": rep["checks"], "violations": len(rep["violations"])}, ensure_ascii=False))
-    return 0 if rep["passed"] else 1
+    report = verify_methods_and_experiments(
+        args.chapter.read_text(encoding="utf-8-sig"), args.repro.read_text(encoding="utf-8-sig"),
+        json.loads(args.facts.read_text(encoding="utf-8-sig")), json.loads(args.params.read_text(encoding="utf-8-sig")),
+        status_claimed=args.status, language=args.language)
+    write_json_atomic(args.out, report)
+    print(json.dumps({"passed": report["passed"], "checks": report["checks"], "violations": len(report["violations"]),
+                      "review_items": len(report["review_items"])}, ensure_ascii=False))
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":
