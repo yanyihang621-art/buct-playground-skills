@@ -1,218 +1,359 @@
 #!/usr/bin/env python3
-"""Harbor end-to-end orchestrator for writing-13-latex."""
+"""Build the original and edited LaTeX projects and publish self-contained evidence."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import shutil
-import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
+from build_evidence import apply_contract, copy_sources, source_diff
 from compile_latex import compile_latex_project
 from inspect_project import inspect_latex_project
-from lint_and_fix_tex import lint_and_fix_tex_file
-from tex_utils import write_json_atomic, write_text_lf
+from lint_and_fix_tex import lint_and_fix_project
+from tex_utils import write_json_atomic
+from verify_manuscript import verify
 
 
-def run_latex_pipeline(
-    input_dir: str | Path,
-    work_dir: str | Path,
-    output_dir: str | Path,
-    *,
-    case_path: Optional[str | Path] = None,
-    auto_fix: Optional[bool] = None,
-    render_previews: Optional[bool] = None,
-) -> Dict[str, Any]:
-    """Inspect -> initial compile/diagnose -> deterministic safe autofix -> final reproducible compile -> result.json."""
-    in_p = Path(input_dir)
-    work_p = Path(work_dir) / "latex"
-    out_p = Path(output_dir)
-    proj_out = out_p / "latex_project"
-    previews_dir = out_p / "previews"
-    work_p.mkdir(parents=True, exist_ok=True)
-    out_p.mkdir(parents=True, exist_ok=True)
+def read_object(path):
+    obj = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(obj, dict):
+        raise ValueError(f"Expected a JSON object in {path}")
+    return obj
 
-    case_data: Dict[str, Any] = {}
-    if case_path and Path(case_path).exists():
-        case_data = json.loads(Path(case_path).read_text(encoding="utf-8"))
-    elif (in_p / "case.json").exists():
-        case_data = json.loads((in_p / "case.json").read_text(encoding="utf-8"))
 
-    case_id = str(case_data.get("case_id", "local_latex_case"))
-    main_hint = case_data.get("main_tex")
-    do_fix = bool(case_data.get("auto_fix", True)) if auto_fix is None else auto_fix
-    do_prev = bool(case_data.get("render_previews", True)) if render_previews is None else render_previews
+def empty_build():
+    return {
+        "manifest": {"schema_version": "writing-13-build-manifest/v1", "status": "failed",
+                     "engine": "undetermined", "bib_tool": None, "main_tex": None,
+                     "passes_executed": [], "page_count": 0, "pdf_sha256": None,
+                     "rendered_unresolved_markers": [], "previews": [], "output_pdf": None,
+                     "repro_command": None},
+        "diagnostics": {"schema_version": "writing-13-diagnostics/v1", "error_count": 1,
+                        "warning_count": 0, "diagnostics": [], "rerun_requested": False,
+                        "has_undefined_refs": False, "has_undefined_cites": False,
+                        "overfull_hbox_count": 0, "root_causes": [{"category": "missing_main_tex"}]},
+    }
 
-    # Copy input project to editable /app/output/latex_project so originals stay untouched
-    if proj_out.exists():
-        shutil.rmtree(proj_out)
-    proj_out.mkdir(parents=True, exist_ok=True)
-    for item in in_p.iterdir():
-        if item.name.lower() in ("case.json", "task.md", "resources.yaml", "challenge.json", "config.json"):
-            continue
-        dst = proj_out / item.name
-        if item.is_dir():
-            shutil.copytree(item, dst)
-        else:
-            shutil.copy2(item, dst)
 
-    pmap = inspect_latex_project(proj_out, main_tex_hint=main_hint)
-    pmap_p = work_p / "project_map.json"
-    write_json_atomic(pmap_p, pmap)
+def select_engine(pmap, hint):
+    engine = str(hint or pmap.get("recommended_engine", "pdflatex")).strip().lower()
+    if engine not in {"pdflatex", "xelatex", "lualatex"}:
+        raise ValueError(f"Unsupported TeX engine {engine!r}")
+    return engine
 
+
+def safe_main_hint(root, hint):
+    if hint:
+        path = (root / hint).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("main_tex must be inside the source project")
+        return path.relative_to(root).as_posix()
+    return None
+
+
+def copy_build_logs(build, root, pmap, evidence, name):
     if not pmap.get("found"):
-        res_obj = {
-            "schema_version": "writing-13-latex-result/v1",
-            "challenge_id": "product-arena-07-865de7e4",
-            "case_id": case_id,
-            "status": "failed",
-            "summary": "Failed: no .tex entrypoint found under input directory.",
-            "metrics": {"initial_error_count": 1, "final_error_count": 1, "overfull_hbox_count": 0, "rendered_unresolved_count": 0, "page_count": 0, "passes_count": 0},
-            "artifacts": {"project_map_json": str(pmap_p)},
-            "change_records": [],
-            "uncertainties": [{"code": "missing_main_tex"}],
-            "verification": {"passed": False, "pdf_nonempty": False, "zero_unresolved_rendered": False, "repro_script_emitted": False},
-        }
-        write_json_atomic(out_p / "result.json", res_obj)
-        return {"result": res_obj}
+        return
+    main = root / pmap["main_tex"]
+    paths = []
+    for ext in (".log", ".blg"):
+        log = main.with_suffix(ext)
+        if log.is_file():
+            dest = evidence / (name + ext)
+            shutil.copy2(log, dest)
+            paths.append("evidence/" + dest.name)
+    build["diagnostics"]["log_file"] = next((p for p in paths if p.endswith(".log")), None)
+    build["diagnostics"]["log_files"] = paths
+    build["manifest"]["build_logs"] = paths
 
-    main_tex = pmap["main_tex"]
-    engine = str(case_data.get("engine") or pmap["recommended_engine"])
-    bib_tool = pmap.get("bib_tool")
 
-    # Initial diagnostic compile
-    init_res = compile_latex_project(proj_out, main_tex, engine=engine, bib_tool=bib_tool, previews_dir=None)
-    init_diag_p = work_p / "diagnostics_initial.json"
-    write_json_atomic(init_diag_p, init_res["diagnostics"])
+def review_data(report):
+    for field in ("source_mapping", "task_checks", "change_records", "uncertainties", "confirmed_comments"):
+        entries = report.get(field, [])
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            raise ValueError(f"report.{field} must be a list of objects")
+    if not isinstance(report.get("contract_values", {}), dict):
+        raise ValueError("report.contract_values must be an object")
 
-    # Static lint & safe deterministic autofix across all .tex files if requested or if errors exist
-    change_records: List[Dict[str, Any]] = []
-    diffs: List[str] = []
-    static_issues: List[Dict[str, Any]] = []
-    for rel_tex in pmap.get("tex_files", []):
-        lres = lint_and_fix_tex_file(proj_out / rel_tex, apply_fixes=do_fix)
-        change_records.extend(lres["changes_applied"])
-        static_issues.extend(lres["static_issues"])
-        if lres["patch_diff"]:
-            diffs.append(lres["patch_diff"])
 
-    patch_p = work_p / "patch.diff"
-    write_text_lf(patch_p, "\n".join(diffs) + ("\n" if diffs else ""))
+def copy_unbuilt_project(source, dest, hint):
+    pmap = inspect_latex_project(source, main_tex_hint=safe_main_hint(source, hint))
+    omit = []
+    if pmap.get("found"):
+        main = Path(pmap["main_tex"])
+        # A supplied previous build is evidence, never proof that this run compiled.
+        omit = [main.with_suffix(ext) for ext in (".pdf", ".log", ".blg", ".out")]
+    copy_sources(source, dest, skip_case=True, omit=omit)
+    return pmap
 
-    # Final reproducible compile + preview render
-    if change_records or do_prev:
-        final_res = compile_latex_project(
-            proj_out,
-            main_tex,
-            engine=engine,
-            bib_tool=bib_tool,
-            previews_dir=previews_dir if do_prev else None,
-        )
-    else:
-        final_res = init_res
 
-    final_manifest = final_res["manifest"]
-    final_manifest["packages_detected"] = pmap.get("packages", [])
-    final_diag = final_res["diagnostics"]
+def run_latex_pipeline(input_dir, work_dir, output_dir, *, case_path=None, auto_fix=None,
+                       render_previews=None, project_dir=None, report_path=None,
+                       main_tex=None, engine=None, stage=None, material_dir=None):
+    input_root, work, output = (Path(p).resolve() for p in (input_dir, work_dir, output_dir))
+    edited = Path(project_dir).resolve() if project_dir else input_root
+    for source in (input_root, edited):
+        if not source.is_dir() or work.is_relative_to(source) or output.is_relative_to(source):
+            raise ValueError("Use a source directory separate from work and output")
+    if output == work or work.is_relative_to(output) or any(
+        source.is_relative_to(output) for source in (input_root, edited)
+    ):
+        raise ValueError("Keep compiler work and source trees outside the delivery directory")
+    output.mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
+    # A failed retry must leave the last complete result and its files together.
+    # The staging tree shares the final filesystem, including when /app/output is a mount.
+    with tempfile.TemporaryDirectory(dir=output, prefix=".latex-stage-") as temp:
+        transfer = Path(temp)
+        run = _build(input_root, edited, work, transfer, case_path=case_path, auto_fix=auto_fix,
+                     render_previews=render_previews, report_path=report_path,
+                     main_tex=main_tex, engine=engine, stage=stage, material_dir=material_dir)
+        publish(transfer, output)
+    return run
 
-    manifest_p = work_p / "build_manifest.json"
-    final_diag_p = work_p / "diagnostics_final.json"
-    write_json_atomic(manifest_p, final_manifest)
-    write_json_atomic(final_diag_p, final_diag)
 
-    # Copy top-level compiled PDF to /app/output/<stem>.pdf for clean Harbor access
-    top_pdf: Optional[Path] = None
-    if final_manifest.get("output_pdf") and Path(final_manifest["output_pdf"]).exists():
-        src_pdf = Path(final_manifest["output_pdf"])
-        top_pdf = out_p / src_pdf.name
-        if src_pdf.resolve() != top_pdf.resolve():
-            shutil.copy2(src_pdf, top_pdf)
+def publish(stage, output):
+    names = [p.name for p in sorted(stage.iterdir()) if p.name != "result.json"]
+    old = output / "result.json"
+    if old.exists():
+        old_artifacts = read_object(old).get("artifacts") or {}
+        old_pdf = old_artifacts.get("output_pdf")
+        if old_artifacts.get("evidence_checks_json") == "evidence_checks.json" and "evidence_checks.json" not in names:
+            names.append("evidence_checks.json")
+        if isinstance(old_pdf, str):
+            path = (output / old_pdf).resolve()
+            if path.parent == output and path.suffix.lower() == ".pdf" and path.name not in names:
+                names.append(path.name)
+    names.append("result.json")
+    backup = stage / ".previous"
+    backup.mkdir()
+    installed = []
+    try:
+        for name in names:
+            target = output / name
+            if target.is_symlink():
+                raise ValueError(f"Refusing to publish through a symlink at {target}")
+            if target.exists():
+                target.replace(backup / name)
+            if (stage / name).exists():
+                (stage / name).replace(target)
+                installed.append(name)
+    except BaseException:
+        for name in reversed(installed):
+            (output / name).replace(stage / name)
+        for saved in backup.iterdir():
+            saved.replace(output / saved.name)
+        raise
 
-    uncertainties: List[Dict[str, Any]] = []
-    for ma in pmap.get("missing_assets", []):
-        uncertainties.append({"code": "missing_asset", **ma})
-    for si in static_issues:
-        uncertainties.append({"code": "static_lint_issue", **si})
-    for rc in final_diag.get("root_causes", []):
-        uncertainties.append({"code": "compile_root_cause", **rc})
-    if final_manifest["rendered_unresolved_markers"]:
-        uncertainties.append({"code": "rendered_unresolved_markers", "items": final_manifest["rendered_unresolved_markers"]})
 
-    passed = (
-        final_manifest["status"] == "completed"
-        and final_diag["error_count"] == 0
-        and len(final_manifest["rendered_unresolved_markers"]) == 0
-        and final_manifest["page_count"] > 0
-    )
+def _build(input_root, edited, work, output, *, case_path, auto_fix, render_previews,
+           report_path, main_tex, engine, stage, material_dir):
+    case_file = Path(case_path) if case_path else input_root / "case.json"
+    case = read_object(case_file) if case_file.is_file() else {}
+    report = read_object(Path(report_path)) if report_path else {}
+    review_data(report)
+    do_fix = case.get("auto_fix", True) if auto_fix is None else auto_fix
+    do_prev = case.get("render_previews", True) if render_previews is None else render_previews
+    entry = main_tex or case.get("main_tex")
+    engine_hint = engine or case.get("engine")
+    evidence, previews, delivery = (output / name for name in ("evidence", "previews", "latex_project"))
+    for directory in (evidence, previews, delivery):
+        directory.mkdir()
 
-    res_obj = {
+    with tempfile.TemporaryDirectory(dir=work, prefix="latex-build-") as tmp:
+        scratch = Path(tmp)
+        original = scratch / "original"
+        final = scratch / "final"
+        # Keep one pristine snapshot for the diff. Both TeX invocations run on copies.
+        original_map = copy_unbuilt_project(input_root, original, case.get("main_tex") or entry)
+        pmap = copy_unbuilt_project(edited, final, entry)
+        init = empty_build()
+        if original_map.get("found"):
+            baseline = scratch / "baseline"
+            shutil.copytree(original, baseline)
+            init = compile_latex_project(
+                baseline, original_map["main_tex"], engine=select_engine(original_map, engine_hint),
+                bib_tool=original_map.get("bib_tool"))
+            copy_build_logs(init, baseline, original_map, evidence, "initial")
+        lint = {"changes_applied": [], "static_issues": []}
+        built = empty_build()
+        if pmap.get("found"):
+            lint = lint_and_fix_project(final, pmap["main_tex"], apply_fixes=bool(do_fix))
+            if lint["changes_applied"]:
+                # A preamble repair can move all subsequent source-line anchors.
+                lint["static_issues"] = lint_and_fix_project(
+                    final, pmap["main_tex"], apply_fixes=False)["static_issues"]
+            pmap = inspect_latex_project(final, main_tex_hint=pmap["main_tex"])
+        # Capture sources before the first TeX command can write any auxiliary files.
+        shutil.copytree(final, delivery, dirs_exist_ok=True)
+        file_changes, source_index = source_diff(original, delivery, evidence)
+        if pmap.get("found"):
+            built = compile_latex_project(
+                final, pmap["main_tex"], engine=select_engine(pmap, engine_hint),
+                bib_tool=pmap.get("bib_tool"), previews_dir=previews if do_prev else None)
+            copy_build_logs(built, final, pmap, evidence, "final")
+        manifest, diagnostics = built["manifest"], built["diagnostics"]
+        if manifest.get("output_pdf"):
+            pdf = Path(manifest["output_pdf"])
+            shutil.copy2(pdf, output / pdf.name)
+            manifest["output_pdf"] = pdf.name
+        manifest["previews"] = [Path(p).relative_to(output).as_posix() for p in manifest.get("previews", [])]
+        if manifest.get("repro_script"):
+            repro = Path(manifest["repro_script"])
+            if repro.is_file():
+                repro_out = delivery / repro.relative_to(final)
+                if repro_out.exists() and repro.read_bytes() != repro_out.read_bytes():
+                    repro_out = repro_out.with_name("reproduce_submission.sh")
+                shutil.copy2(repro, repro_out)
+                manifest["repro_script"] = repro_out.relative_to(output).as_posix()
+            else:
+                manifest["repro_script"] = None
+
+    pmap["project_dir"] = "latex_project"
+    manifest["packages_detected"] = pmap.get("packages", [])
+    write_json_atomic(evidence / "project_map.json", pmap)
+    write_json_atomic(evidence / "diagnostics_initial.json", init["diagnostics"])
+    write_json_atomic(evidence / "diagnostics_final.json", diagnostics)
+    write_json_atomic(evidence / "build_manifest.json", manifest)
+    write_json_atomic(evidence / "source_inventory.json", source_index)
+    write_json_atomic(evidence / "file_changes.json", file_changes)
+    if report_path:
+        write_json_atomic(evidence / "case_review.json", report)
+    checks = report.get("task_checks", [])
+    unresolved = manifest.get("rendered_unresolved_markers") or []
+    uncertainties = list(report.get("uncertainties", []))
+    for item in pmap.get("missing_assets", []):
+        uncertainties.append({"code": "missing_asset", "detail": item})
+    confirmations = {(row.get("file"), str(row.get("line"))) for row in report.get("confirmed_comments", [])
+                     if isinstance(row.get("reason"), str) and row["reason"].strip()}
+    open_percents = []
+    for item in lint["static_issues"]:
+        if item.get("rule") == "ambiguous_numeric_percent":
+            if (item.get("file"), str(item.get("line"))) in confirmations:
+                continue
+            open_percents.append(item)
+        uncertainties.append({"code": "static_lint_issue", **item})
+    for item in diagnostics.get("root_causes", []):
+        uncertainties.append({"code": "compile_root_cause", **item})
+    if unresolved:
+        uncertainties.append({"code": "rendered_unresolved_markers", "items": unresolved})
+    if diagnostics.get("has_undefined_refs") or diagnostics.get("has_undefined_cites"):
+        uncertainties.append({"code": "unresolved_log_reference", "source": "evidence/diagnostics_final.json"})
+    blockers = [c for c in checks if c.get("passed") is False or
+                (c.get("status") and str(c["status"]).lower() not in
+                 {"pass", "passed", "ok", "verified", "completed", "met", "satisfied", "not_applicable", "n/a"})]
+    if blockers:
+        uncertainties.append({"code": "open_task_requirements", "checks": blockers})
+    pdf_ok = bool(manifest.get("output_pdf") and manifest["page_count"] > 0)
+    previews_ok = not do_prev or bool(manifest["previews"])
+    if pdf_ok and not previews_ok:
+        uncertainties.append({"code": "preview_unavailable"})
+    passed = (manifest["status"] == "completed" and pdf_ok and previews_ok and
+              not diagnostics["error_count"] and not unresolved and not blockers and not open_percents and
+              not diagnostics.get("has_undefined_refs") and not diagnostics.get("has_undefined_cites"))
+    status = "completed" if passed else "failed" if manifest["status"] == "failed" else "partial"
+    artifacts = {
+        "main_tex": f"latex_project/{pmap['main_tex']}" if pmap.get("found") else None,
+        "latex_project_dir": "latex_project",
+        "output_pdf": manifest.get("output_pdf"),
+        "previews": manifest["previews"],
+        "build_repro_sh": manifest.get("repro_script"),
+        "build_manifest_json": "evidence/build_manifest.json",
+        "project_map_json": "evidence/project_map.json",
+        "diagnostics_initial_json": "evidence/diagnostics_initial.json",
+        "diagnostics_final_json": "evidence/diagnostics_final.json",
+        "patch_diff": "evidence/patch.diff",
+        "source_inventory_json": "evidence/source_inventory.json",
+        "file_changes_json": "evidence/file_changes.json",
+    }
+    if report_path:
+        artifacts["case_review_json"] = "evidence/case_review.json"
+    evidence_checks = None
+    if stage is not None and report_path:
+        source_dir = Path(material_dir).resolve() if material_dir else case_file.resolve().parent
+        final_pdf = output / artifacts["output_pdf"] if artifacts["output_pdf"] else None
+        try:
+            evidence_checks = verify(source_dir, Path(stage).resolve(), delivery,
+                                     Path(report_path), final_pdf)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            evidence_checks = {"checked": 0, "verified": 0, "needs_manual_review": 0,
+                               "failed": 1, "error": str(exc), "checks": []}
+        write_json_atomic(output / "evidence_checks.json", evidence_checks)
+        artifacts["evidence_checks_json"] = "evidence_checks.json"
+        if evidence_checks["failed"]:
+            uncertainties.append({"code": "source_evidence_check_failed", "path": "evidence_checks.json"})
+            passed = False
+            if status == "completed":
+                status = "partial"
+        if evidence_checks["needs_manual_review"]:
+            uncertainties.append({"code": "source_evidence_needs_manual_review",
+                                  "count": evidence_checks["needs_manual_review"],
+                                  "path": "evidence_checks.json"})
+    initial_errors = init["diagnostics"]["error_count"] if original_map.get("found") else None
+    result = {
         "schema_version": "writing-13-latex-result/v1",
         "challenge_id": "product-arena-07-865de7e4",
-        "case_id": case_id,
-        "status": final_manifest["status"],
-        "summary": (
-            f"LaTeX build status={final_manifest['status']} ({engine}): "
-            f"errors {init_res['diagnostics']['error_count']} -> {final_diag['error_count']}, "
-            f"pages={final_manifest['page_count']}, unresolved_markers={len(final_manifest['rendered_unresolved_markers'])}."
-        ),
-        "metrics": {
-            "initial_error_count": init_res["diagnostics"]["error_count"],
-            "final_error_count": final_diag["error_count"],
-            "overfull_hbox_count": final_diag["overfull_hbox_count"],
-            "rendered_unresolved_count": len(final_manifest["rendered_unresolved_markers"]),
-            "page_count": final_manifest["page_count"],
-            "passes_count": len(final_manifest["passes_executed"]),
-        },
-        "artifacts": {
-            "project_map_json": str(pmap_p),
-            "diagnostics_initial_json": str(init_diag_p),
-            "diagnostics_final_json": str(final_diag_p),
-            "patch_diff": str(patch_p),
-            "build_manifest_json": str(manifest_p),
-            "build_repro_sh": final_manifest.get("repro_script"),
-            "latex_project_dir": str(proj_out),
-            "output_pdf": str(top_pdf) if top_pdf else None,
-            "previews": final_manifest.get("previews", []),
-        },
-        "change_records": change_records,
+        "case_id": case.get("case_id", "local_latex_case"),
+        "status": status,
+        "main_result": {"editable_source": artifacts["main_tex"], "pdf": artifacts["output_pdf"]},
+        "metrics": {"initial_error_count": initial_errors,
+                    "final_error_count": diagnostics["error_count"],
+                    "overfull_hbox_count": diagnostics["overfull_hbox_count"],
+                    "rendered_unresolved_count": len(unresolved), "page_count": manifest["page_count"],
+                    "passes_count": len(manifest["passes_executed"])},
+        "artifacts": artifacts,
+        "source_mapping": report.get("source_mapping", []),
+        "task_checks": checks,
+        "change_records": report.get("change_records", []) + lint["changes_applied"] + file_changes,
         "uncertainties": uncertainties,
-        "verification": {
-            "passed": passed,
-            "pdf_nonempty": final_manifest["page_count"] > 0,
-            "zero_unresolved_rendered": len(final_manifest["rendered_unresolved_markers"]) == 0,
-            "repro_script_emitted": bool(final_manifest.get("repro_script") and Path(final_manifest["repro_script"]).exists()),
-        },
+        "summary": report.get("summary") or (
+            f"{manifest.get('engine', 'LaTeX')}: {manifest['page_count']} pages, "
+            f"{diagnostics['error_count']} final errors, {len(file_changes)} changed files."),
+        "verification": {"passed": bool(passed), "pdf_nonempty": pdf_ok,
+                         "zero_unresolved_rendered": pdf_ok and not unresolved,
+                         "repro_script_emitted": bool(manifest.get("repro_script")),
+                         "unreviewed_numeric_percent": len(open_percents),
+                         "reviewed_task_checks": len(checks),
+                         "source_mapping_entries": len(report.get("source_mapping", []))},
     }
-    write_json_atomic(out_p / "result.json", res_obj)
-    return {"result": res_obj, "manifest": final_manifest, "diagnostics": final_diag, "init_diagnostics": init_res["diagnostics"]}
+    if evidence_checks is not None:
+        result["verification"]["source_evidence"] = {
+            k: evidence_checks[k] for k in ("checked", "verified", "failed", "needs_manual_review")
+        }
+    apply_contract(result, case.get("output_contract"), report.get("contract_values", {}))
+    write_json_atomic(output / "result.json", result)
+    return {"result": result, "manifest": manifest, "diagnostics": diagnostics,
+            "init_diagnostics": init["diagnostics"]}
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Run end-to-end LaTeX diagnosis, repair, and reproducible build.")
-    parser.add_argument("--input-dir", required=True)
-    parser.add_argument("--work-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--case", default=None)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-dir", default="/input", help="Original source tree for before/after evidence")
+    parser.add_argument("--work-dir", default="/app/work")
+    parser.add_argument("--output-dir", default="/app/output")
+    parser.add_argument("--case", help="Original case.json, even if sources were unpacked separately")
+    parser.add_argument("--project-dir", help="Source tree already revised to meet the actual task")
+    parser.add_argument("--report", help="JSON with task_checks, source_mapping, change_records, uncertainties and contract_values")
+    parser.add_argument("--stage", help="Prepared case directory containing materials.json and baseline/")
+    parser.add_argument("--material-dir", help="Original materials directory for citation checks (defaults to case.json directory)")
+    parser.add_argument("--main-tex", help="Entrypoint relative to revised project root")
+    parser.add_argument("--engine", choices=("pdflatex", "xelatex", "lualatex"))
     parser.add_argument("--no-fix", action="store_true")
     parser.add_argument("--no-previews", action="store_true")
     args = parser.parse_args()
-
-    out = run_latex_pipeline(
-        args.input_dir,
-        args.work_dir,
-        args.output_dir,
-        case_path=args.case,
-        auto_fix=not args.no_fix,
-        render_previews=not args.no_previews,
-    )
-    print(json.dumps(out["result"], ensure_ascii=False))
-    return 0 if out["result"]["verification"]["passed"] else 1
+    run = run_latex_pipeline(args.input_dir, args.work_dir, args.output_dir, case_path=args.case,
+                             auto_fix=False if args.no_fix else None,
+                             render_previews=False if args.no_previews else None,
+                             project_dir=args.project_dir, report_path=args.report,
+                             main_tex=args.main_tex, engine=args.engine,
+                             stage=args.stage, material_dir=args.material_dir)
+    print(json.dumps({"case_id": run["result"]["case_id"], "status": run["result"]["status"],
+                      "metrics": run["result"]["metrics"], "verification": run["result"]["verification"]},
+                     ensure_ascii=False))
+    return 0 if run["result"]["verification"]["passed"] else 1
 
 
 if __name__ == "__main__":

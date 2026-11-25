@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -15,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from build_latex_result import run_latex_pipeline
 from parse_tex_log import parse_tex_logs
+from prepare_case import pdf_text
 from tex_utils import write_json_atomic, write_text_lf
 
 
@@ -143,19 +145,17 @@ def _run_negative_diag_tests(tmp_dir: Path) -> Dict[str, bool]:
 
 
 def _compare_baseline(l2: Dict[str, Any]) -> Dict[str, Any]:
+    """Same input source and compiler; contrast the original with the reviewed repair."""
     return {
-        "single_pass_naive_baseline": {
+        "original_project_same_compiler": {
             "initial_error_count": l2["init_diagnostics"]["error_count"],
-            "compiled_without_fix": l2["init_diagnostics"]["error_count"] == 0,
-            "multi_pass_bibtex_sync": False,
-            "png_visual_audit": False,
         },
         "skill_pipeline": {
             "initial_error_count": l2["init_diagnostics"]["error_count"],
             "final_error_count": l2["diagnostics"]["error_count"],
-            "changes_applied": len(l2["result"]["change_records"]),
+            "changed_files": sum("operation" in row for row in l2["result"]["change_records"]),
             "compiled_after_fix": l2["result"]["status"] == "completed",
-            "multi_pass_bibtex_sync": True,
+            "tools_executed": [p["tool"] for p in l2["manifest"]["passes_executed"]],
             "png_visual_audit": len(l2["manifest"]["previews"]) >= 1,
         },
         "skill_wins": l2["init_diagnostics"]["error_count"] > 0 and l2["diagnostics"]["error_count"] == 0 and l2["result"]["status"] == "completed",
@@ -179,12 +179,24 @@ def main() -> int:
     )
 
     c2 = _setup_l2_broken_autofix(root / "l2" / "input")
-    r2 = run_latex_pipeline(root / "l2" / "input", root / "l2" / "work", root / "l2" / "output", case_path=c2)
+    l2 = root / "l2"
+    write_text_lf(l2 / "input" / "lab_note.txt", "The measured selectivity reached 91.8% at 573 K.")
+    first = run_latex_pipeline(l2 / "input", l2 / "work", l2 / "initial_output", case_path=c2)
+    # This fixture loses an entire measured condition to an ambiguous prose comment.
+    # Repeat the human/agent review path using the fixture's supplied lab note.
+    reviewed = l2 / "reviewed"
+    shutil.copytree(l2 / "input", reviewed, dirs_exist_ok=True)
+    manuscript = reviewed / "broken.tex"
+    write_text_lf(manuscript, manuscript.read_text(encoding="utf-8").replace("91.8% at 573 K", r"91.8\% at 573 K"))
+    r2 = run_latex_pipeline(l2 / "input", l2 / "work", l2 / "output", case_path=c2, project_dir=reviewed)
+    final_text = pdf_text(l2 / "output" / r2["result"]["artifacts"]["output_pdf"])
     l2_ok = (
-        r2["init_diagnostics"]["error_count"] >= 1
+        first["result"]["status"] == "partial"
+        and r2["init_diagnostics"]["error_count"] >= 1
         and r2["result"]["status"] == "completed"
         and r2["result"]["metrics"]["final_error_count"] == 0
         and len(r2["result"]["change_records"]) >= 2
+        and "91.8% at 573 K" in " ".join(final_text.split())
     )
 
     c3 = _setup_l3_xelatex_unicode(root / "l3" / "input")
@@ -201,7 +213,7 @@ def main() -> int:
         "all_passed": bool(l1_ok and l2_ok and l3_ok and l4_ok and all(neg.values())),
         "suites": {
             "l1_clean_article_with_bibtex": {"passed": l1_ok, "status": r1["result"]["status"], "metrics": r1["result"]["metrics"], "engine_version": r1["manifest"]["engine_version"]},
-            "l2_broken_tex_diagnose_and_autofix": {"passed": l2_ok, "status": r2["result"]["status"], "metrics": r2["result"]["metrics"], "changes": len(r2["result"]["change_records"])},
+            "l2_broken_tex_diagnose_and_autofix": {"passed": l2_ok, "unreviewed_status": first["result"]["status"], "status": r2["result"]["status"], "metrics": r2["result"]["metrics"], "restored_measurement_visible": "91.8% at 573 K" in " ".join(final_text.split())},
             "l3_xelatex_unicode_article": {"passed": l3_ok, "status": r3["result"]["status"], "engine": r3["manifest"]["engine"], "metrics": r3["result"]["metrics"]},
             "l4_missing_cls_honest_failure": {"passed": l4_ok, "status": r4["result"]["status"], "uncertainties": len(r4["result"]["uncertainties"])},
         },

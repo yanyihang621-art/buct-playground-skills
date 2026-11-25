@@ -21,14 +21,15 @@
     "engine_version": {"type": "string"},
     "bib_tool": {"type": ["string", "null"]},
     "bib_tool_version": {"type": ["string", "null"]},
-    "main_tex": {"type": "string"},
+    "main_tex": {"type": ["string", "null"]},
     "passes_executed": {"type": "array", "items": {"type": "object"}},
     "output_pdf": {"type": ["string", "null"]},
     "pdf_sha256": {"type": ["string", "null"]},
     "page_count": {"type": "integer", "minimum": 0},
     "rendered_unresolved_markers": {"type": "array", "items": {"type": "string"}},
     "previews": {"type": "array", "items": {"type": "string"}},
-    "repro_command": {"type": "string"},
+    "repro_command": {"type": ["string", "null"]},
+    "build_logs": {"type": "array", "items": {"type": "string"}},
     "packages_detected": {"type": "array", "items": {"type": "string"}}
   }
 }

@@ -1,0 +1,29 @@
+{
+  "source_mapping": [
+    {
+      "source": "measurements.csv",
+      "source_quote": "1.0,12.4",
+      "target": "sections/results.tex",
+      "target_quote": "1.0 & 12.4",
+      "pdf_quote": "12.4",
+      "explanation": "First data row; flow in L/min and pressure drop in Pa."
+    },
+    {
+      "source": "measurements.csv",
+      "source_quote": "2.0,21.7",
+      "target": "sections/results.tex",
+      "target_quote": "2.0 & 21.7",
+      "pdf_quote": "21.7",
+      "explanation": "Second data row."
+    }
+  ],
+  "task_checks": [
+    {
+      "requirement": "Both supplied data pairs are retained with their units",
+      "status": "verified",
+      "evidence": "measurements.csv rows 2–3 and sections/results.tex table tab:drop"
+    }
+  ],
+  "change_records": [],
+  "uncertainties": []
+}
