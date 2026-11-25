@@ -37,9 +37,17 @@ python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo
 
 ## 复现测试
 
+多文件 TeX 的输出包含可编辑工程、真实编译的 PDF（引擎可用时）和书目收敛报告。Word 的原生引用、Zotero 和 EndNote 域优先从字段指令和源库解析。可确认的引文生成可编辑静态稿，原动态域另存，保留脚注与尾注锚点。已有明确页码的作者—年份引文在转换时保留页码及归属。Word 原生域增强处理使用 lxml；其余 Word 处理和预览的依赖见上文。
+
+`evidence/claim_coverage.json` 枚举正文分句、原句和引文位置，给出数值或方向待核事项。规则生成的候选需要阅读原文。对严格限制字段的案例，`result.json` 遵循案例指定的字段集合，完整审计另存于 `evidence/contract_audit.json`。`evidence/artifact_manifest.json` 记录每份已登记产物的相对路径、大小及 SHA-256。
+
 ```sh
 python3 scripts/self_test.py --out-dir /tmp/writing04-self --compare-baseline
 python3 scripts/regression_cases.py --help
+python3 scripts/test_author_date_delivery.py
+python3 scripts/test_claim_coverage.py
+python3 scripts/tex_project_test.py
+python3 scripts/word_cases.py --out-dir /tmp/writing04-word
 ```
 
 自测覆盖去重、连续编号、未解析引文、元数据问题、引文证据错配和逐字引文的真实性。版本对照工具读取同一组输入，分别调用两个版本的真实入口，再检查实际交付文件。公共样例只用于工程验证；正式的基础 Agent 对照、隐藏案例和分数由平台产生。维护时将新增样式或输入格式加入可重跑的测试。

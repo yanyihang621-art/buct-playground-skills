@@ -21,6 +21,10 @@ python3 "$SKILL_DIR/scripts/build_reference_result.py" --input-dir /input --case
 
 ## 2. 逐条编辑和判断
 
+先打开 `evidence/claim_coverage.json`，对照全文处理未插引的论断。每个分句给出行列坐标、实际覆盖它的引文、相邻子句的引文，以及可回查的候选原句。读 `source_candidates[].checks_for_reader` 中的同单位数值差异和方向提示，核准比较条件后才决定改稿。对作者自身方法或本研究结果，优先核对随稿材料，避免误引外部工作。
+
+Word 存在 Zotero、EndNote 或原生文献域时，读取 `evidence/word_citation_audit.json`，核对域指令、缓存、脚注和尾注各自定位。可安全映射的域转为稳定、可编辑的引文文本，动态域原稿另保存在 `evidence/`。若要求继续使用文献管理器刷新，明确哪些域仍需在原稿中核对。多文件 TeX 读取 `evidence/tex_project_report.json`，检查子章节、图注、附录的源路径、编译后的书目键和未解析数。检查原文页码定位及叙述式作者引文在改后仍然存在。
+
 - 在每段找出需引证的数字、机制、比较、结论与方法归属。对引用位置错误、段末混引、连续几句共用一引或遗漏的论断，逐句查到对应文献。查明材料支持的群体、条件、指标、方向和强度。需要插引时用唯一短语紧贴相应论断。来源不足时保留待确认项，说明具体缺哪份证据。
 - 从显式编号、正文旧书目条目、DOI 或题名和作者组合定位旧序号。引文库导入顺序不能证明旧号。逐条核实同一引文键的不同来源、双语题名、预印本与正式版。保留不同 DOI、勘误、会议扩展版等差异及依据。按首次引用排序，核对多引、图表注、附录和文末条目。核对易混淆的同作者同年份文献及 APA 后缀。
 - 逐项读 `qa_report.claim_evidence`。词语重合只能帮助找资料。对每条「论断—来源」写结论和理由。用 `supported` 表示证据确实覆盖该句陈述，用 `partial` 标出适用边界，用 `mismatch` 指明矛盾，用 `insufficient` 列明材料缺口。仅有题名时通常只能证明主题，具体数据或因果结论需要更直接的材料。
@@ -38,6 +42,7 @@ python3 "$SKILL_DIR/scripts/build_reference_result.py" --input-dir /input --case
 | `semantic_reviews` | 每个来源各一行，含 `line`、`occurrence_index`（从 1 起）、`cite_key`、`claim_quote`、`verdict` 和 `reason`。有直接证据时填 `source_field` 与逐字 `source_quote` |
 | `source_field` | `abstract` 或 `title` 对应规范库字段。用全文时填 `evidence_file`，另给输入根下的相对 `source_file`，PDF 还需给从 1 起的 `page`。核对文献身份及原句 |
 | `contract_values` | 根据案例专属字段的定义及类型写真实内容。输出文件路径须指向已经生成的产物 |
+| `output_names` | 案例指定文件名时，用产物键映射到输出目录内的相对文件名，例如将 `editable_docx` 映射为 `final/revised.docx` |
 | `docx`, `uncertainties` | 案例指定 Word 时用 `true`；需人工确认的条目给出位置、问题和需要的材料 |
 
 ## 3. 复核并交付
@@ -49,3 +54,5 @@ python3 "$SKILL_DIR/scripts/build_reference_result.py" --input-dir /input --work
 打开最终稿件，核对原文未要求修改的段落、图表、脚注、附录和可编辑样式。若输入是多文件 TeX 工程，将仍需的原始子文件、图片、样式按相对位置复制到输出工程，核对改稿引用的 `references_synced.bib`，在题面要求时用可用引擎实际编译。若期刊自定样式、特殊脚注、复合域或版式超出脚本支持，继续按案例要求编辑实际成品并检查，保持最终证据和变更记录与成品相符。Word 输出带全篇 PDF 预览及可用时的首页 PNG。打开预览核对正文、书目和分页。
 
 最后逐项比对案例契约。检查文中每处引文、每条文献、`case_id`、真实产物路径、来源定位、已审覆盖、未决问题和运行状态。对仍无法确定的条目保留具体限制。所有正式运行材料都写在 `/app/output`，正式案例与测评分由平台提供。最小调用和可复现示例见 `README.md`。
+
+当案例以 `additionalProperties: false` 限定字段时，`result.json` 按字段集合交付，扩展审计在 `evidence/contract_audit.json`。使用 `evidence/artifact_manifest.json` 的相对路径逐一打开交付文件。

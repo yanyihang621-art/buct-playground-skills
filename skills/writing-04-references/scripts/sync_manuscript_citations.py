@@ -9,14 +9,13 @@ from pathlib import Path
 import re
 
 from format_references import apa_year_labels, format_library
-from io_utils import first_author_surname, normalize_title, write_json_atomic, write_text_lf
+from author_date import NARRATIVE, PAREN, parse_marker, source_suffixes
+from io_utils import normalize_title, write_json_atomic, write_text_lf
 
 HEADING = re.compile(r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\d+(?:\.\d+)*[.、]?[ \t]+)?(?:references?(?: cited)?|bibliography|引用文献|参考文献(?:\s*[(（]references[)）])?)[:：]?[ \t]*$")
 ENTRY = re.compile(r"(?m)^[ \t]*(?:\[(\d+)\]|(\d+)[.)、])[ \t]*(\S.*)$")
 TEX_BIB = re.compile(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}|\\bibliography\{[^}]+\}", re.S)
 NUMERIC = r"\d+(?:\s*[-–—,，;；]\s*\d+)*"
-AUTHOR = r"(?:[A-ZÀ-Þ][\w'’\-]+(?:[ \t]+(?:et[ \t]+al\.?|and[ \t]+[\w'’\-]+|&[ \t]+[\w'’\-]+))?|[\u3400-\u9fff]{2,8}(?:等)?)"
-AY_ITEM = rf"{AUTHOR}\s*[,，]?\s*(?:19|20)\d{{2}}[a-z]?"
 MARKER = re.compile(
     r"(?P<literal>" + r"\x60{3}[\s\S]*?\x60{3}|\x60[^\n\x60]+\x60|\$\$[\s\S]*?\$\$|\$[^\n$]+\$|\\\[[\s\S]*?\\\])"
     r"|(?P<key>\[(?:@|CITE:)[^\]\n]+\])"
@@ -24,7 +23,7 @@ MARKER = re.compile(
     rf"|(?P<super><sup>\s*(?:\[(?P<sup_br>{NUMERIC})\]|(?P<sup_num>{NUMERIC}))\s*</sup>)"
     rf"|(?P<number>(?<![\w\\])\[(?P<numbers>{NUMERIC})\](?!\s*\())"
     rf"|(?P<attached>(?<=[\w])\[(?P<attached_numbers>{NUMERIC})\](?!\s*\())"
-    rf"|(?P<author>[(（](?P<names>{AY_ITEM}(?:\s*[;；]\s*{AY_ITEM})*)[)）])"
+    rf"|(?P<author>{PAREN})|(?P<narrative>{NARRATIVE})"
 )
 DOI = re.compile(r"10\.\d{4,9}/[^\s<>]+", re.I)
 
@@ -103,15 +102,6 @@ def apply_edits(text, edits, log, issues):
     return text
 
 
-def author_key(item, records):
-    yr = re.search(r"((?:19|20)\d{2})([a-z]?)$", item)
-    surname = re.split(r"\s+(?:et al\.?|and|&)|\s*[,，]", item[:yr.start()].strip().rstrip(",，").removesuffix("等"), maxsplit=1)[0]
-    candidates = [r for r in records if first_author_surname(r["authors"]) == surname.strip().casefold()
-                  and str(r.get("year")) == yr[1]]
-    # Original a/b suffixes belong to the source bibliography and must not be inferred.
-    return candidates[0]["cite_key"] if len(candidates) == 1 and not yr[2] else None
-
-
 def author_label(rec, labels):
     names = [(a.split(",", 1)[0] if "," in a else a.split()[-1]) for a in rec["authors"] if a.strip()]
     name = "Anonymous" if not names else names[0]
@@ -139,6 +129,7 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
             aliases[alias].append(record["cite_key"])
     body, old_section = (manuscript_text, "") if is_latex else split_original(manuscript_text)
     old_map = original_numbers(old_section, records)
+    year_suffixes = source_suffixes(old_section, records)
     issues, changes, occurrences = [], [], []
     for n, key in (original_number_map or {}).items():
         if str(n) in old_map and old_map[str(n)] != key:
@@ -167,12 +158,13 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
         context = context_at(body, marker.start(), marker.end())
         if any(line == ln and marker[0] == token and quote and quote in context for ln, token, quote in protected):
             continue
+        locators = []
         if marker["key"]:
             keys = re.split(r"\s*[,;]\s*", re.sub(r"^\[(?:CITE:)?|]$", "", marker[0]).replace("@", ""))
         elif marker["tex"]:
             keys = [k.strip() for k in marker["ids"].split(",")]
-        elif marker["author"]:
-            keys = [author_key(x.strip(), records) for x in re.split(r"[;；]", marker["names"])]
+        elif marker["author"] or marker["narrative"]:
+            keys, locators = parse_marker(marker, records, year_suffixes)
         else:
             nums = expand_numbers(marker["numbers"] or marker["attached_numbers"] or marker["sup_br"] or marker["sup_num"])
             keys = [old_map.get(n) for n in nums]
@@ -182,22 +174,44 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
             issues.append({"line": line, "original_tag": marker[0], "reason": "unmapped_or_ambiguous",
                            "raw_keys": keys, "context": context})
             continue
-        keys = list(dict.fromkeys(aliases[k][0] for k in keys))
+        canonical_keys = [aliases[k][0] for k in keys]
+        if locators:
+            grouped = defaultdict(list)
+            for key, loc in zip(canonical_keys, locators):
+                if loc and loc not in grouped[key]:
+                    grouped[key].append(loc)
+            locators = [", ".join(grouped[key]) for key in dict.fromkeys(canonical_keys)]
+        keys = list(dict.fromkeys(canonical_keys))
         for k in keys:
             order.setdefault(k, len(order) + 1)
-        replacements.append((marker, keys, line, context))
+        replacements.append((marker, keys, line, context, locators))
     cited = [by_key[k] for k in order]
     labels = apa_year_labels(cited) if style == "apa7" else {}
     parts, last = [], 0
-    for m, keys, line, context in replacements:
+    for m, keys, line, context, locators in replacements:
         nums = [order[k] for k in keys]
-        if is_latex:
+        if m["narrative"]:
+            locator = ", " + locators[0] if locators and locators[0] else ""
+            if is_latex:
+                opt = "[" + locators[0] + "]" if locator else ""
+                new = m["narr_names"] + " ~\\cite" + opt + "{" + keys[0] + "}"
+            elif style == "apa7":
+                new = m["narr_names"] + " (" + labels[keys[0]] + locator + ")"
+            else:
+                new = m["narr_names"] + " [" + str(nums[0]) + locator + "]"
+        elif is_latex and m["author"] and any(locators):
+            new = "; ".join("\\cite" + ("[" + loc + "]" if loc else "") + "{" + key + "}"
+                            for key, loc in zip(keys, locators))
+        elif is_latex:
             new = (m[0][:m.start("ids") - m.start()] + ",".join(keys) + "}"
                    if m["tex"] else "\\cite{" + ",".join(keys) + "}")
         elif style == "apa7":
-            new = "(" + "; ".join(author_label(by_key[k], labels) for k in sorted(keys, key=lambda k: author_label(by_key[k], labels))) + ")"
+            lookup = dict(zip(keys, locators))
+            new = "(" + "; ".join(author_label(by_key[k], labels) + (", " + lookup[k] if lookup.get(k) else "")
+                                   for k in sorted(keys, key=lambda k: author_label(by_key[k], labels))) + ")"
         else:
-            new = compressed(nums)
+            new = ("[" + "; ".join(str(n) + (", " + loc if loc else "") for n, loc in zip(nums, locators)) + "]"
+                   if any(locators) else compressed(nums))
             if m["super"]:
                 new = "<sup>" + new + "</sup>"
         parts.extend([body[last:m.start()], new])

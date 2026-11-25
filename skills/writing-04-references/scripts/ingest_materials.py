@@ -159,6 +159,11 @@ def _candidate_score(path: Path, root: Path) -> int:
         score -= 12
     if path.suffix.lower() == ".pdf":
         score -= 1
+    if path.suffix.lower() == ".tex":
+        with path.open("rb") as stream:
+            preamble = stream.read(16000)
+        if re.search(rb"(?m)^[ \t]*\\documentclass(?:\[|{)", preamble):
+            score += 10
     return score
 
 

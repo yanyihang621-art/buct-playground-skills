@@ -8,12 +8,18 @@ import difflib
 import json
 from pathlib import Path
 import re
+import shutil
 
 from dedup_references import deduplicate_library
 from editable_manuscript import export_docx
 from ingest_materials import ingest_materials
 from io_utils import write_json_atomic, write_text_lf
 from result_contract import apply_contract
+from contract_delivery import artifact_manifest, publish_named_outputs, publish_result
+from claim_coverage import analyze_claim_coverage
+from tex_project import prepare_tex_project, export_tex_project, readable_tex
+from word_citations import prepare_word, embedded_word_records
+from parse_bib_sources import make_raw_library
 from sync_manuscript_citations import sync_manuscript
 from verify_citations import verify_citations
 
@@ -67,6 +73,11 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
             selected[key] = review[key]
     materials = ingest_materials(root, selected, case_path=case_file)
     raw = materials["raw_library"]
+    src = materials["manuscript_path"]
+    if not raw["records"] and src and src.suffix.lower() == ".docx" and materials["manuscript_text"]:
+        embedded = embedded_word_records(src, materials["manuscript_source"])
+        if embedded:
+            raw = make_raw_library(embedded, [materials["manuscript_source"]], raw["parse_errors"])
     canonical, dedup = deduplicate_library(raw)
     ms, source = materials["manuscript_text"], materials["manuscript_source"]
     problems.extend(materials["uncertainties"])
@@ -83,6 +94,19 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
     save_json("dedup_report", dedup)
     save_json("material_inventory", materials["material_inventory"])
     save_json("manuscript_selection", materials["manuscript_selection"])
+    docx_source = src if ms.strip() and src and src.suffix.lower() == ".docx" else None
+    word = prepare_word(docx_source, canonical, work) if docx_source else None
+    project = prepare_tex_project(root, src) if ms.strip() and src and src.suffix.lower() == ".tex" else None
+    if word:
+        ms = word["text"]
+        problems.extend(word["issues"])
+        save_json("word_citation_audit", word["audit"])
+        if word["audit"]["fields"]:
+            original_fields = evidence_dir / "original_with_live_fields.docx"
+            shutil.copyfile(src, original_fields)
+            artifacts["original_live_field_source"] = str(original_fields)
+    if project:
+        ms = project.text
     write_json_atomic(work / "evidence_passages.json", materials["evidence_passages"])
     write_text_lf(work / "original_manuscript.txt", ms)
     result = {"schema_version": "writing-04-references-result/v2", "challenge_id": "product-arena-03-429cc14d",
@@ -108,10 +132,19 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
                                non_citations=review.get("non_citations"))
         cmap = sync["citation_map"]
         ext = ".tex" if materials["is_latex"] else ".md"
-        draft = output / ("synced_manuscript" + ext)
+        draft = (work if project else output) / ("synced_manuscript" + ext)
         bib = output / ("references_synced.bib" if materials["is_latex"] else "bibliography_" + target + (".bib" if target == "bibtex" else ".txt"))
         write_text_lf(draft, sync["synced_manuscript"])
         write_text_lf(bib, sync["formatted_bibliography"])
+        if project:
+            # Anchor semantic decisions in the chapter, figure caption or appendix where the citation lives.
+            tex_files, tex_issues = export_tex_project(project, sync, output)
+            artifacts.update(tex_files)
+            problems.extend(tex_issues)
+        visible_ms = readable_tex(project, sync["synced_manuscript"]) if project else sync["synced_manuscript"]
+        coverage = analyze_claim_coverage(visible_ms, canonical, cmap, evidence_passages=materials["evidence_passages"],
+                                          manuscript_source=source)
+        save_json("claim_coverage", coverage)
         qa = verify_citations(draft.read_text(encoding="utf-8"), cmap, canonical, dedup, raw,
                               verify_doi_online=verify_doi_online, semantic_reviews=review.get("semantic_reviews"),
                               evidence_root=root, formatted_bibliography=bib.read_text(encoding="utf-8"))
@@ -120,13 +153,13 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
         save_json("qa_report", qa)
         save_json("claim_evidence", qa["claim_evidence"])
         patch = evidence_dir / "manuscript.diff"
-        write_text_lf(patch, "".join(difflib.unified_diff(ms.splitlines(True), sync["synced_manuscript"].splitlines(True),
+        original = readable_tex(project, ms) if project else ms
+        write_text_lf(patch, "".join(difflib.unified_diff(original.splitlines(True), visible_ms.splitlines(True),
                                                           fromfile=str(source), tofile=draft.name)))
-        artifacts.update(synced_manuscript=str(draft), bibliography_formatted=str(bib), manuscript_diff=str(patch))
-        src = materials["manuscript_path"]
-        docx_source = src if src and src.suffix.lower() == ".docx" else None
+        artifacts.update(synced_manuscript=artifacts.get("tex_project_entry", str(draft)),
+                         bibliography_formatted=artifacts.get("tex_project_bibliography", str(bib)), manuscript_diff=str(patch))
         if docx_source or want_docx or review.get("docx") is True:
-            files, notes = export_docx(docx_source, ms, sync["synced_manuscript"], sync["formatted_bibliography"], output)
+            files, notes = export_docx(docx_source, ms, visible_ms, sync["formatted_bibliography"], output, word_context=word)
             artifacts.update(files)
             problems.extend(notes)
         problems.extend(qa["uncertainties"])
@@ -148,13 +181,18 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
                                     "failed_checks": [k for k, v in qa["checks"].items() if not v],
                                     "doi_verification_mode": qa["doi_verification_mode"],
                                     "pending_claim_source_pairs": pending})
-        produced.update(manuscript=sync["synced_manuscript"], revised_manuscript=sync["synced_manuscript"],
+        produced.update(manuscript=visible_ms, revised_manuscript=visible_ms, claim_coverage=coverage,
                         bibliography=sync["formatted_bibliography"], references=sync["cited_records"],
                         citation_map=cmap, claim_evidence=qa["claim_evidence"], dedup_report=dedup,
                         qa_report=qa, evidence=qa["claim_evidence"], change_log=sync["change_log"])
         returned.update(qa_report=qa, sync_res=sync)
+    publish_named_outputs(output, artifacts, review.get("output_names", {}), problems)
+    artifacts["manifest"] = artifact_manifest(output, artifacts)
+    if problems and result["status"] == "completed":
+        result["status"] = "partial"
+    produced.update(artifacts)
     apply_contract(result, case.get("output_contract"), produced, review.get("contract_values", {}))
-    write_json_atomic(output / "result.json", result)
+    publish_result(output, case, result)
     return returned
 
 

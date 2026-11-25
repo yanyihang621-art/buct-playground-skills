@@ -24,6 +24,8 @@ def fields_for(contract):
             if isinstance(contract.get(name), (list, dict)):
                 for key, value in fields_for(contract[name]).items():
                     fields.setdefault(key, value)
+        if "properties" in contract or contract.get("type") == "object":
+            return fields
         for key, value in contract.items():
             if key not in {"type", "required", "fields", "required_fields", "properties", "$schema", "$id",
                            "title", "description", "additionalProperties", "definitions", "$defs"}:
@@ -44,7 +46,16 @@ def type_errors(value, schema, path):
     errors = []
     if "enum" in schema and value not in schema["enum"]:
         errors.append(path + " enum")
+    if "const" in schema and value != schema["const"]:
+        errors.append(path + " const")
+    if isinstance(value, (str, list)):
+        lo, hi = ("minLength", "maxLength") if isinstance(value, str) else ("minItems", "maxItems")
+        if len(value) < schema.get(lo, 0) or len(value) > schema.get(hi, float("inf")):
+            errors.append(path + " length")
     if isinstance(value, dict):
+        if schema.get("additionalProperties") is False and schema.get("properties") is not None:
+            for key in value.keys() - schema["properties"].keys():
+                errors.append(path + "." + key + " extra")
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(path + "." + key + " missing")

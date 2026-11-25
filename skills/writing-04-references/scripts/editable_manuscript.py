@@ -233,7 +233,7 @@ def _first_page(pdf, stage):
 
 
 def export_docx(source: Path | None, original_text: str, synced_text: str, formatted_bibliography: str,
-                output_dir: Path, *, render: bool = True) -> tuple[dict, list]:
+                output_dir: Path, *, render: bool = True, word_context=None) -> tuple[dict, list]:
     """Return existing artifact paths and localized limitations; leave the input untouched."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -243,11 +243,27 @@ def export_docx(source: Path | None, original_text: str, synced_text: str, forma
         docx = stage / "synced_manuscript.docx"
         if source is not None and Path(source).suffix.lower() == ".docx":
             try:
-                _project(source, original_text, synced_text, formatted_bibliography, docx)
+                shadow = word_context.get("shadow") if word_context else None
+                if word_context and (word_context["preserve_native"] or
+                                     (shadow and original_text.strip() == synced_text.strip())):
+                    shutil.copyfile(source, docx)
+                    issues.append({"code": "word_original_retained", "detail": "Original fields, notes and caches require review in the native editor."})
+                elif shadow:
+                    from word_citations import restore_word_notes
+                    projected = stage / "projected.docx"
+                    _project(shadow, original_text, synced_text, formatted_bibliography, projected)
+                    restore_word_notes(projected, docx, word_context)
+                else:
+                    _project(source, original_text, synced_text, formatted_bibliography, docx)
             except (ImportError, ValueError, KeyError, OSError, zipfile.BadZipFile, SyntaxError) as exc:
-                issues.append({"code": "docx_text_edition", "detail": str(exc),
-                               "review": "Compare the editable text edition with the input for layout, fields and objects."})
-                _clean_docx(synced_text, docx)
+                if word_context and (word_context.get("shadow") or word_context.get("preserve_native")):
+                    shutil.copyfile(source, docx)
+                    issues.append({"code": "word_original_retained", "detail": str(exc),
+                                   "review": "Review the synchronized text alongside the native document and its original fields."})
+                else:
+                    issues.append({"code": "docx_text_edition", "detail": str(exc),
+                                   "review": "Compare the editable text edition with the input for layout, fields and objects."})
+                    _clean_docx(synced_text, docx)
         else:
             _clean_docx(synced_text, docx)
         generated = {"editable_docx": docx}
