@@ -70,6 +70,29 @@ def copy_build_logs(build, root, pmap, evidence, name):
     build["manifest"]["build_logs"] = paths
 
 
+def build_measurements(build, found):
+    """Report observed builds of the two source revisions on this toolchain."""
+    if not found:
+        return {"attempted": False, "reason": "No matching TeX entrypoint in this revision."}
+    manifest, diag = build["manifest"], build["diagnostics"]
+    return {
+        "attempted": bool(manifest["passes_executed"]),
+        "entrypoint": manifest["main_tex"],
+        "engine": manifest["engine"],
+        "version": manifest.get("engine_version"),
+        "status": manifest["status"],
+        "passes": [{"tool": p["tool"], "exit_code": p["returncode"]} for p in manifest["passes_executed"]],
+        "error_count": diag["error_count"],
+        "warnings": diag["warning_count"],
+        "overfull_hboxes": diag["overfull_hbox_count"],
+        "page_boundary_check": manifest.get("layout_audit", {}).get("status", "unverified"),
+        "unresolved_keys": diag.get("unresolved_keys", []),
+        "page_count": manifest["page_count"],
+        "pdf_sha256": manifest["pdf_sha256"],
+        "diagnostic_logs": manifest.get("build_logs", []),
+    }
+
+
 def review_data(report):
     for field in ("source_mapping", "task_checks", "change_records", "uncertainties", "confirmed_comments"):
         entries = report.get(field, [])
@@ -220,11 +243,22 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     write_json_atomic(evidence / "build_manifest.json", manifest)
     write_json_atomic(evidence / "source_inventory.json", source_index)
     write_json_atomic(evidence / "file_changes.json", file_changes)
+    write_json_atomic(evidence / "build_comparison.json", {
+        "scope": "Observed original and revised source builds in the current environment.",
+        "original": build_measurements(init, original_map.get("found")),
+        "revised": build_measurements(built, pmap.get("found")),
+        "changed_source_files": [item["file"] for item in file_changes],
+    })
     if report_path:
         write_json_atomic(evidence / "case_review.json", report)
     checks = report.get("task_checks", [])
     unresolved = manifest.get("rendered_unresolved_markers") or []
     uncertainties = list(report.get("uncertainties", []))
+    layout = manifest.get("layout_audit", {})
+    layout_pages = sorted({item["page"] for item in layout.get("findings", [])})
+    if layout_pages:
+        uncertainties.append({"code": "page_boundary_findings", "status": layout["status"],
+                              "pages": layout_pages, "source": "evidence/build_manifest.json"})
     for item in pmap.get("missing_assets", []):
         uncertainties.append({"code": "missing_asset", "detail": item})
     confirmations = {(row.get("file"), str(row.get("line"))) for row in report.get("confirmed_comments", [])
@@ -267,6 +301,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
         "diagnostics_final_json": "evidence/diagnostics_final.json",
         "patch_diff": "evidence/patch.diff",
         "source_inventory_json": "evidence/source_inventory.json",
+        "build_comparison_json": "evidence/build_comparison.json",
         "file_changes_json": "evidence/file_changes.json",
     }
     if report_path:
@@ -303,6 +338,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
                     "final_error_count": diagnostics["error_count"],
                     "overfull_hbox_count": diagnostics["overfull_hbox_count"],
                     "rendered_unresolved_count": len(unresolved), "page_count": manifest["page_count"],
+                    "layout_review_pages": layout_pages,
                     "passes_count": len(manifest["passes_executed"])},
         "artifacts": artifacts,
         "source_mapping": report.get("source_mapping", []),
@@ -313,6 +349,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
             f"{manifest.get('engine', 'LaTeX')}: {manifest['page_count']} pages, "
             f"{diagnostics['error_count']} final errors, {len(file_changes)} changed files."),
         "verification": {"passed": bool(passed), "pdf_nonempty": pdf_ok,
+                         "page_boundary_check": layout.get("status", "unverified"),
                          "zero_unresolved_rendered": pdf_ok and not unresolved,
                          "repro_script_emitted": bool(manifest.get("repro_script")),
                          "unreviewed_numeric_percent": len(open_percents),

@@ -12,8 +12,10 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from xml.etree.ElementTree import ParseError
 
 from parse_tex_log import parse_tex_logs
+from pdf_layout import glyph_findings, poppler_findings, preview_pages
 from tex_utils import probe_tool_version, run_cmd, sha256_file, write_json_atomic, write_text_lf
 
 ENGINES = ("pdflatex", "xelatex", "lualatex")
@@ -21,14 +23,17 @@ BIB_TOOLS = ("bibtex", "biber")
 MARKER = re.compile(r"\?\?|\[\?\]")
 
 
-def _audit_pdf(path, previews):
+def _audit_pdf(path, previews, diagnostics=()):
     audit = dict(pdf_nonempty=False, page_count=0, rendered_unresolved_markers=[], previews=[], pdf_sha256=None,
-                 pdf_fonts=[])
+                 pdf_fonts=[], layout={"method": None, "status": "unverified", "findings": []})
     if not path.is_file() or not path.stat().st_size:
         return audit
     audit["pdf_sha256"] = sha256_file(path)
     if previews:
         previews.mkdir(exist_ok=True, parents=True)
+    layout = audit["layout"]
+    findings = layout["findings"]
+    unresolved_pages = []
     try:
         try:
             import fitz
@@ -38,15 +43,23 @@ def _audit_pdf(path, previews):
             with fitz.open(str(path)) as doc:
                 audit["audit_tool"] = "PyMuPDF"
                 audit["page_count"] = doc.page_count
+                layout["method"] = "painted_glyphs_against_display_box"
                 for i, page in enumerate(doc):
                     markers = MARKER.findall(page.get_text())
                     audit["rendered_unresolved_markers"].extend(f"p.{i+1}:{m}" for m in markers)
+                    findings.extend(glyph_findings(page))
+                    if markers:
+                        unresolved_pages.append(i+1)
                     for font in page.get_fonts():
                         name = re.sub(r"^[A-Z]{6}\+", "", font[3])
                         if name and name not in audit["pdf_fonts"]:
                             audit["pdf_fonts"].append(name)
-                    if previews and i < 4:
-                        png = previews / f"page_{i+1:03}.png"
+                layout["status"] = ("clipped" if any(f["severity"] == "error" for f in findings)
+                                    else "review" if findings else "checked")
+                if previews:
+                    for number in preview_pages(doc.page_count, findings, unresolved_pages, diagnostics):
+                        page = doc[number-1]
+                        png = previews / f"page_{number:03}.png"
                         scale = min(1.75, 1500 / max(1, page.rect.width, page.rect.height))
                         page.get_pixmap(matrix=fitz.Matrix(scale, scale)).save(str(png))
                         audit["previews"].append(str(png))
@@ -54,6 +67,8 @@ def _audit_pdf(path, previews):
             def poppler(command):
                 return subprocess.run(command, check=True, capture_output=True, timeout=30).stdout.decode("utf-8", "replace")
             audit["audit_tool"] = "Poppler"
+            layout.update(method="visible_word_boxes", status="limited",
+                          limitation="Visible words can omit off-page glyphs. Review flagged pages against the editable source.")
             info = poppler(["pdfinfo", str(path)])
             pages = re.search(r"^Pages:\s*(\d+)", info, re.M)
             if not pages:
@@ -61,9 +76,21 @@ def _audit_pdf(path, previews):
             audit["page_count"] = int(pages[1])
             pages_text = poppler(["pdftotext", "-enc", "UTF-8", str(path), "-"]).split("\f")
             for i, page_text in enumerate(pages_text, 1):
-                audit["rendered_unresolved_markers"].extend(f"p.{i}:{m}" for m in MARKER.findall(page_text))
+                markers = MARKER.findall(page_text)
+                audit["rendered_unresolved_markers"].extend(f"p.{i}:{m}" for m in markers)
+                if markers:
+                    unresolved_pages.append(i)
+            try:
+                bbox_xml = poppler(["pdftotext", "-cropbox", "-bbox", "-enc", "UTF-8", str(path), "-"])
+                findings.extend(poppler_findings(bbox_xml))
+            except (OSError, ValueError, KeyError, ParseError, subprocess.SubprocessError) as error:
+                layout["limitation"] += f" Bounding box extraction unavailable: {error}"
+            # TeX box warnings alone never imply physical clipping. A visible edge crossing
+            # and a layout warning warrant inspection when the paint trace is unavailable.
+            if findings and any(d["category"] in ("overfull_hbox", "overfull_vbox") for d in diagnostics):
+                layout["status"] = "review"
             if previews:
-                for i in range(1, min(4, audit["page_count"]) + 1):
+                for i in preview_pages(audit["page_count"], findings, unresolved_pages, diagnostics):
                     prefix = previews / f"page_{i:03}"
                     poppler(["pdftoppm", "-f", str(i), "-l", str(i), "-singlefile", "-scale-to", "1500",
                              "-png", str(path), str(prefix)])
@@ -220,9 +247,19 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
             if p["returncode"] and (p["timed_out"] or not diag["error_count"]):
                 issue("build_timeout" if p["timed_out"] else "tool_exit", f"{p['tool']} returned {p['returncode']}. {p.get('error_tail', '')[-700:]}")
         pdf = work / (stem + ".pdf")
-        audit = _audit_pdf(pdf, previews_dir.resolve() if previews_dir else None)
+        audit = _audit_pdf(pdf, previews_dir.resolve() if previews_dir else None, diag["diagnostics"])
         manifest.update({k: audit[k] for k in ("page_count", "previews", "pdf_sha256", "rendered_unresolved_markers", "pdf_fonts")})
         manifest["audit_tool"] = audit.get("audit_tool")
+        manifest["layout_audit"] = audit["layout"]
+        layout_pages = sorted({f["page"] for f in audit["layout"]["findings"]})
+        if audit["layout"]["status"] == "clipped":
+            clipped_pages = sorted({f["page"] for f in audit["layout"]["findings"] if f["severity"] == "error"})
+            issue("page_text_clipped", f"Painted text crosses the display boundary on PDF pages {clipped_pages}. Inspect the cited glyph positions and preview.")
+        elif audit["layout"]["status"] == "review":
+            diag["diagnostics"].append({"category": "page_edge_review", "severity": "warning", "file": pdf.name,
+                                        "line": None, "message": f"Review possible clipped text on pages {layout_pages}.",
+                                        "is_cascade": False})
+            diag["warning_count"] += 1
         if "audit_error" in audit:
             issue("pdf_audit_failed", audit["audit_error"])
         if audit["pdf_sha256"]:
@@ -232,6 +269,7 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
             unresolved = diag["has_undefined_cites"] or diag["has_undefined_refs"] or diag["rerun_requested"]
             lost_content = any(d["category"] in ("missing_glyph", "duplicate_label") for d in diag["diagnostics"])
             incomplete = (not tex_ok or not bib_ok or diag["error_count"] or unresolved or lost_content or
+                          audit["layout"]["status"] == "review" or
                           not audit["pdf_nonempty"] or audit["rendered_unresolved_markers"])
             manifest["status"] = "partial" if incomplete else "completed"
         elif not diag["error_count"]:

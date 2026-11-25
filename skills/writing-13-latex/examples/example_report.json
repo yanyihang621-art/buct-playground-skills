@@ -6,7 +6,11 @@
       "target": "sections/results.tex",
       "target_quote": "1.0 & 12.4",
       "pdf_quote": "12.4",
-      "explanation": "First data row; flow in L/min and pressure drop in Pa."
+      "explanation": "First data row; flow in L/min and pressure drop in Pa.",
+      "pdf_row": [
+        "1.0",
+        "12.4"
+      ]
     },
     {
       "source": "measurements.csv",
@@ -14,7 +18,11 @@
       "target": "sections/results.tex",
       "target_quote": "2.0 & 21.7",
       "pdf_quote": "21.7",
-      "explanation": "Second data row."
+      "explanation": "Second data row.",
+      "pdf_row": [
+        "2.0",
+        "21.7"
+      ]
     }
   ],
   "task_checks": [

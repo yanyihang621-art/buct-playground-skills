@@ -15,9 +15,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from build_latex_result import run_latex_pipeline
+from compile_latex import compile_latex_project
 from parse_tex_log import parse_tex_logs
-from prepare_case import pdf_text
+from prepare_case import pdf_text, stage
 from tex_utils import write_json_atomic, write_text_lf
+from verify_manuscript import verify
 
 
 def _setup_l1_clean_bibtex(d: Path) -> Path:
@@ -162,6 +164,34 @@ def _compare_baseline(l2: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _run_table_checks(root: Path) -> Dict[str, bool]:
+    """Build two genuine PDFs with identical values and different row associations."""
+    import tempfile
+    examples = SCRIPT_DIR.parent / "examples"
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
+        staged = Path(tmp) / "case"
+        stage(examples / "project", staged)
+        project = staged / "project"
+        report = examples / "example_report.json"
+        def check():
+            build = compile_latex_project(project, "main.tex")
+            assert build["manifest"]["status"] == "completed"
+            return verify(examples / "project", staged, project, report, Path(build["manifest"]["output_pdf"]))
+        original = check()
+        table = project / "sections" / "results.tex"
+        revised = table.read_text(encoding="utf-8").replace("1.0 & 12.4", "1.0 & 21.7").replace("2.0 & 21.7", "2.0 & 12.4")
+        write_text_lf(table, revised)
+        swapped = check()
+        return {
+            "matches_both_rendered_rows": original["verified"] == 2 and all(
+                row.get("pdf_row_matches") for row in original["checks"]),
+            "swapped_values_fail_rendered_row_checks": all(
+                not row.get("pdf_row_matches") and row.get("pdf_pages") for row in swapped["checks"]
+            ) and swapped["failed"] == 2,
+        }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run real MiKTeX/TeX compilation self-tests for writing-13-latex.")
     parser.add_argument("--out-dir", required=True)
@@ -208,9 +238,10 @@ def main() -> int:
     l4_ok = r4["result"]["status"] == "failed" and r4["result"]["metrics"]["page_count"] == 0 and len(r4["result"]["uncertainties"]) >= 1
 
     neg = _run_negative_diag_tests(root / "neg_diag")
+    render_checks = _run_table_checks(root / "rendered_tables")
 
     summary: Dict[str, Any] = {
-        "all_passed": bool(l1_ok and l2_ok and l3_ok and l4_ok and all(neg.values())),
+        "all_passed": bool(l1_ok and l2_ok and l3_ok and l4_ok and all(neg.values()) and all(render_checks.values())),
         "suites": {
             "l1_clean_article_with_bibtex": {"passed": l1_ok, "status": r1["result"]["status"], "metrics": r1["result"]["metrics"], "engine_version": r1["manifest"]["engine_version"]},
             "l2_broken_tex_diagnose_and_autofix": {"passed": l2_ok, "unreviewed_status": first["result"]["status"], "status": r2["result"]["status"], "metrics": r2["result"]["metrics"], "restored_measurement_visible": "91.8% at 573 K" in " ".join(final_text.split())},
@@ -218,6 +249,7 @@ def main() -> int:
             "l4_missing_cls_honest_failure": {"passed": l4_ok, "status": r4["result"]["status"], "uncertainties": len(r4["result"]["uncertainties"])},
         },
         "negative_diag_tests": neg,
+        "rendered_table_tests": render_checks,
     }
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r2)
