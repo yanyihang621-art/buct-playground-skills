@@ -1,0 +1,9 @@
+{
+  "source_id": "monitor",
+  "title": "Monitor comparison (fictional example)",
+  "authors": ["Synthetic example B"],
+  "paragraphs": [
+    {"jats_id": "b1", "section": "Results", "text": "The reference filter increased repeatability."},
+    {"jats_id": "b2", "section": "Discussion", "text": "The reference filter may improve contrast."}
+  ]
+}

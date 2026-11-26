@@ -14,25 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from pdf_utils import write_json_atomic
-
-
-def _extract_contract_keys(case_data: Dict[str, Any]) -> List[str]:
-    contract = case_data.get("output_contract")
-    if not contract:
-        return []
-    if isinstance(contract, list):
-        return [str(k) for k in contract]
-    if isinstance(contract, dict):
-        if "properties" in contract and isinstance(contract["properties"], dict):
-            keys = list(contract["properties"].keys())
-            for req in contract.get("required", []) or []:
-                if req not in keys:
-                    keys.append(str(req))
-            return keys
-        if "required" in contract and isinstance(contract["required"], list):
-            return [str(k) for k in contract["required"]]
-        return [str(k) for k in contract.keys()]
-    return []
+from kg_contract import allows_null, contract_specs, contract_issues
 
 
 def _collect_sources(kg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -75,10 +57,11 @@ def build_kg_result(
     graphml_text: Optional[str] = None,
     markdown_text: Optional[str] = None,
     override_data: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Assemble final /app/output/result.json matching /input/case.json output_contract."""
     case_id = case_data.get("case_id", "unknown_case")
-    contract_keys = _extract_contract_keys(case_data)
+    contract = case_data.get("output_contract")
     sources = _collect_sources(kg)
 
     field_catalog: Dict[str, Any] = {
@@ -92,9 +75,14 @@ def build_kg_result(
         "merge_decisions": kg.get("merge_decisions", []),
         "do_not_merge_records": kg.get("do_not_merge_records", []),
         "conflicts": kg.get("conflicts", []),
+        "boundary_records": kg.get("boundary_records", []),
         "executed_queries": queries,
         "queries": queries,
         "incremental_changelog": kg.get("incremental_changelog"),
+        "abbreviation_definitions": kg.get("abbreviation_definitions", {}),
+        "extraction_mode": kg.get("extraction_mode"),
+        "reviewed_paragraphs": kg.get("reviewed_paragraphs", []),
+        "artifacts": artifacts or {},
         "graphml": graphml_text or "",
         "markdown": markdown_text or "",
         "sources": sources,
@@ -116,30 +104,44 @@ def build_kg_result(
         "sources": sources,
         "uncertainties": list(kg.get("uncertainties", [])),
     }
+    if kg.get("extraction_mode"):
+        result["extraction_mode"] = kg["extraction_mode"]
+        result["reviewed_paragraphs"] = kg.get("reviewed_paragraphs", [])
+    if kg.get("boundary_records"):
+        result["boundary_records"] = kg["boundary_records"]
     if kg.get("incremental_changelog") is not None:
         result["incremental_changelog"] = kg["incremental_changelog"]
     if markdown_text:
         result["markdown"] = markdown_text
 
-    for key in contract_keys:
-        if key in field_catalog:
+    if artifacts:
+        result["artifacts"] = artifacts
+    if kg.get("abbreviation_definitions"):
+        result["abbreviation_definitions"] = kg["abbreviation_definitions"]
+
+    amendments = dict(override_data or {})
+    # Generated fields must remain consistent with the graph/queries being audited.
+    for key in list(amendments):
+        if key in field_catalog and key != "uncertainties":
+            if amendments[key] != field_catalog[key]:
+                raise ValueError(f"Update the source graph or query first: field {key!r} conflicts with it.")
+            amendments.pop(key)
+    extra_uncertainties = amendments.pop("uncertainties", [])
+    if not isinstance(extra_uncertainties, list):
+        raise ValueError("uncertainties must be a list")
+
+    for key, spec in contract_specs(contract).items():
+        if key not in result and key in field_catalog and (field_catalog[key] is not None or allows_null(spec)):
             result[key] = field_catalog[key]
-        elif key not in result:
-            result[key] = None
-            result["uncertainties"].append(
-                {
-                    "code": "awaiting_task_synthesis",
-                    "severity": "info",
-                    "pages": [],
-                    "message": f"Contract field '{key}' is not directly deterministically mapped and requires agent synthesis or override.",
-                }
-            )
-
-    if override_data:
-        for k, v in override_data.items():
-            result[k] = v
-
-    result["case_id"] = case_id
+    result.update(amendments)
+    result["uncertainties"] = list(kg.get("uncertainties", [])) + extra_uncertainties
+    issues = contract_issues(contract, result)
+    for issue in issues:
+        if issue["code"] == "missing_contract_field":
+            result[issue["field"]] = None
+    result["uncertainties"].extend(issues)
+    if issues and result["status"] == "success":
+        result["status"] = "partial"
     return result
 
 
@@ -161,7 +163,19 @@ def main() -> int:
     md = Path(args.markdown).read_text(encoding="utf-8") if args.markdown and Path(args.markdown).exists() else None
     ovr = json.loads(Path(args.override_json).read_text(encoding="utf-8")) if args.override_json else None
 
-    res = build_kg_result(case_data, kg, qobj.get("queries", []), graphml_text=gml, markdown_text=md, override_data=ovr)
+    output = Path(args.out).resolve().parent
+    files = {"graph_json": args.kg, "queries_json": args.queries, "graphml": args.graphml, "report": args.markdown}
+    if args.graphml:
+        export_dir = Path(args.graphml).resolve().parent
+        files.update({"dot": export_dir / "kg.dot", "preview": export_dir / "graph_preview.png"})
+    artifacts = {}
+    for name, filename in files.items():
+        if filename:
+            path = Path(filename).resolve()
+            if path.is_file() and path.is_relative_to(output):
+                artifacts[name] = path.relative_to(output).as_posix()
+    res = build_kg_result(case_data, kg, qobj.get("queries", []), graphml_text=gml, markdown_text=md,
+                          override_data=ovr, artifacts=artifacts)
     write_json_atomic(args.out, res)
     return 0
 

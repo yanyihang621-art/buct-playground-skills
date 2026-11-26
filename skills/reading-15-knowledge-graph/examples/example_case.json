@@ -2,6 +2,7 @@
   "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
   "case_id": "example-reading-15-synthetic",
   "task_type": "literature_knowledge_graph",
+  "input_files": ["optics-bench.json", "optics-monitor.json"],
   "instruction": "Build an evidence-grounded knowledge graph across independent papers, preserve per-paper provenance (source_id, paragraph_id), document merge vs do-not-merge decisions, and run >= 3 graph queries.",
   "output_contract": {
     "required": [

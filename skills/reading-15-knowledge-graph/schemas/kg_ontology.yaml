@@ -7,6 +7,12 @@ entity_types:
   - MaterialInstance
   - Method
   - MethodInstance
+  - Model
+  - ModelInstance
+  - Dataset
+  - DatasetInstance
+  - Instrument
+  - InstrumentInstance
   - Task
   - Metric
   - Condition
@@ -64,8 +70,9 @@ evidence_strength_tiers:
 
 alignment_policy:
   merge_allowed:
-    - "Exact acronym-to-full-name equivalence (e.g., CO2RR <-> CO2 reduction reaction)"
+    - "Resolve each acronym using definitions in its own source. Align across papers only when the expansions and scientific objects agree."
     - "Case and hyphenation normalization of abstract concepts or tasks"
   do_not_merge_required:
-    - "Same generic Material or Method term across distinct papers when experimental conditions, sample preparations, or numeric outcomes differ. Keep paper-scoped MaterialInstance/MethodInstance nodes linked via instance_of to the canonical concept."
+    - "Preserve distinct source-bound meanings when two papers define the same written abbreviation differently."
+    - "A common material, method, model or dataset term does not establish a common sample, fitted model, physical run or data split. Keep each paper's instances linked to the generic concept via instance_of."
     - "Never treat multiple file formats (e.g., JSON + Markdown) of the same paper as independent cross-paper evidence."

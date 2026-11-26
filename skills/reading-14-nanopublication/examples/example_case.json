@@ -4,7 +4,7 @@
   "task_type": "nanopublication_extraction",
   "instruction": "Decompose scientific conclusions into atomic Nanopublications with controlled predicates, minimal sufficient evidence snippets, full source provenance, and JSON-LD/TriG/N-Quads exports.",
   "input_files": [
-    "sample_nanopub_paper.pdf"
+    "sample_paper.md"
   ],
   "output_contract": {
     "required": [

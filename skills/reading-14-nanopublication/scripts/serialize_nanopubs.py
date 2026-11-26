@@ -9,13 +9,14 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from pdf_utils import write_json_atomic, write_text_lf
+from decompose_assertions import location_label
 
 PREFIXES = {
     "np": "http://www.nanopub.org/nschema#",
@@ -96,37 +97,55 @@ def serialize_to_jsonld(bundle: Dict[str, Any]) -> Dict[str, Any]:
                 ],
             }
         )
-        # Assertion graph
-        graphs.append(
-            {
-                "@id": head["assertion_graph"],
-                "@graph": [
-                    {
-                        "@id": subj_iri,
-                        "rdfs:label": a["subject"],
-                        a["predicate_uri"]: {"@id": obj_iri},
-                        "npv:atomicStatement": a["atomic_statement"],
-                        "npv:conditions": a.get("conditions", []),
-                    },
-                    {"@id": obj_iri, "rdfs:label": a["object"]},
-                ],
-            }
-        )
-        # Provenance graph
+        # Reifying a qualified statement avoids asserting a conditional, negated
+        # or hypothetical relation as an unconditional RDF edge.
+        modality = a.get("modality", "asserted")
+        polarity = a.get("polarity", "affirmative")
+        statement_node = {
+            "@id": f"{uri}#statement", "@type": "rdf:Statement",
+            "rdf:subject": {"@id": subj_iri},
+            "rdf:predicate": {"@id": a["predicate_uri"]},
+            "rdf:object": {"@id": obj_iri},
+            "npv:atomicStatement": a["atomic_statement"],
+            "npv:modality": modality, "npv:polarity": polarity,
+            "npv:conditions": a.get("conditions", []),
+        }
+        subject_node = {"@id": subj_iri, "rdfs:label": a["subject"]}
+        if (modality == "asserted" and polarity == "affirmative" and not a.get("conditions")
+                and p.get("evidence_type") not in {"indirect_inference", "cited_prior_work"}):
+            subject_node[a["predicate_uri"]] = {"@id": obj_iri}
+        graphs.append({"@id": head["assertion_graph"], "@graph": [
+            statement_node, subject_node, {"@id": obj_iri, "rdfs:label": a["object"]}
+        ]})
+        # Preserve both the paper identity and the native address in each export.
+        source_iri = ("https://doi.org/" + smeta["doi"] if smeta.get("doi") not in (None, "", "not_reported")
+                      else "urn:sha256:" + str(smeta.get("source_sha256", "unknown")))
         graphs.append(
             {
                 "@id": head["provenance_graph"],
                 "@graph": [
                     {
                         "@id": head["assertion_graph"],
-                        "prov:wasDerivedFrom": smeta.get("doi") if smeta.get("doi") != "not_reported" else smeta.get("source_file", "unknown"),
+                        "prov:wasDerivedFrom": {"@id": source_iri},
                         "npv:evidenceType": p.get("evidence_type"),
                         "npv:evidenceSnippet": p.get("minimal_evidence_snippet"),
+                        "npv:conditionEvidence": p.get("condition_quote") or None,
+                        "npv:sourceHash": smeta.get("source_sha256"),
                         "npv:pdfPage": loc.get("pdf_page"),
                         "npv:locationId": loc.get("block_id") or loc.get("table_id") or "unknown",
-                        "npv:bbox": json.dumps(loc.get("bbox", [])),
+                        "npv:bbox": json.dumps(loc["bbox"]) if "bbox" in loc else None,
+                        "npv:lineStart": loc.get("line_start"),
+                        "npv:lineEnd": loc.get("line_end"),
+                        "npv:nativeParagraphId": loc.get("original_id"),
+                        "npv:sourceSection": loc.get("section") or loc.get("section_id"),
+                        "npv:sourceAddress": loc.get("json_pointer") or loc.get("xml_xpath"),
+                        "npv:tableRow": loc.get("row_index"),
+                        "npv:tableColumn": loc.get("column_name"),
                         "dct:title": smeta.get("paper_title"),
-                    }
+                    },
+                    {"@id": source_iri, "dct:title": smeta.get("paper_title"), "dct:creator": smeta.get("authors", []),
+                     "dct:issued": smeta.get("year"), "pav:version": smeta.get("version"),
+                     "npv:sourceFile": smeta.get("source_file"), "npv:sourceHash": smeta.get("source_sha256")}
                 ],
             }
         )
@@ -139,7 +158,7 @@ def serialize_to_jsonld(bundle: Dict[str, Any]) -> Dict[str, Any]:
                         "@id": uri,
                         "dct:created": {"@value": pi.get("created_at", ""), "@type": "xsd:dateTime"},
                         "pav:createdBy": pi.get("creator", ""),
-                        "npv:confidenceScore": pi.get("confidence_score", 0.0),
+                        "npv:confidenceScore": {"@value": str(pi.get("confidence_score", 0.0)), "@type": "xsd:decimal"},
                         "npv:confidenceBasis": pi.get("confidence_basis", ""),
                     }
                 ],
@@ -151,93 +170,39 @@ def serialize_to_jsonld(bundle: Dict[str, Any]) -> Dict[str, Any]:
 
 def serialize_to_trig_and_nquads(bundle: Dict[str, Any]) -> Tuple[str, str]:
     """Serialize Nanopublication collection to W3C TriG and W3C N-Quads."""
-    trig_lines = [f"@prefix {k}: <{v}> ." for k, v in PREFIXES.items()] + [""]
+    def expand(iri: str) -> str:
+        prefix, _, local = iri.partition(":")
+        return PREFIXES[prefix] + local if prefix in PREFIXES else iri
+
+    def object_token(value: Any) -> str:
+        if isinstance(value, dict):
+            if "@id" in value:
+                return _iri(expand(value["@id"]))
+            return _lit(value["@value"], expand(value["@type"]))
+        if isinstance(value, int):
+            return _lit(str(value), PREFIXES["xsd"] + "integer")
+        if isinstance(value, float):
+            return _lit(str(value), PREFIXES["xsd"] + "double")
+        return _lit(value)
+
+    trig_lines: List[str] = []
     nq_lines: List[str] = []
-
-    rdf_type = f"{PREFIXES['rdf']}type"
-    rdfs_label = f"{PREFIXES['rdfs']}label"
-    xsd_dt = f"{PREFIXES['xsd']}dateTime"
-    xsd_int = f"{PREFIXES['xsd']}integer"
-    xsd_dec = f"{PREFIXES['xsd']}decimal"
-
-    for np_obj in bundle.get("nanopublications", []):
-        uri = np_obj["nanopub_uri"]
-        head_g = f"{uri}#Head"
-        ass_g = np_obj["head"]["assertion_graph"]
-        prov_g = np_obj["head"]["provenance_graph"]
-        pub_g = np_obj["head"]["pubinfo_graph"]
-
-        a = np_obj["assertion"]
-        p = np_obj["provenance"]
-        pi = np_obj["pubinfo"]
-        loc = p.get("location", {})
-        smeta = p.get("source_metadata", {})
-
-        subj_iri = _slug_iri(a["subject"])
-        obj_iri = _slug_iri(a["object"])
-
-        # TriG output
-        trig_lines.append(f"<{head_g}> {{")
-        trig_lines.append(f"  <{uri}> a np:Nanopublication ;")
-        trig_lines.append(f"    np:hasAssertion <{ass_g}> ;")
-        trig_lines.append(f"    np:hasProvenance <{prov_g}> ;")
-        trig_lines.append(f"    np:hasPublicationInfo <{pub_g}> .")
+    for graph in serialize_to_jsonld(bundle)["@graph"]:
+        graph_iri = _iri(graph["@id"])
+        trig_lines.append(f"{graph_iri} {{")
+        for node in graph["@graph"]:
+            subject = _iri(node["@id"])
+            for key, values in node.items():
+                if key == "@id" or values is None:
+                    continue
+                predicate = _iri(expand("rdf:type" if key == "@type" else key))
+                for value in values if isinstance(values, list) else [values]:
+                    obj = _iri(expand(value)) if key == "@type" else object_token(value)
+                    triple = f"{subject} {predicate} {obj}"
+                    trig_lines.append(f"  {triple} .")
+                    nq_lines.append(f"{triple} {graph_iri} .")
         trig_lines.append("}")
-        trig_lines.append("")
-
-        trig_lines.append(f"<{ass_g}> {{")
-        trig_lines.append(f'  <{subj_iri}> rdfs:label "{_esc_rdf_literal(a["subject"])}" ;')
-        trig_lines.append(f"    <{a['predicate_uri']}> <{obj_iri}> ;")
-        if a.get("conditions"):
-            trig_lines.append(f'    npv:conditions "{_esc_rdf_literal("; ".join(a["conditions"]))}" ;')
-        trig_lines.append(f'    npv:atomicStatement "{_esc_rdf_literal(a["atomic_statement"])}" .')
-        trig_lines.append(f'  <{obj_iri}> rdfs:label "{_esc_rdf_literal(a["object"])}" .')
-        trig_lines.append("}")
-        trig_lines.append("")
-
-        src_ref = smeta.get("doi") if smeta.get("doi") != "not_reported" else smeta.get("source_file", "unknown")
-        loc_id = loc.get("block_id") or loc.get("table_id") or "unknown"
-        trig_lines.append(f"<{prov_g}> {{")
-        trig_lines.append(f'  <{ass_g}> prov:wasDerivedFrom "{_esc_rdf_literal(src_ref)}" ;')
-        trig_lines.append(f'    npv:evidenceType "{_esc_rdf_literal(p.get("evidence_type", ""))}" ;')
-        trig_lines.append(f'    npv:evidenceSnippet "{_esc_rdf_literal(p.get("minimal_evidence_snippet", ""))}" ;')
-        trig_lines.append(f'    npv:pdfPage "{loc.get("pdf_page", 1)}"^^xsd:integer ;')
-        trig_lines.append(f'    npv:locationId "{_esc_rdf_literal(loc_id)}" ;')
-        trig_lines.append(f'    dct:title "{_esc_rdf_literal(smeta.get("paper_title", ""))}" .')
-        trig_lines.append("}")
-        trig_lines.append("")
-
-        trig_lines.append(f"<{pub_g}> {{")
-        trig_lines.append(f'  <{uri}> dct:created "{_esc_rdf_literal(pi.get("created_at", ""))}"^^xsd:dateTime ;')
-        trig_lines.append(f'    pav:createdBy "{_esc_rdf_literal(pi.get("creator", ""))}" ;')
-        trig_lines.append(f'    npv:confidenceScore "{pi.get("confidence_score", 0.0)}"^^xsd:decimal ;')
-        trig_lines.append(f'    npv:confidenceBasis "{_esc_rdf_literal(pi.get("confidence_basis", ""))}" .')
-        trig_lines.append("}")
-        trig_lines.append("")
-
-        # N-Quads output
-        nq_lines.extend(
-            [
-                f"{_iri(uri)} {_iri(rdf_type)} {_iri(PREFIXES['np'] + 'Nanopublication')} {_iri(head_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['np'] + 'hasAssertion')} {_iri(ass_g)} {_iri(head_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['np'] + 'hasProvenance')} {_iri(prov_g)} {_iri(head_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['np'] + 'hasPublicationInfo')} {_iri(pub_g)} {_iri(head_g)} .",
-                f"{_iri(subj_iri)} {_iri(rdfs_label)} {_lit(a['subject'])} {_iri(ass_g)} .",
-                f"{_iri(subj_iri)} {_iri(a['predicate_uri'])} {_iri(obj_iri)} {_iri(ass_g)} .",
-                f"{_iri(subj_iri)} {_iri(PREFIXES['npv'] + 'atomicStatement')} {_lit(a['atomic_statement'])} {_iri(ass_g)} .",
-                f"{_iri(obj_iri)} {_iri(rdfs_label)} {_lit(a['object'])} {_iri(ass_g)} .",
-                f"{_iri(ass_g)} {_iri(PREFIXES['prov'] + 'wasDerivedFrom')} {_lit(src_ref)} {_iri(prov_g)} .",
-                f"{_iri(ass_g)} {_iri(PREFIXES['npv'] + 'evidenceType')} {_lit(p.get('evidence_type', ''))} {_iri(prov_g)} .",
-                f"{_iri(ass_g)} {_iri(PREFIXES['npv'] + 'evidenceSnippet')} {_lit(p.get('minimal_evidence_snippet', ''))} {_iri(prov_g)} .",
-                f"{_iri(ass_g)} {_iri(PREFIXES['npv'] + 'pdfPage')} {_lit(str(loc.get('pdf_page', 1)), xsd_int)} {_iri(prov_g)} .",
-                f"{_iri(ass_g)} {_iri(PREFIXES['npv'] + 'locationId')} {_lit(loc_id)} {_iri(prov_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['dct'] + 'created')} {_lit(pi.get('created_at', ''), xsd_dt)} {_iri(pub_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['pav'] + 'createdBy')} {_lit(pi.get('creator', ''))} {_iri(pub_g)} .",
-                f"{_iri(uri)} {_iri(PREFIXES['npv'] + 'confidenceScore')} {_lit(str(pi.get('confidence_score', 0.0)), xsd_dec)} {_iri(pub_g)} .",
-            ]
-        )
-
-    return "\n".join(trig_lines).strip() + "\n", ("\n".join(nq_lines).strip() + "\n" if nq_lines else "")
+    return "\n".join(trig_lines) + "\n", ("\n".join(nq_lines) + "\n" if nq_lines else "")
 
 
 def verify_nquads_syntax(nq_text: str) -> Dict[str, Any]:
@@ -277,7 +242,7 @@ def serialize_to_markdown(bundle: Dict[str, Any]) -> str:
         f"- **Status:** `{bundle.get('status')}` | **Count:** {bundle.get('nanopub_count', 0)}",
         f"- **Authors:** {', '.join(smeta.get('authors', []))} | **Year:** {smeta.get('year')} | **DOI:** {smeta.get('doi')}",
         "",
-        "| ID | Subject | Predicate | Object | Conditions | Evidence Type | Provenance | Confidence |",
+        "| ID | Atomic statement | Predicate | Conditions | Evidence type | Source and location | Evidence | Confidence |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for np_obj in bundle.get("nanopublications", []):
@@ -286,15 +251,16 @@ def serialize_to_markdown(bundle: Dict[str, Any]) -> str:
         loc = p.get("location", {})
         pi = np_obj["pubinfo"]
         eid = loc.get("block_id") or loc.get("table_id") or "-"
-        prov_str = f"p.{loc.get('pdf_page')} / {eid}"
+        position = location_label(loc)
+        prov_str = f"{p.get('source_metadata', {}).get('source_file')} / {position} / {eid}"
         conds = ", ".join(a.get("conditions", [])) or "—"
 
         def _c(x: Any) -> str:
-            return str(x).replace("|", "\\|").replace("\n", " ")[:120]
+            return str(x).replace("|", "\\|").replace("\n", " ")
 
         lines.append(
-            f"| `{np_obj['nanopub_id']}` | {_c(a['subject'])} | `{a['predicate']}` | {_c(a['object'])} | "
-            f"{_c(conds)} | `{p.get('evidence_type')}` | {prov_str} | {pi.get('confidence_score')} |"
+            f"| `{np_obj['nanopub_id']}` | {_c(a['atomic_statement'])} | `{a['predicate']}` | "
+            f"{_c(conds)} | `{p.get('evidence_type')}` | {_c(prov_str)} | {_c(p.get('minimal_evidence_snippet', ''))} | {pi.get('confidence_score')} |"
         )
     if bundle.get("conflicts"):
         lines.extend(["", "## Detected Cross-Assertion Conflicts"])

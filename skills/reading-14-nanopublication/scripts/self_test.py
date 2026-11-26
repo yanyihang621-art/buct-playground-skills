@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -19,8 +20,9 @@ from build_nanopub_result import build_nanopub_result
 from decompose_assertions import decompose_document, load_relation_vocabulary
 from ingest_source import ingest_input
 from pdf_utils import write_json_atomic, write_text_lf
-from serialize_nanopubs import serialize_all
+from serialize_nanopubs import serialize_all, _slug_iri, verify_nquads_syntax
 from validate_nanopubs import validate_nanopubs
+from structured_regression import run_structured_regression
 
 try:
     import fitz  # type: ignore
@@ -154,6 +156,73 @@ def _run_case(in_dir: Path, work_dir: Path, case_data: Dict[str, Any]) -> Dict[s
     val = validate_nanopubs(case_data, result, bundle, docs, nquads_text=nq_txt)
     write_json_atomic(work_dir / "validation_report.json", val)
     return {"bundle": bundle, "docs": docs, "result": result, "validation": val, "nq_txt": nq_txt, "ser": ser}
+
+
+def _test_qualified_claims(out_dir: Path) -> Dict[str, Any]:
+    materials = out_dir / "n4_in"
+    work = out_dir / "n4_work"
+    nested = materials / "supplement"
+    nested.mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
+    case = {"case_id": "local-qualification", "output_contract": ["case_id", "assertions", "jsonld", "trig", "nquads", "markdown"]}
+    case_file = materials / "case.json"
+    write_json_atomic(case_file, case)
+    write_text_lf(materials / "task.md", "Task instructions")
+    write_text_lf(nested / "limits.TXT",
+                  "# Scope observations\n\n"
+                  "Under low light, Sensor A may induce signal drift; whereas Sensor B reduces variation.\n\n"
+                  "Sensor A induces signal drift.\n\nSensor A did not induce signal drift.\n")
+    _build_n1_pdf(materials / "main.pdf")
+    manifest = ingest_input(materials, work / "ingested", case_path=case_file)
+    assert {Path(p["source_file"]).name for p in manifest["papers"]} == {"main.pdf", "limits.TXT"}
+    papers = manifest["papers"]
+    docs = [json.loads(Path(p["document_json"]).read_text(encoding="utf-8")) for p in papers]
+    text_paper = next(p for p in papers if p["source_file"].endswith(".TXT"))
+    manifest_file = work / "ingested" / "ingest_manifest.json"
+    def cli(script: str, *args: Any) -> None:
+        subprocess.run([sys.executable, "-B", "-X", "utf8", str(SCRIPT_DIR / script), *map(str, args)],
+                       check=True, capture_output=True, encoding="utf-8")
+    bundle_dir = work / "bundle"
+    path = bundle_dir / "nanopubs.json"
+    def extract(*extra: Any) -> Dict[str, Any]:
+        cli("decompose_assertions.py", "--manifest", manifest_file, "--out", bundle_dir, *extra)
+        return json.loads(path.read_text(encoding="utf-8"))
+    before = extract()
+    subset = [n for n in before["nanopublications"] if n["provenance"]["source_metadata"]["source_file"] == "limits.TXT"]
+    sensor = [n for n in subset if n["assertion"]["subject"] == "Sensor A"]
+    assert len(sensor) == len({n["nanopub_uri"] for n in sensor}) == 3
+    hedged = next(n for n in sensor if n["assertion"]["modality"] == "hedged")
+    denied = next(n for n in sensor if n["assertion"]["polarity"] == "negative")
+    assert "may induce" in hedged["assertion"]["atomic_statement"] and "did not induce" in denied["assertion"]["atomic_statement"]
+    assert "whereas" not in hedged["provenance"]["minimal_evidence_snippet"]
+    assert hedged["provenance"]["condition_quote"] == "Under low light"
+    assert hedged["provenance"]["location"]["line_start"] == 3 and hedged["provenance"]["location"]["pdf_page"] is None
+    hedged["pubinfo"]["confidence_basis"] = "Reviewed the explicit modal verb and the condition in line 3."
+    review = work / "reviewed.json"
+    write_json_atomic(review, {text_paper["paper_id"]: subset})
+    bundle = extract("--reviewed", review)
+    rdf = work / "output"
+    cli("serialize_nanopubs.py", "--nanopubs", path, "--out", rdf)
+    result_file = rdf / "result.json"
+    cli("build_nanopub_result.py", "--case", case_file, "--nanopubs", path, "--manifest", manifest_file,
+        "--nquads", rdf / "nanopubs.nq", "--trig", rdf / "nanopubs.trig", "--markdown", rdf / "nanopubs.md",
+        "--jsonld", rdf / "nanopubs.jsonld", "--out", result_file)
+    cli("validate_nanopubs.py", "--case", case_file, "--nanopubs", path, "--manifest", manifest_file,
+        "--nquads", rdf / "nanopubs.nq", "--result", result_file, "--out", work / "verified.json")
+    result = json.loads(result_file.read_text(encoding="utf-8"))
+    nq = result["nquads"]
+    assert hedged["pubinfo"]["confidence_basis"] in nq and "Under low light" in result["markdown"]
+    for record in (hedged, denied):
+        a = record["assertion"]
+        direct = f"<{_slug_iri(a['subject'])}> <{a['predicate_uri']}> <{_slug_iri(a['object'])}> <{record['head']['assertion_graph']}> ."
+        assert direct not in nq
+    record = next(n for n in bundle["nanopublications"] if n["nanopub_uri"] == hedged["nanopub_uri"])
+    record["assertion"]["atomic_statement"] = record["assertion"]["atomic_statement"].replace("may induce", "induces")
+    audit = validate_nanopubs(case, result, bundle, docs, nq)
+    assert not audit["gate_results"]["gate2_relation_or_contradiction"]
+    assert not audit["gate_results"]["gate6_nquads_syntax"]
+    return {"pass": True, "source_files": len(papers), "distinct_scope_variants": len(sensor),
+            "stale_rdf_rejected": True, "strengthened_claim_rejected": True}
 
 
 def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, Any]:
@@ -297,16 +366,23 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
         "scanned_status": n3b_run["result"]["status"],
     }
 
+    report["tests"]["n4_scope_review_exports"] = _test_qualified_claims(out_dir)
+    report["tests"]["n5_structured_sources_cells_and_review"] = run_structured_regression(out_dir)
+
     if compare_baseline:
+        # Run a deliberately simple local comparator on the actual extracted paragraph.
+        paragraph = next(b["text"] for b in n1_run["docs"][0]["blocks"] if "oxygen vacancies" in b.get("text", ""))
+        baseline = [{"statement": paragraph, "evidence_type": "text"}]
         report["baseline_comparison"] = {
             "N1_catalysis_nanopub": {
-                "baseline_single_paragraph_assertions": 1,
+                "baseline_method": "Keep the first compound results paragraph as one unstructured text claim",
+                "baseline_single_paragraph_assertions": len(baseline),
                 "skill_atomic_nanopublications": n1_b["nanopub_count"],
-                "baseline_controlled_vocab_predicates": 0,
+                "baseline_controlled_vocab_predicates": len({c["predicate"] for c in baseline if "predicate" in c}),
                 "skill_controlled_vocab_predicates": len(preds),
-                "baseline_evidence_types_distinguished": 1,
+                "baseline_evidence_types_distinguished": len({c["evidence_type"] for c in baseline}),
                 "skill_evidence_types_distinguished": len(ev_types),
-                "baseline_valid_nquads_quads": 0,
+                "baseline_valid_nquads_quads": verify_nquads_syntax("".join(c.get("nquads", "") for c in baseline))["quad_count"],
                 "skill_valid_nquads_quads": n1_v["metrics"]["nquads_quad_count"],
             }
         }

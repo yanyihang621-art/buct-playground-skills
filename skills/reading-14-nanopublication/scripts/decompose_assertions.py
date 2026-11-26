@@ -21,13 +21,13 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from pdf_utils import write_json_atomic
 
-SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+(?=[A-Z0-9\u4e00-\u9fff\(])")
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\u4e00-\u9fff\(])|(?<=[。！？])\s*(?=\S)")
 CLAUSE_SPLIT_RE = re.compile(
     r"(?:;\s*(?:moreover|furthermore|in\s+addition|however)?,?\s*|,\s+(?:whereas|while|and\s+also|which\s+leads\s+to|resulting\s+in)\s+|；\s*|，同时\s*|，从而\s*)",
     re.IGNORECASE,
 )
 LEADING_COND_RE = re.compile(
-    r"^((?:At|Under|In|For|When|With|Assuming)\s+[^,;]{3,65}?),\s+(.+)$",
+    r"^((?:At|Under|In|For|When|With|Assuming|If|Unless|Only when)\s+[^,;]{3,65}?),\s+(.+)$",
     re.IGNORECASE,
 )
 LEADING_CONNECTOR_RE = re.compile(
@@ -47,9 +47,22 @@ CITED_PRIOR_RE = re.compile(
     re.IGNORECASE,
 )
 HEDGING_RE = re.compile(
-    r"\b(?:may|might|could|suggests?|likely|possibly|potentially|hypothesize[sd]?|appears?\s+to|indicate[sd]?\s+possible)\b|(?:可能|推测|或许)",
+    r"\b(?:may|might|could|can|possibly|probably|suggests?|likely|possibly|potentially|hypothesize[sd]?|appears?\s+to|indicate[sd]?\s+possible)\b|(?:可能|推测|或许)",
     re.IGNORECASE,
 )
+NEGATION_RE = re.compile(r"\b(?:not|never|cannot|no\s+(?:(?:statistically\s+)?significant\s+)?(?:effect|evidence|difference))\b|不能|并未|没有|未能|未|不(?:会|影响|导致|提高|降低|抑制|促进)", re.I)
+SUBJECT_AUX_RE = re.compile(
+    r"\s+(?:(?:may|might|could|can|cannot|did|does|do|would|will|probably|possibly|likely|potentially|not|never|significantly)\s*)+$",
+    re.I,
+)
+
+
+def assertion_scope(clause: str) -> Tuple[str, str]:
+    """Epistemic and grammatical scope of the quoted assertion."""
+    return ("hedged" if HEDGING_RE.search(clause) else "asserted",
+            "negative" if NEGATION_RE.search(clause) else "affirmative")
+
+
 XREF_RE = re.compile(r"\b(?:Table|Tab\.?|Figure|Fig\.?|Eq\.?)\s*[A-Za-z]?\d+(?:\.\d+)?|(?:表|图)\s*\d+", re.IGNORECASE)
 
 
@@ -80,11 +93,14 @@ def extract_source_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
     marg = doc.get("marginalia", [])
 
     # Search frontmatter, headers/footers, marginalia for DOI, arXiv, and year
-    probe_chunks = [meta.get("title") or "", meta.get("abstract") or ""]
+    probe_chunks = [meta.get("doi") or "", str(meta.get("year") or ""), meta.get("arxiv_id") or ""]
     probe_chunks.extend(item.get("text", "") for item in hf)
     probe_chunks.extend(item.get("text", "") for item in marg)
     for b in blocks[:8]:
-        probe_chunks.append(b.get("text", ""))
+        if b.get("role") in {"title", "authors", "affiliation", "metadata", "header", "footer"}:
+            probe_chunks.append(b.get("text", ""))
+        elif b.get("role") != "reference" and re.match(r"^\s*(doi|arxiv|published|year)\s*[:：]", b.get("text", ""), re.I):
+            probe_chunks.append(b["text"])
     probe_text = " ".join(probe_chunks)
 
     m_doi = DOI_RE.search(probe_text)
@@ -96,24 +112,23 @@ def extract_source_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
     year_matches = YEAR_RE.findall(probe_text)
     year = year_matches[0] if year_matches else "not_reported"
 
-    version = "not_reported"
+    version = str(meta.get("version") or "not_reported")
     if arxiv_id != "not_reported":
         mv = re.search(r"(v\d+)$", arxiv_id)
         if mv:
             version = mv.group(1)
-    if version == "not_reported" and doi != "not_reported":
-        version = "published_doi"
 
     return {
-        "paper_title": meta.get("title") or Path(src_file).stem,
+        "paper_title": meta.get("title") or "not_reported",
         "authors": meta.get("authors") or ["not_reported"],
         "affiliations": meta.get("affiliations") or [],
-        "year": year,
+        "year": str(meta.get("year") or year),
         "doi": doi,
         "arxiv_id": arxiv_id,
         "version": version,
         "source_file": Path(src_file).name,
         "source_sha256": _file_sha256(src_file),
+        **({"source_record": doc["source_record"]} if "source_record" in doc else {}),
     }
 
 
@@ -129,7 +144,7 @@ def split_into_atomic_clauses(sentence: str) -> List[Tuple[str, List[str]]]:
     if m_lead:
         lead_phrase = m_lead.group(1).strip()
         cond_vals = CONDITION_VAL_RE.findall(lead_phrase)
-        shared_conds.extend(cond_vals if cond_vals else [lead_phrase])
+        shared_conds.extend(dict.fromkeys([lead_phrase, *cond_vals]))
         body = m_lead.group(2).strip()
 
     raw_clauses = [c.strip() for c in CLAUSE_SPLIT_RE.split(body) if c.strip()]
@@ -154,11 +169,23 @@ def _match_clause_to_triple(
 ) -> Optional[Tuple[str, str, str]]:
     """Map an atomic clause to (subject, controlled_predicate, object)."""
     # Strip trailing period for clean object extraction
-    text = clause.strip().rstrip(".")
+    text = clause.strip().rstrip(".。")
+    # Remove attribution from the subject while retaining it in the source statement.
+    text = re.sub(r"^.+?\b(?:reported|suggests?|showed|indicates?)\s+that\s+", "", text, flags=re.I)
+
+    passive = re.fullmatch(
+        r"(.{2,80}?)\s+(?:(?:may|might|could|can)\s+)?(?:not\s+)?(?:be|is|was|were|are)\s+"
+        r"(?:not\s+)?(caused|induced|increased|reduced|decreased|inhibited|improved)\s+by\s+(.{2,100})",
+        text, re.I)
+    if passive:
+        mapping = {"caused": "causes", "induced": "causes", "increased": "increases", "reduced": "decreases",
+                   "decreased": "decreases", "inhibited": "inhibits", "improved": "improves"}
+        return passive[3].strip(), mapping[passive[2].lower()], passive[1].strip()
 
     # Ordered explicit patterns (most specific negation/restriction first)
     explicit_patterns: List[Tuple[str, re.Pattern[str]]] = [
-        ("does_not_affect", re.compile(r"^(.{2,70}?)\s+(?:does\s+not\s+affect|has\s+no\s+(?:significant\s+)?effect\s+on|shows?\s+negligible\s+impact\s+on)\s+(.{2,90})$", re.IGNORECASE)),
+        ("has_property", re.compile(r"^(.{2,70}?)\s+(?:has|had|shows?|showed)\s+((?:no\s+(?:statistically\s+)?significant\s+(?:effect|difference)|negligible\s+impact)\s+.{2,90})$", re.IGNORECASE)),
+        ("does_not_affect", re.compile(r"^(.{2,70}?)\s+(?:does\s+not\s+affect|has\s+no\s+effect\s+on)\s+(.{2,90})$", re.IGNORECASE)),
         ("fails_under", re.compile(r"^(.{2,70}?)\s+(?:fails?\s+under|degrades?\s+under|loses\s+activity\s+under)\s+(.{2,90})$", re.IGNORECASE)),
         ("restricted_to", re.compile(r"^(.{2,70}?)\s+(?:is\s+restricted\s+to|only\s+valid\s+under|applies\s+only\s+to)\s+(.{2,90})$", re.IGNORECASE)),
         ("inhibits", re.compile(r"^(.{2,70}?)\s+(?:inhibits?|blocks?|poisons?|deactivates?|suppresses?)\s+(.{2,90})$", re.IGNORECASE)),
@@ -167,7 +194,7 @@ def _match_clause_to_triple(
         ("increases", re.compile(r"^(.{2,70}?)\s+(?:increases?|enhances?|elevates?|boosts?|promotes?|raises?|accelerates?)\s+(.{2,90})$", re.IGNORECASE)),
         ("improves", re.compile(r"^(.{2,70}?)\s+(?:improves?|stabilizes?)\s+(.{2,90})$", re.IGNORECASE)),
         ("outperforms", re.compile(r"^(.{2,70}?)\s+(?:outperforms?|surpasses?|exceeds?)\s+(.{2,90})$", re.IGNORECASE)),
-        ("causes", re.compile(r"^(.{2,70}?)\s+(?:may\s+induce|might\s+induce|causes?|induces?|leads?\s+to|results?\s+in|triggers?|drives?)\s+(.{2,90})$", re.IGNORECASE)),
+        ("causes", re.compile(r"^(.{2,70}?)\s+(?:causes?|induces?|leads?\s+to|results?\s+in|triggers?|drives?)\s+(.{2,90})$", re.IGNORECASE)),
         ("achieves_metric", re.compile(r"^(.{2,70}?)\s+(?:achieves?|reaches?|exhibits?|yields?|delivers?)\s+(.{2,90})$", re.IGNORECASE)),
         ("correlates_with", re.compile(r"^(.{2,70}?)\s+(?:correlates?\s+with|scales\s+linearly\s+with|is\s+proportional\s+to)\s+(.{2,90})$", re.IGNORECASE)),
         ("associates_with", re.compile(r"^(.{2,70}?)\s+(?:is\s+associated\s+with|co-occurs\s+with)\s+(.{2,90})$", re.IGNORECASE)),
@@ -186,8 +213,9 @@ def _match_clause_to_triple(
             # Guard against pronouns or overly long multi-clause subjects
             if not subj or not obj or subj.lower() in ("it", "this", "they", "these", "which", "that"):
                 continue
-            if len(subj.split()) > 10:
-                subj = " ".join(subj.split()[-6:])
+            subj = SUBJECT_AUX_RE.sub("", subj).strip()
+            if not subj or len(subj.split()) > 12:
+                continue
             return subj, pred_id, obj
 
     # Check explicit Chinese trigger patterns
@@ -205,7 +233,9 @@ def _match_clause_to_triple(
             continue
         m = pat.match(text)
         if m:
-            return m.group(1).strip(), pred_id, m.group(2).strip()
+            subj = re.sub(r"(?:可能|或许|也许|并未|没有|未能|未|不会|不)+$", "", m.group(1)).strip()
+            if subj:
+                return subj, pred_id, m.group(2).strip()
 
     return None
 
@@ -217,11 +247,13 @@ def _classify_evidence_type(sentence: str) -> str:
         return "indirect_inference"
     if XREF_RE.search(sentence):
         return "direct_tabular_or_figure"
-    return "direct_experimental"
+    return "direct_textual"
 
 
-def _make_nanopub_uri(subj: str, pred: str, obj: str, conds: Sequence[str], src_sha: str) -> str:
-    norm = f"{subj.lower().strip()}|{pred}|{obj.lower().strip()}|{'|'.join(sorted(c.lower().strip() for c in conds))}|{src_sha[:12]}"
+def _make_nanopub_uri(subj: str, pred: str, obj: str, conds: Sequence[str], src_sha: str, scope: Sequence[str] = ()) -> str:
+    norm = f"{subj.lower().strip()}|{pred}|{obj.lower().strip()}|{'|'.join(sorted(c.lower().strip() for c in conds))}|{src_sha}"
+    if scope:
+        norm += "|" + "|".join(scope)
     digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
     return f"urn:nanopub:sha256:{digest}"
 
@@ -232,9 +264,56 @@ def _build_atomic_statement(subj: str, pred_label: str, obj: str, conds: Sequenc
     return stmt[:275]
 
 
-def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def block_location(block: dict, doc: dict) -> dict:
+    loc = {"section_id": block.get("section_id"), "block_id": block["block_id"],
+           "pdf_page": block.get("page"), "printed_page": block.get("printed_page")}
+    if "native_locator" in block:
+        return {**loc, **block["native_locator"]}
+    if Path(doc["source_file"]).suffix.lower() in {".txt", ".md"}:
+        rect = block["bbox"]
+        return {**loc, "location_type": "text_lines", "line_start": int(rect[1]),
+                "line_end": int(rect[3]), "pdf_page": None, "printed_page": None}
+    return {**loc, "bbox": block.get("bbox")}
+
+
+def location_label(loc):
+    if loc.get("location_type") == "text_lines":
+        return f"lines {loc['line_start']}-{loc['line_end']}"
+    for key in ("json_pointer", "xml_xpath"):
+        if key in loc:
+            return loc[key] + (f" ({loc['original_id']})" if loc.get("original_id") else "")
+    return f"p.{loc.get('pdf_page')}"
+
+
+def expand_review(row, blocks, doc, metadata, created_at, creator):
+    """Bind one agent-reviewed row to an actual source block before constructing its graphs."""
+    block = blocks.get(row["block_id"])
+    if block is None:
+        raise ValueError(f"Unknown reviewed block: {row['block_id']}")
+    quote = row["quote"].strip()
+    condition = row.get("condition_quote", "").strip()
+    text = " ".join((block.get("structured_text") or block["text"]).split())
+    if not quote or any(" ".join(s.split()) not in text for s in (quote, condition)):
+        raise ValueError(f"Review quote/condition differs from source {row['block_id']}")
+    loc = block_location(block, doc)
+    modality, polarity = assertion_scope(quote)
+    for key in ("subject", "predicate", "object", "statement", "confidence_basis"):
+        if not isinstance(row.get(key), str) or not row[key].strip():
+            raise ValueError(f"Reviewed block {row['block_id']} needs {key}")
+    return {"assertion": {"subject": row["subject"], "predicate": row["predicate"], "object": row["object"],
+                          "conditions": row.get("conditions", []), "atomic_statement": row["statement"],
+                          "modality": row.get("modality", modality), "polarity": row.get("polarity", polarity)},
+            "provenance": {"minimal_evidence_snippet": quote, "condition_quote": condition,
+                           "location": loc, "evidence_type": row["evidence_type"], "source_metadata": metadata},
+            "pubinfo": {"created_at": created_at, "creator": creator, "version": "1.0",
+                        "confidence_score": row["confidence_score"], "confidence_basis": row["confidence_basis"]}}
+
+
+def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]],
+                       reviewed: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Extract atomic 4-graph Nanopublications from one parsed document.json."""
     src_meta = extract_source_metadata(doc)
+    identity = src_meta["source_sha256"] + doc.get("source_record", "")
     diag = doc.get("diagnostics", {})
     status = doc.get("status", "partial")
     uncertainties = list(doc.get("uncertainties", []))
@@ -270,7 +349,7 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
 
     # 1. Decompose prose blocks
     for blk in doc.get("blocks", []):
-        if blk.get("role") in ("header", "footer", "title", "authors", "affiliation", "keywords", "table_ref", "reference"):
+        if blk.get("role") in ("header", "footer", "title", "heading", "authors", "affiliation", "keywords", "table_ref", "reference"):
             continue
         txt = (blk.get("structured_text") or blk.get("text") or "").strip()
         if not txt:
@@ -281,30 +360,46 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
             s_clean = sent.strip()
             if len(s_clean) < 16:
                 continue
-            ev_type = _classify_evidence_type(s_clean)
-            xrefs = [m.group(0) for m in XREF_RE.finditer(s_clean)]
+            lead = LEADING_COND_RE.match(s_clean)
+            condition_quote = lead.group(1) if lead else ""
             clauses = split_into_atomic_clauses(s_clean)
 
             for clause, conds in clauses:
+                local_lead = LEADING_COND_RE.match(clause)
+                prefix = local_lead.group(1) if local_lead else condition_quote
+                if local_lead:
+                    clause = local_lead.group(2)
+                    conds = list(dict.fromkeys([prefix, *CONDITION_VAL_RE.findall(prefix)]))
+                statement = f"{prefix}, {clause}" if prefix else clause
+                statement = statement.rstrip(".。") + ("。" if "。" in clause else ".")
+                trailing = re.search(r"\s+((?:only\s+)?(?:when|unless|under|after|if|without|compared (?:with|to))\s+[^;。.!?]+)[.。]?$", clause, re.I)
+                if trailing and trailing.group(1) not in conds:
+                    conds.append(trailing.group(1))
+                modality, polarity = assertion_scope(clause)
+                ev_type = _classify_evidence_type(clause)
+                if ev_type == "direct_textual" and (
+                    re.search(r"experiment|measurement|\bresults\b|实验|测量|结果", " ".join(blk.get("section_path", [])) +
+                              " " + str(blk.get("native_locator", {}).get("section") or ""), re.I)
+                    or re.search(r"\b(?:we (?:observed|measured|found)|experimentally|measurements? show)\b", clause, re.I)
+                ):
+                    ev_type = "direct_experimental"
+                xrefs = [m.group(0) for m in XREF_RE.finditer(clause)]
                 matched = _match_clause_to_triple(clause, vocab)
                 if matched is None:
                     continue
                 subj, pred_id, obj = matched
                 pred_info = vocab[pred_id]
-                np_uri = _make_nanopub_uri(subj, pred_id, obj, conds, src_meta["source_sha256"])
+                np_uri = _make_nanopub_uri(subj, pred_id, obj, conds, identity, (modality, polarity, prefix))
 
                 conf = 0.90 if ev_type in ("direct_experimental", "direct_tabular_or_figure") else (0.72 if ev_type == "indirect_inference" else 0.78)
-                basis = f"{ev_type} grounded in {blk['block_id']} (p.{blk['page']}); controlled predicate '{pred_id}'."
+                location = block_location(blk, doc)
+                basis = f"{ev_type} grounded in {blk['block_id']} ({location_label(location)}); controlled predicate '{pred_id}'."
                 if conds:
                     basis += f" Conditions preserved: {', '.join(conds)}."
 
                 ev_entry = {
-                    "pdf_page": blk["page"],
-                    "printed_page": blk.get("printed_page"),
-                    "section_id": blk.get("section_id"),
-                    "block_id": blk["block_id"],
-                    "bbox": blk["bbox"],
-                    "quote_snippet": s_clean[:260],
+                    **location,
+                    "quote_snippet": clause,
                 }
                 raw_nps.append(
                     {
@@ -320,18 +415,15 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
                             "predicate_uri": pred_info["uri"],
                             "object": obj,
                             "conditions": conds,
-                            "atomic_statement": _build_atomic_statement(subj, pred_id.replace("_", " "), obj, conds),
+                            "modality": modality,
+                            "polarity": polarity,
+                            "atomic_statement": statement,
                         },
                         "provenance": {
                             "evidence_type": ev_type,
-                            "minimal_evidence_snippet": s_clean[:260],
-                            "location": {
-                                "pdf_page": blk["page"],
-                                "printed_page": blk.get("printed_page"),
-                                "section_id": blk.get("section_id"),
-                                "block_id": blk["block_id"],
-                                "bbox": blk["bbox"],
-                            },
+                            "minimal_evidence_snippet": clause,
+                            "condition_quote": prefix,
+                            "location": location,
                             "cross_element_refs": xrefs,
                             "source_metadata": src_meta,
                             "supporting_evidences": [ev_entry],
@@ -354,14 +446,13 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
         if len(col_paths) < 2:
             continue
         entity_col = col_paths[0]
-        t_page = tab["pages"][0] if tab.get("pages") else 1
-        t_cap = tab.get("caption") or tab.get("label") or tab["table_id"]
+        cells = {(c.get("row"), c.get("col")): c for c in tab.get("cells", [])}
 
-        for rec in tab["records"]:
+        for row_index, rec in enumerate(tab["records"]):
             subj = str(rec.get(entity_col, "")).strip()
             if not subj:
                 continue
-            for metric_col in col_paths[1:]:
+            for col_index, metric_col in enumerate(col_paths[1:], 1):
                 val = str(rec.get(metric_col, "")).strip()
                 if not val:
                     continue
@@ -369,16 +460,17 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
                 pred_info = vocab[pred_id]
                 obj = f"{metric_col} = {val}"
                 conds = [tab.get("label") or tab["table_id"]]
-                np_uri = _make_nanopub_uri(subj, pred_id, obj, conds, src_meta["source_sha256"])
-                snip = f"{t_cap} | {entity_col}={subj}, {metric_col}={val}"[:260]
-                ev_entry = {
-                    "pdf_page": t_page,
+                np_uri = _make_nanopub_uri(subj, pred_id, obj, conds, identity, ("asserted", "affirmative", ""))
+                snip = val
+                cell = cells.get((tab.get("header_row_count", 1) + row_index, col_index), {})
+                location = {
+                    "pdf_page": cell.get("page") or next(iter(tab.get("pages", [])), None),
                     "printed_page": None,
                     "section_id": tab.get("section_id"),
-                    "table_id": tab["table_id"],
-                    "bbox": tab["bbox"],
-                    "quote_snippet": snip,
+                    "table_id": tab["table_id"], "row_index": row_index + 1, "column_name": metric_col,
+                    "row_label": subj, "bbox": cell.get("bbox") or tab.get("bbox"), **cell.get("native_locator", {}),
                 }
+                ev_entry = {**location, "quote_snippet": snip}
                 raw_nps.append(
                     {
                         "nanopub_uri": np_uri,
@@ -393,18 +485,13 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
                             "predicate_uri": pred_info["uri"],
                             "object": obj,
                             "conditions": conds,
+                            "modality": "asserted", "polarity": "affirmative",
                             "atomic_statement": _build_atomic_statement(subj, pred_id.replace("_", " "), obj, conds),
                         },
                         "provenance": {
                             "evidence_type": "direct_tabular_or_figure",
                             "minimal_evidence_snippet": snip,
-                            "location": {
-                                "pdf_page": t_page,
-                                "printed_page": None,
-                                "section_id": tab.get("section_id"),
-                                "table_id": tab["table_id"],
-                                "bbox": tab["bbox"],
-                            },
+                            "location": location,
                             "cross_element_refs": [tab.get("label") or tab["table_id"]],
                             "source_metadata": src_meta,
                             "supporting_evidences": [ev_entry],
@@ -414,10 +501,47 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
                             "creator": creator,
                             "version": "1.0",
                             "confidence_score": 0.94,
-                            "confidence_basis": f"direct_tabular_or_figure cell extracted from {tab['table_id']} (pages {tab['pages']}).",
+                            "confidence_basis": f"Table {tab['table_id']}, data row {row_index + 1} ({subj}), column {metric_col}, exact cell {val}.",
                         },
                     }
                 )
+
+    # Text inputs have physical lines. Their internal layout has no real PDF pages.
+    if Path(src_meta["source_file"]).suffix.lower() in {".md", ".txt"}:
+        for record in raw_nps:
+            provenance = record["provenance"]
+            for location in [provenance["location"], *provenance["supporting_evidences"]]:
+                if "bbox" not in location:
+                    continue
+                rect = location.pop("bbox")
+                location.update(location_type="text_lines", line_start=int(rect[1]),
+                                line_end=int(rect[3]), pdf_page=None, printed_page=None)
+            location = provenance["location"]
+            info = record["pubinfo"]
+            info["confidence_basis"] = re.sub(r"\(p\.1\)|\(pages \[1\]\)",
+                                               f"(lines {location['line_start']}-{location['line_end']})",
+                                               info["confidence_basis"])
+
+    if reviewed is not None:
+        raw_nps = []
+        blocks = {block["block_id"]: block for block in doc.get("blocks", [])}
+        for record in reviewed:
+            if "assertion" not in record:
+                record = expand_review(record, blocks, doc, src_meta, created_at, creator)
+            a, provenance = record["assertion"], record["provenance"]
+            if not provenance.get("supporting_evidences"):
+                provenance["supporting_evidences"] = [{**provenance["location"],
+                                                       "quote_snippet": provenance["minimal_evidence_snippet"]}]
+            if provenance["source_metadata"]["source_sha256"] != src_meta["source_sha256"]:
+                raise ValueError("Reviewed record belongs to another source")
+            a["predicate_uri"] = vocab[a["predicate"]]["uri"]
+            scope = (a.get("modality", "asserted"), a.get("polarity", "affirmative"),
+                     provenance.get("condition_quote", ""))
+            uri = _make_nanopub_uri(a["subject"], a["predicate"], a["object"], a["conditions"],
+                                    identity, scope)
+            record["nanopub_uri"] = uri
+            record["head"] = {f"{role}_graph": f"{uri}#{role}" for role in ("assertion", "provenance", "pubinfo")}
+            raw_nps.append(record)
 
     # 3. Deterministic Deduplication by nanopub_uri
     dedup_map: Dict[str, Dict[str, Any]] = {}
@@ -459,18 +583,24 @@ def decompose_document(doc: Dict[str, Any], vocab: Dict[str, Dict[str, Any]]) ->
             for j in range(i + 1, len(group)):
                 p1 = group[i]["assertion"]["predicate"]
                 p2 = group[j]["assertion"]["predicate"]
-                if p2 in vocab.get(p1, {}).get("contradicts", []) or p1 in vocab.get(p2, {}).get("contradicts", []):
+                a1, a2 = group[i]["assertion"], group[j]["assertion"]
+                opposed = p2 in vocab.get(p1, {}).get("contradicts", []) or p1 in vocab.get(p2, {}).get("contradicts", [])
+                reversed_polarity = a1.get("polarity", "affirmative") != a2.get("polarity", "affirmative")
+                if (opposed and not reversed_polarity) or (p1 == p2 and reversed_polarity):
+                    same_scope = (a1.get("conditions") == a2.get("conditions") and
+                                  all(a.get("modality", "asserted") == "asserted" for a in (a1, a2)))
+                    kind = "cross_assertion_conflict" if same_scope else "scope_difference"
                     c_seq += 1
                     conflicts.append(
                         {
                             "conflict_id": f"np_conf_{c_seq}",
-                            "code": "cross_assertion_conflict",
+                            "code": kind,
                             "subject": group[i]["assertion"]["subject"],
                             "object": group[i]["assertion"]["object"],
                             "nanopub_ids": [group[i]["nanopub_id"], group[j]["nanopub_id"]],
                             "predicates": [p1, p2],
                             "locations": [group[i]["provenance"]["location"], group[j]["provenance"]["location"]],
-                            "message": f"Conflicting predicates '{p1}' vs '{p2}' for ({subj_k}, {obj_k}).",
+                            "message": f"{kind}: compare {p1} and {p2} for ({subj_k}, {obj_k}) with their recorded scope.",
                         }
                     )
 
@@ -501,11 +631,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Decompose ingested documents into 4-graph Nanopublications.")
     parser.add_argument("--manifest", required=True, help="Path to ingest_manifest.json.")
     parser.add_argument("--out", required=True, help="Output directory for nanopubs.json.")
+    parser.add_argument("--reviewed", help="JSON object mapping paper_id to the complete revised records for that paper.")
     args = parser.parse_args()
 
     vocab = load_relation_vocabulary()
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     papers = manifest.get("papers", [])
+    reviewed = json.loads(Path(args.reviewed).read_text(encoding="utf-8")) if args.reviewed else {}
+    if not isinstance(reviewed, dict) or set(reviewed) - {item["paper_id"] for item in papers}:
+        raise ValueError("Unexpected paper ID in --reviewed")
+    if any(not isinstance(records, list) for records in reviewed.values()):
+        raise ValueError("Each reviewed paper must map to a list")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -518,20 +654,24 @@ def main() -> int:
             "nanopublications": [],
             "deduplication_log": [],
             "conflicts": [],
-            "uncertainties": [{"code": "no_input_papers", "severity": "critical", "pages": [], "message": "No input documents ingested."}],
+            "uncertainties": [*manifest.get("uncertainties", []), {"code": "no_input_papers", "severity": "critical", "pages": [], "message": "No input documents ingested."}],
         }
     else:
         # Process primary paper (or merge across papers if multiple)
         all_nps: List[Dict[str, Any]] = []
         all_dedup: List[Dict[str, Any]] = []
         all_conf: List[Dict[str, Any]] = []
-        all_unc: List[Dict[str, Any]] = []
+        all_unc: List[Dict[str, Any]] = list(manifest.get("uncertainties", []))
         statuses = set()
         primary_meta: Dict[str, Any] = {}
 
         for idx, item in enumerate(papers):
             doc = json.loads(Path(item["document_json"]).read_text(encoding="utf-8"))
-            res = decompose_document(doc, vocab)
+            res = decompose_document(doc, vocab, reviewed.get(item["paper_id"]))
+            # Keep conflict references valid when local IDs become corpus-wide IDs.
+            for conflict in res["conflicts"]:
+                conflict["nanopub_ids"] = [f"np_{len(all_nps) + int(nid[3:])}" for nid in conflict["nanopub_ids"]]
+                conflict["conflict_id"] = f"np_conf_{len(all_conf) + int(conflict['conflict_id'].split('_')[-1])}"
             if idx == 0:
                 primary_meta = res["source_metadata"]
             statuses.add(res["status"])

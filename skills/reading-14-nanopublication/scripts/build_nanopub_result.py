@@ -13,26 +13,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from output_contract import contract_specs, contract_issues
 from pdf_utils import write_json_atomic
-
-
-def _extract_contract_keys(case_data: Dict[str, Any]) -> List[str]:
-    contract = case_data.get("output_contract")
-    if not contract:
-        return []
-    if isinstance(contract, list):
-        return [str(k) for k in contract]
-    if isinstance(contract, dict):
-        if "properties" in contract and isinstance(contract["properties"], dict):
-            keys = list(contract["properties"].keys())
-            for req in contract.get("required", []) or []:
-                if req not in keys:
-                    keys.append(str(req))
-            return keys
-        if "required" in contract and isinstance(contract["required"], list):
-            return [str(k) for k in contract["required"]]
-        return [str(k) for k in contract.keys()]
-    return []
+from decompose_assertions import block_location
 
 
 def _collect_sources(bundle: Dict[str, Any], docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -41,29 +24,24 @@ def _collect_sources(bundle: Dict[str, Any], docs: List[Dict[str, Any]]) -> List
     for np_obj in bundle.get("nanopublications", []):
         loc = np_obj["provenance"].get("location", {})
         eid = loc.get("block_id") or loc.get("table_id") or np_obj["nanopub_id"]
-        if eid not in seen:
-            seen.add(eid)
+        meta = np_obj["provenance"]["source_metadata"]
+        anchor_key = (meta.get("source_sha256"), eid)
+        if anchor_key not in seen:
+            seen.add(anchor_key)
             sources.append(
                 {
                     "element_id": eid,
+                    "source_file": meta.get("source_file"),
+                    "source_sha256": meta.get("source_sha256"),
                     "kind": "nanopub_evidence",
-                    "pdf_page": loc.get("pdf_page", 1),
-                    "printed_page": loc.get("printed_page"),
-                    "bbox": loc.get("bbox", [0, 0, 0, 0]),
-                    "section_id": loc.get("section_id"),
+                    **loc,
                 }
             )
-    if not sources and docs:
-        for b in docs[0].get("blocks", [])[:50]:
-            sources.append(
-                {
-                    "element_id": b["block_id"],
-                    "kind": b.get("role", "body"),
-                    "pdf_page": b["page"],
-                    "printed_page": b.get("printed_page"),
-                    "bbox": b["bbox"],
-                }
-            )
+    if not sources:
+        for doc in docs:
+            for b in doc.get("blocks", [])[:50]:
+                sources.append({"element_id": b["block_id"], "kind": b.get("role", "body"),
+                                "source_file": Path(doc["source_file"]).name, **block_location(b, doc)})
     return sources
 
 
@@ -79,7 +57,7 @@ def build_nanopub_result(
 ) -> Dict[str, Any]:
     """Assemble final result.json aligning Nanopublication bundle to case output_contract."""
     case_id = case_data.get("case_id", "unknown_case")
-    contract_keys = _extract_contract_keys(case_data)
+    contract = case_data.get("output_contract")
     docs = docs or []
     sources = _collect_sources(bundle, docs)
     anomalies = [a for d in docs for a in d.get("diagnostics", {}).get("anomalies", [])]
@@ -132,25 +110,27 @@ def build_nanopub_result(
         "change_log": changes,
     }
 
-    for key in contract_keys:
+    for key in contract_specs(contract):
         if key in field_catalog:
             result[key] = field_catalog[key]
-        elif key not in result:
-            result[key] = None
-            result["uncertainties"].append(
-                {
-                    "code": "awaiting_task_synthesis",
-                    "severity": "info",
-                    "pages": [],
-                    "message": f"Contract field '{key}' is not directly deterministically mapped and requires agent synthesis or override.",
-                }
-            )
 
-    if override_data:
-        for k, v in override_data.items():
-            result[k] = v
+    for key, value in (override_data or {}).items():
+        if key == "uncertainties":
+            if not isinstance(value, list):
+                raise ValueError("uncertainties must be a list")
+            result[key].extend(value)
+        elif key in field_catalog and value != field_catalog[key]:
+            raise ValueError(f"Edit {key} through the reviewed source bundle and regenerate the exports.")
+        else:
+            result[key] = value
 
-    result["case_id"] = case_id
+    issues = contract_issues(contract, result)
+    for issue in issues:
+        if issue["code"] == "missing_contract_field":
+            result[issue["field"]] = None
+    result["uncertainties"].extend(issues)
+    if issues and result["status"] == "success":
+        result["status"] = "partial"
     return result
 
 

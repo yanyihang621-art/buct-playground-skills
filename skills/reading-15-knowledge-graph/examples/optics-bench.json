@@ -1,0 +1,9 @@
+{
+  "source_id": "bench",
+  "title": "Bench calibration (fictional example)",
+  "authors": ["Synthetic example A"],
+  "paragraphs": [
+    {"jats_id": "a1", "section": "Results", "text": "Spectral drift was reduced by the reference filter."},
+    {"jats_id": "a2", "section": "Methods", "text": "The camera used a reference filter."}
+  ]
+}

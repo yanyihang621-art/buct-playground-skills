@@ -1,51 +1,558 @@
 {
-  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "_example_notice": "Actual illustrative output from the two fictional example papers, without optional exports.",
   "case_id": "example-reading-15-synthetic",
   "status": "success",
   "sources_manifest": [
-    { "source_id": "paper_1", "title": "Paper One Example", "doi": "10.1000/paper1", "authors": ["Alice Zhang"], "location_type": "jats_paragraph_id" },
-    { "source_id": "paper_2", "title": "Paper Two Example", "doi": "10.1000/paper2", "authors": ["Carol Wang"], "location_type": "jats_paragraph_id" }
+    {
+      "source_id": "bench",
+      "source_file": "optics-bench.json",
+      "source_sha256": "2bdc248ca09c251a3e28865e3a712454007376f8d0609d5e98fb9ecc2ea6d6b8",
+      "title": "Bench calibration (fictional example)",
+      "authors": [
+        "Synthetic example A"
+      ],
+      "doi": "not_reported",
+      "year": "not_reported",
+      "license": "not_reported",
+      "location_type": "jats_paragraph_id"
+    },
+    {
+      "source_id": "monitor",
+      "source_file": "optics-monitor.json",
+      "source_sha256": "312febb8d1adfd64a1fefd8f0708bde5384c17084f622bf9cb141bd7586383df",
+      "title": "Monitor comparison (fictional example)",
+      "authors": [
+        "Synthetic example B"
+      ],
+      "doi": "not_reported",
+      "year": "not_reported",
+      "license": "not_reported",
+      "location_type": "jats_paragraph_id"
+    }
   ],
   "nodes": [
     {
       "node_id": "n_1",
-      "label": "CO2 reduction reaction",
-      "canonical_key": "co2 reduction reaction",
-      "entity_type": "Task",
-      "aliases": ["CO2RR"],
-      "source_ids": ["paper_1", "paper_2"],
+      "label": "the reference filter",
+      "canonical_key": "reference filter",
+      "entity_type": "Material",
+      "aliases": [
+        "the reference filter",
+        "a reference filter",
+        "The reference filter"
+      ],
+      "source_ids": [
+        "bench",
+        "monitor"
+      ],
       "evidence_anchors": [
-        { "source_id": "paper_1", "paragraph_id": "p1_s1_1", "location_type": "jats_paragraph_id", "pdf_page": null, "quote_snippet": "CO2 reduction reaction (CO2RR)" }
+        {
+          "source_id": "bench",
+          "paragraph_id": "a1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "Spectral drift was reduced by the reference filter"
+        },
+        {
+          "source_id": "bench",
+          "paragraph_id": "a2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The camera used a reference filter"
+        },
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter increased repeatability"
+        },
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter may improve contrast"
+        }
+      ]
+    },
+    {
+      "node_id": "n_2",
+      "label": "the reference filter [bench]",
+      "canonical_key": "reference filter [bench]",
+      "entity_type": "MaterialInstance",
+      "aliases": [
+        "the reference filter [bench]"
+      ],
+      "source_ids": [
+        "bench"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "bench",
+          "paragraph_id": "a1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "Spectral drift was reduced by the reference filter"
+        },
+        {
+          "source_id": "bench",
+          "paragraph_id": "a2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The camera used a reference filter"
+        }
+      ]
+    },
+    {
+      "node_id": "n_3",
+      "label": "Spectral drift",
+      "canonical_key": "spectral drift",
+      "entity_type": "Metric",
+      "aliases": [
+        "Spectral drift"
+      ],
+      "source_ids": [
+        "bench"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "bench",
+          "paragraph_id": "a1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "Spectral drift was reduced by the reference filter"
+        }
+      ]
+    },
+    {
+      "node_id": "n_4",
+      "label": "The camera",
+      "canonical_key": "camera",
+      "entity_type": "Instrument",
+      "aliases": [
+        "The camera"
+      ],
+      "source_ids": [
+        "bench"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "bench",
+          "paragraph_id": "a2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The camera used a reference filter"
+        }
+      ]
+    },
+    {
+      "node_id": "n_5",
+      "label": "the reference filter [monitor]",
+      "canonical_key": "reference filter [monitor]",
+      "entity_type": "MaterialInstance",
+      "aliases": [
+        "the reference filter [monitor]"
+      ],
+      "source_ids": [
+        "monitor"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter increased repeatability"
+        },
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter may improve contrast"
+        }
+      ]
+    },
+    {
+      "node_id": "n_6",
+      "label": "repeatability",
+      "canonical_key": "repeatability",
+      "entity_type": "Metric",
+      "aliases": [
+        "repeatability"
+      ],
+      "source_ids": [
+        "monitor"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter increased repeatability"
+        }
+      ]
+    },
+    {
+      "node_id": "n_7",
+      "label": "contrast",
+      "canonical_key": "contrast",
+      "entity_type": "Metric",
+      "aliases": [
+        "contrast"
+      ],
+      "source_ids": [
+        "monitor"
+      ],
+      "evidence_anchors": [
+        {
+          "source_id": "monitor",
+          "paragraph_id": "b2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter may improve contrast"
+        }
       ]
     }
   ],
   "edges": [
     {
-      "edge_id": "e_1",
-      "source_node": "n_2",
-      "relation_type": "catalyzes",
-      "target_node": "n_1",
-      "conditions": ["573 K", "3.0 MPa"],
-      "evidence_strength": "direct_author_evidence",
-      "source_id": "paper_1",
-      "paragraph_id": "p1_s2_1",
+      "source_id": "bench",
+      "paragraph_id": "a1",
       "location_type": "jats_paragraph_id",
       "pdf_page": null,
-      "quote_snippet": "At 573 K and 3.0 MPa, Cu-In2O3 catalyzes CO2RR."
+      "quote_snippet": "Spectral drift was reduced by the reference filter",
+      "edge_id": "e_1",
+      "source_node": "n_2",
+      "relation_type": "instance_of",
+      "target_node": "n_1",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence"
+    },
+    {
+      "source_id": "bench",
+      "paragraph_id": "a1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "Spectral drift was reduced by the reference filter",
+      "source_node": "n_2",
+      "relation_type": "decreases",
+      "target_node": "n_3",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "edge_id": "e_2"
+    },
+    {
+      "source_id": "bench",
+      "paragraph_id": "a2",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The camera used a reference filter",
+      "source_node": "n_4",
+      "relation_type": "uses",
+      "target_node": "n_2",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "edge_id": "e_3"
+    },
+    {
+      "source_id": "monitor",
+      "paragraph_id": "b1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The reference filter increased repeatability",
+      "edge_id": "e_4",
+      "source_node": "n_5",
+      "relation_type": "instance_of",
+      "target_node": "n_1",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence"
+    },
+    {
+      "source_id": "monitor",
+      "paragraph_id": "b1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The reference filter increased repeatability",
+      "source_node": "n_5",
+      "relation_type": "increases",
+      "target_node": "n_6",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "edge_id": "e_5"
+    },
+    {
+      "source_id": "monitor",
+      "paragraph_id": "b2",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The reference filter may improve contrast",
+      "source_node": "n_5",
+      "relation_type": "increases",
+      "target_node": "n_7",
+      "conditions": [],
+      "evidence_strength": "indirect_speculation",
+      "edge_id": "e_6"
     }
   ],
   "merge_decisions": [
-    { "canonical_node_id": "n_1", "merged_aliases": ["CO2 reduction reaction", "CO2RR"], "reason": "Explicit acronym equivalence across paper_1 and paper_2." }
+    {
+      "canonical_node_id": "n_1",
+      "canonical_label": "the reference filter",
+      "entity_type": "Material",
+      "merged_aliases": [
+        "the reference filter",
+        "a reference filter",
+        "The reference filter"
+      ],
+      "source_ids": [
+        "bench",
+        "monitor"
+      ],
+      "reason": "Acronym/case/abstract-concept alignment across verified text spans (experimental instances kept separate where applicable)."
+    }
   ],
   "do_not_merge_records": [
-    { "generic_term": "Cu-In2O3", "instance_nodes": ["n_2", "n_5"], "reason": "Distinct experimental conditions (573 K / 3.0 MPa in paper_1 vs 523 K / 1.0 MPa in paper_2); sample instances kept separate." }
+    {
+      "generic_key": "Material:reference filter",
+      "generic_term": "the reference filter",
+      "generic_node_id": "n_1",
+      "instance_nodes": [
+        "n_2",
+        "n_5"
+      ],
+      "sources_and_conditions": {
+        "bench": [
+          "unspecified"
+        ],
+        "monitor": [
+          "unspecified"
+        ]
+      },
+      "reason": "Shared terminology identifies a concept. Each paper retains a separate experimental instance."
+    }
   ],
   "conflicts": [],
   "executed_queries": [
-    { "query_id": "q_1", "query_type": "cross_paper_shared_concepts", "hit_count": 1, "answer_status": "supported" }
+    {
+      "query_id": "q_1",
+      "query_type": "cross_paper_shared_concepts",
+      "answer_status": "supported",
+      "hit_count": 1,
+      "shared_concepts": [
+        {
+          "node_id": "n_1",
+          "label": "the reference filter",
+          "entity_type": "Material",
+          "aliases": [
+            "the reference filter",
+            "a reference filter",
+            "The reference filter"
+          ],
+          "source_ids": [
+            "bench",
+            "monitor"
+          ],
+          "evidence_anchors": [
+            {
+              "source_id": "bench",
+              "paragraph_id": "a1",
+              "location_type": "jats_paragraph_id",
+              "pdf_page": null,
+              "quote_snippet": "Spectral drift was reduced by the reference filter"
+            },
+            {
+              "source_id": "bench",
+              "paragraph_id": "a2",
+              "location_type": "jats_paragraph_id",
+              "pdf_page": null,
+              "quote_snippet": "The camera used a reference filter"
+            },
+            {
+              "source_id": "monitor",
+              "paragraph_id": "b1",
+              "location_type": "jats_paragraph_id",
+              "pdf_page": null,
+              "quote_snippet": "The reference filter increased repeatability"
+            },
+            {
+              "source_id": "monitor",
+              "paragraph_id": "b2",
+              "location_type": "jats_paragraph_id",
+              "pdf_page": null,
+              "quote_snippet": "The reference filter may improve contrast"
+            }
+          ]
+        }
+      ],
+      "merge_decisions": [
+        {
+          "canonical_node_id": "n_1",
+          "canonical_label": "the reference filter",
+          "entity_type": "Material",
+          "merged_aliases": [
+            "the reference filter",
+            "a reference filter",
+            "The reference filter"
+          ],
+          "source_ids": [
+            "bench",
+            "monitor"
+          ],
+          "reason": "Acronym/case/abstract-concept alignment across verified text spans (experimental instances kept separate where applicable)."
+        }
+      ],
+      "do_not_merge_records": [
+        {
+          "generic_key": "Material:reference filter",
+          "generic_term": "the reference filter",
+          "generic_node_id": "n_1",
+          "instance_nodes": [
+            "n_2",
+            "n_5"
+          ],
+          "sources_and_conditions": {
+            "bench": [
+              "unspecified"
+            ],
+            "monitor": [
+              "unspecified"
+            ]
+          },
+          "reason": "Shared terminology identifies a concept. Each paper retains a separate experimental instance."
+        }
+      ],
+      "parameters": {
+        "query_type": "cross_paper_shared_concepts"
+      }
+    },
+    {
+      "query_id": "q_2",
+      "query_type": "paper_evidence",
+      "source_id": "monitor",
+      "answer_status": "supported",
+      "hit_count": 2,
+      "evidence_edges": [
+        {
+          "edge_id": "e_5",
+          "source": "the reference filter [monitor]",
+          "relation": "increases",
+          "target": "repeatability",
+          "conditions": [],
+          "evidence_strength": "direct_author_evidence",
+          "source_id": "monitor",
+          "paragraph_id": "b1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter increased repeatability"
+        },
+        {
+          "edge_id": "e_6",
+          "source": "the reference filter [monitor]",
+          "relation": "increases",
+          "target": "contrast",
+          "conditions": [],
+          "evidence_strength": "indirect_speculation",
+          "source_id": "monitor",
+          "paragraph_id": "b2",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "quote_snippet": "The reference filter may improve contrast"
+        }
+      ],
+      "parameters": {
+        "query_type": "paper_evidence",
+        "source_id": "monitor"
+      }
+    },
+    {
+      "query_id": "q_3",
+      "query_type": "relation_evidence_probe",
+      "entity_a": "reference filter",
+      "entity_b": "Spectral drift",
+      "direction": "forward",
+      "relation_filter": "decreases",
+      "has_direct_observation": true,
+      "answer_status": "supported",
+      "hit_count": 1,
+      "evidence_edges": [
+        {
+          "edge_id": "e_2",
+          "source": "the reference filter [bench]",
+          "relation": "decreases",
+          "target": "Spectral drift",
+          "source_id": "bench",
+          "paragraph_id": "a1",
+          "location_type": "jats_paragraph_id",
+          "pdf_page": null,
+          "conditions": [],
+          "evidence_strength": "direct_author_evidence",
+          "quote_snippet": "Spectral drift was reduced by the reference filter"
+        }
+      ],
+      "parameters": {
+        "query_type": "relation_evidence_probe",
+        "source_id": "bench",
+        "entity_a": "reference filter",
+        "entity_b": "Spectral drift",
+        "relation": "decreases",
+        "direction": "forward"
+      }
+    },
+    {
+      "query_id": "q_4",
+      "query_type": "relation_evidence_probe",
+      "entity_a": "Spectral drift",
+      "entity_b": "reference filter",
+      "direction": "forward",
+      "relation_filter": "decreases",
+      "has_direct_observation": false,
+      "answer_status": "no_direct_evidence_unverifiable",
+      "hit_count": 0,
+      "evidence_edges": [],
+      "parameters": {
+        "query_type": "relation_evidence_probe",
+        "source_id": "bench",
+        "entity_a": "Spectral drift",
+        "entity_b": "reference filter",
+        "relation": "decreases",
+        "direction": "forward"
+      }
+    }
   ],
   "sources": [
-    { "source_id": "paper_1", "paragraph_id": "p1_s1_1", "location_type": "jats_paragraph_id", "pdf_page": null }
+    {
+      "source_id": "bench",
+      "paragraph_id": "a1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "Spectral drift was reduced by the reference filter"
+    },
+    {
+      "source_id": "bench",
+      "paragraph_id": "a2",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The camera used a reference filter"
+    },
+    {
+      "source_id": "monitor",
+      "paragraph_id": "b1",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The reference filter increased repeatability"
+    },
+    {
+      "source_id": "monitor",
+      "paragraph_id": "b2",
+      "location_type": "jats_paragraph_id",
+      "pdf_page": null,
+      "quote_snippet": "The reference filter may improve contrast"
+    }
   ],
-  "uncertainties": []
+  "uncertainties": [],
+  "extraction_mode": "rule_candidates",
+  "reviewed_paragraphs": []
 }

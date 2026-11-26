@@ -20,7 +20,7 @@ from build_kg_result import build_kg_result
 from export_kg import export_all
 from ingest_corpus import ingest_corpus
 from pdf_utils import write_json_atomic, write_text_lf
-from query_kg import run_default_query_suite
+from query_kg import execute_query, run_default_query_suite
 from validate_kg import validate_kg
 
 try:
@@ -176,7 +176,10 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
     assert all(e.get("pdf_page") is None for e in k1_kg["edges"]), "JATS edges must have pdf_page=None"
     assert len(k1_kg["do_not_merge_records"]) >= 1, "Expected do_not_merge_records for Cu-In2O3 across distinct conditions!"
     assert len(k1_run["queries"]) >= 4
-    assert any(q["answer_status"] == "no_direct_evidence_unverifiable" for q in k1_run["queries"])
+    negative_query = execute_query(k1_kg, "relation_evidence_probe", entity_a="Unreported compound", entity_b="Unreported method")
+    assert negative_query["answer_status"] == "no_direct_evidence_unverifiable"
+    assert k1_val["metrics"]["supported_distinct_queries"] >= 3
+    assert k1_val["metrics"]["query_evidence_sources"] == ["paper_1", "paper_2"]
 
     # 3 Negative Fault-Injection Checks
     # 1) Fake pdf_page=1 on JATS edge
@@ -232,6 +235,11 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
     inc_val = validate_kg(k2_case, inc_res, inc_kg, merged_corpus, inc_queries, base_kg=base_kg)
     assert inc_val["pass"] and inc_val["metrics"]["base_node_ids_preserved"] is True
     assert inc_kg["incremental_changelog"]["all_base_node_ids_preserved"] is True
+    instance_nodes = {n["node_id"] for n in inc_kg["nodes"] if n["entity_type"] == "MaterialInstance"}
+    assert all(e["source_node"] in instance_nodes for e in inc_kg["edges"] if e["relation_type"] != "instance_of")
+    retried = build_kg(k2_p2_corpus, base_kg=inc_kg)
+    assert retried["incremental_changelog"]["added_edges"] == 0 and retried["incremental_changelog"]["added_nodes"] == 0
+    assert inc_kg["nodes"] == retried["nodes"] and inc_kg["edges"] == retried["edges"]
     report["tests"]["k2_incremental_update"] = {
         "pass": True,
         "changelog": inc_kg["incremental_changelog"],
@@ -285,18 +293,94 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
         "scanned_status": k4b_run["result"]["status"],
     }
 
+    # Same abbreviation, different explicit definitions; reuse paragraph IDs across papers.
+    ambiguous = copy.deepcopy(k1_run["corpus"])
+    texts = {
+        "paper_1": ("Average precision (AP) is the evaluation metric.", "The ranking method uses AP."),
+        "paper_2": ("Activation potential (AP) is the local electrical quantity.", "The sensor method uses AP."),
+    }
+    for paper in ambiguous["papers"]:
+        paper["paragraphs"] = [{"source_id": paper["source_id"], "paragraph_id": f"sec{idx}",
+                                "location_type": "jats_paragraph_id", "pdf_page": None, "text": content}
+                               for idx, content in enumerate(texts[paper["source_id"]], 1)]
+    graph = build_kg(ambiguous)
+    reverse_graph = build_kg({**ambiguous, "papers": list(reversed(ambiguous["papers"]))})
+    assert graph == reverse_graph
+    ap_nodes = [n for n in graph["nodes"] if "AP" in n["aliases"]]
+    assert sorted((n["canonical_key"], n["source_ids"]) for n in ap_nodes) == [
+        ("activation potential", ["paper_2"]), ("average precision", ["paper_1"])]
+    assert execute_query(graph, "entity_neighborhood", entity="AP")["answer_status"] == "ambiguous_entity"
+    scoped = execute_query(graph, "entity_neighborhood", entity="AP", source_id="paper_2")
+    assert scoped["answer_status"] == "supported" and scoped["target_node"]["canonical_key"] == "activation potential"
+    separation = next(r for r in graph["do_not_merge_records"] if r["generic_term"] == "AP")
+    assert len(separation["definition_evidence"]) == 2
+    ap_queries = run_default_query_suite(graph)
+    ap_result = build_kg_result(k1_case, graph, ap_queries)
+    checks = validate_kg(k1_case, ap_result, graph, ambiguous, ap_queries)
+    assert checks["pass"], checks["errors"]
+    fake = copy.deepcopy(ap_queries)
+    fake[-1]["evidence_edges"][0]["quote_snippet"] = "A fabricated quotation."
+    assert not validate_kg(k1_case, build_kg_result(k1_case, graph, fake), graph, ambiguous, fake)["pass"]
+    report["tests"]["paper_scoped_abbreviations"] = {
+        "pass": True, "order_invariant": True, "source_specific_definitions": len(ap_nodes),
+        "ambiguous_query_detected": True, "tampered_query_rejected": True, "metrics": checks["metrics"],
+    }
+    review = {"paragraphs": [{"source_id": "paper_1", "paragraph_id": "sec2", "claims": [{
+        "subject": "ranking method", "subject_type": "Method", "relation": "uses", "object": "AP",
+        "object_type": "Metric", "quote_snippet": texts["paper_1"][1], "conditions": [],
+        "evidence_strength": "direct_author_evidence",
+    }]}]}
+    reviewed = build_kg(ambiguous, reviewed_claims=review)
+    assert any(n["label"] == "ranking method" for n in reviewed["nodes"])
+    review["paragraphs"][0]["claims"][0]["quote_snippet"] = texts["paper_2"][1]
+    try:
+        build_kg(ambiguous, reviewed_claims=review)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Reviewed claim with a quote from another paper was accepted")
+    report["tests"]["reviewed_claims"] = {"pass": True, "wrong_source_rejected": True}
+
+    boundary_input = copy.deepcopy(ambiguous)
+    boundary_texts = {
+        "paper_1": ["Under argon, the coating increases optical gain at 5 mV.",
+                    "The instrument uses a foil electrode to quantify current.",
+                    "The coating increases resistance to corrosion."],
+        "paper_2": ["In dry air, the film decreases optical gain at 8 mV.",
+                    "The monitor uses sensitivity to test conditions."],
+    }
+    for paper in boundary_input["papers"]:
+        paper["paragraphs"] = [{"paragraph_id": f"p{idx}", "text": sentence, "pdf_page": None,
+                                "location_type": "jats_paragraph_id", "source_id": paper["source_id"]}
+                               for idx, sentence in enumerate(boundary_texts[paper["source_id"]], 1)]
+    boundary_graph = build_kg(boundary_input)
+    labels = {n["node_id"]: n["label"] for n in boundary_graph["nodes"]}
+    boundaries = {(e["source_id"], e["paragraph_id"]): (labels[e["target_node"]], e) for e in boundary_graph["edges"]}
+    assert boundaries["paper_1", "p1"][0] == boundaries["paper_2", "p1"][0] == "optical gain"
+    assert boundaries["paper_1", "p1"][1]["conditions"] == ["Under argon", "at 5 mV"]
+    assert boundaries["paper_2", "p1"][1]["conditions"] == ["In dry air", "at 8 mV"]
+    device, device_edge = boundaries["paper_1", "p2"]
+    assert device == "a foil electrode" and device_edge["purpose"] == "to quantify current"
+    assert boundaries["paper_1", "p3"][0] == "resistance to corrosion"
+    assert boundaries["paper_2", "p2"][0] == "sensitivity to test conditions"
+    shared = execute_query(boundary_graph, "cross_paper_shared_concepts")
+    assert any(n["label"] == "optical gain" and len(n["source_ids"]) == 2 for n in shared["shared_concepts"])
+    report["tests"]["qualified_object_mentions"] = {
+        "pass": True, "shared_measurement_contexts": 2, "preserved_noun_complements": 2,
+        "purpose_retained": True,
+    }
+
     if compare_baseline:
+        # Compare a reproducible unscoped dictionary with local bindings on identical mentions.
+        flat = {d["short"]: d["full"].casefold() for d in graph["abbreviation_definitions"]}
+        expected = {"paper_1": "average precision", "paper_2": "activation potential"}
+        scoped_results = {sid: execute_query(graph, "entity_neighborhood", entity="AP", source_id=sid)
+                          for sid in expected}
         report["baseline_comparison"] = {
-            "K1_revised_jats_corpus": {
-                "baseline_do_not_merge_checks": 0,
-                "skill_do_not_merge_checks": len(k1_kg["do_not_merge_records"]),
-                "baseline_jats_paragraph_grounding": 0.0,
-                "skill_jats_paragraph_grounding": k1_val["metrics"]["evidence_grounding_rate"],
-                "baseline_executed_queries": 0,
-                "skill_executed_queries": len(k1_run["queries"]),
-                "baseline_graphml_valid": False,
-                "skill_graphml_valid": k1_val["metrics"]["graphml_valid"],
-            }
+            "fixture": "Two source-defined AP meanings", "mentions": len(expected),
+            "unscoped_dictionary_correct": sum(flat.get("AP") == name for name in expected.values()),
+            "paper_scoped_correct": sum(scoped_results[sid]["target_node"]["canonical_key"] == name
+                                        for sid, name in expected.items()),
         }
 
     write_json_atomic(out_dir / "self_test_report.json", report)

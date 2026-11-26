@@ -1,8 +1,9 @@
 {
-  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "_example_notice": "Query specifications for the fictional optics papers in this folder.",
   "queries": [
-    { "query_type": "cross_paper_shared_concepts", "description": "Find concepts shared across papers while keeping experimental instances separate." },
-    { "query_type": "method_metric_comparison", "description": "Compare reported metrics per paper and operating conditions." },
-    { "query_type": "relation_evidence_probe", "entity_a": "Water co-feeding", "entity_b": "Methanol selectivity", "description": "Probe whether direct evidence connects two entities." }
+    {"query_type": "cross_paper_shared_concepts"},
+    {"query_type": "paper_evidence", "source_id": "monitor"},
+    {"query_type": "relation_evidence_probe", "source_id": "bench", "entity_a": "reference filter", "entity_b": "Spectral drift", "relation": "decreases", "direction": "forward"},
+    {"query_type": "relation_evidence_probe", "source_id": "bench", "entity_a": "Spectral drift", "entity_b": "reference filter", "relation": "decreases", "direction": "forward"}
   ]
 }

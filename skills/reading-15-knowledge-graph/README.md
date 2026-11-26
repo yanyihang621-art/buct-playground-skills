@@ -1,67 +1,37 @@
-# reading-15-knowledge-graph — 文献知识图谱构建 Skill
+# 阅读 15 · 文献知识图谱构建
 
-面向 **玻尔产品周赛 · 北化分站赛（第一期）｜阅读15：文献知识图谱构建** 的自包含 Agent Skill。围绕 **“抽得准、连得对、对得齐、查得到、回得去”** 五大核心要求，并严格适配题面修订后的 **双篇独立论文 JATS/JSON 清单（`corpus-manifest.json` / `primary-material.json` / `secondary-material.json` / `secondary-publisher.xml`）** 与标准 PDF 语料。
+这个 Skill 将多篇论文整理为可查询的有向图。每条实质关系保留论文 ID、原段号、原文短引和证据强度。完整命令见 [SKILL.md](SKILL.md)。
 
----
+## 输入和交付
 
-## 1. 目录与模块说明
+- 输入可以是嵌套的双论文清单、JATS/XML、逐段 JSON、PDF、DOCX 或 Markdown/TXT。按清单所在目录解析相对路径。合并索引只用于补充有明确来源的段落。用 DOI 和正文比对识别同篇材料的不同格式。
+- 对有竞争释义的缩写保留逐篇定义。可用 `--source-id` 查询缩写在特定论文中的含义。无来源限定且存在歧义的查询会列出候选。跨篇样品和实验条件分别记录。
+- `kg.json` 是可复查的图谱数据，`executed_queries.json` 存储实际参数和返回值。另提供可编辑 GraphML、DOT 与 Markdown 报告。有可展示关系且具备渲染依赖时，`graph_preview.png` 展示带来源段号的有向关系，并标明覆盖数量。
+- JSON、JATS、DOCX 和纯文本来源保留段号或行号。PDF 来源可回查物理页码及文本块。未报告、缺失或有冲突的内容记录在来源清单及不确定性字段。
 
-```text
-reading-15-knowledge-graph/
-├── SKILL.md                              # Harbor / Agent 运行主指引
-├── GITHUB_URL.txt                        # 公开 GitHub 仓库位置声明
-├── README.md                             # 完整使用说明、本体定义与自测报告
-├── schemas/
-│   ├── kg_ontology.yaml                  # 实体类型、有向关系词表、证据强度分级与不合并保护策略
-│   ├── kg_schema.json                    # kg.json 输出 JSON Schema
-│   └── query_templates.yaml              # 5 类可复用图谱查询模板
-├── examples/
-│   ├── example_case.json                 # 最小输入样例（标注仅作示例）
-│   ├── example_result.json               # 最小输出样例（标注仅作示例）
-│   └── example_kg_queries.json           # 查询样例（标注仅作示例）
-└── scripts/
-    ├── __init__.py
-    ├── pdf_utils.py ... parse_pdf.py     # 自包含 PDF 解析底座
-    ├── ingest_corpus.py                  # JATS XML / JSON 清单 / PDF / MD 统一摄取 + 同篇多格式防重
-    ├── build_kg.py                       # 实体关系抽取、保守跨篇对齐与不合并实例保护、增量更新
-    ├── query_kg.py                       # 5 类真实图谱查询（共享概念、邻域子图、指标对照、冲突、否定探针）
-    ├── export_kg.py                      # 零依赖导出 GraphML XML、Graphviz DOT 与 Markdown+Mermaid 报告
-    ├── build_kg_result.py                # 对齐 /input/case.json output_contract 的 result.json 构造器
-    ├── validate_kg.py                    # 确定性验收审计器（分篇 DOI 隔离、禁伪造页码、100% 锚点落地、XML 校验）
-    └── self_test.py                      # 4 套合成夹具 + 3 项负向故障注入 + 基线对照
-```
+## 复用与验收
 
----
+图谱生成使用 Python 3、PyYAML 和 PyMuPDF。PDF/OCR 能力以当前环境可用的软件为准。用 [图谱词表](schemas/kg_ontology.yaml) 选择实体和关系类型，用 [查询模板](schemas/query_templates.yaml) 选择可回放的问题。读者可以提交逐段核过的关系修订，再运行相同查询观察答案变化。追加语料时可用 `build_kg.py --base-kg` 保留旧节点编号。
 
-## 2. 核心工程特性
+在本目录下运行以下命令，输出目录选在 Skill 包之外。
 
-1. **严格的分篇来源隔离与 JATS 定位**：独立绑定每篇文献的 `source_id`、`doi`、`title`、`authors`、`source_hash`；对 JATS/JSON 段落仅使用 `paragraph_id`（`pdf_page: null`），绝不伪造 `pdf_page: 1`。
-2. **同篇多格式防重**：检测相同内容哈希或相同 DOI 的多格式文件（如 `.md` + `.json`），避免误把同篇多格式当作跨篇证据。
-3. **保守实体对齐与“不得合并”保护（`do_not_merge_records`）**：仅合并明确的缩写/大小写抽象概念；当通用材料/方法术语（如 `Cu-In2O3`）在不同文献中具有不同实验条件或指标时，保留分篇实例节点（`MaterialInstance`）并显式记录原因。
-4. **增量更新保留编号（`--base-kg`）**：追加新论文时 100% 保留既有 `node_id` 与 `edge_id` 并输出 `incremental_changelog`。
-
----
-
-## 3. 本地可复现自测与基线对照
-
-> 以下结果来自运行本目录自带合成测试集（`scripts/self_test.py`）的真实本地观测输出，**仅用于本地工程回归验证，不代表任何官方赛题成绩**。
-
-复现命令：
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/self_test.py --out-dir /tmp/reading15_test --compare-baseline
+python3 -B scripts/self_test.py --out-dir ../reading15-test-output --compare-baseline
+python3 -B scripts/test_corpus_inputs.py -v
+python3 -B scripts/contract_regression.py
+python3 -B scripts/test_relation_reading.py -v
 ```
 
-本机实测输出（`all_passed: true`）：
+合成案例覆盖两篇独立论文的缩写冲突、正反序读入、查询结果重放、增量更新、对段落的修订、图谱导出、加密与扫描 PDF。输入回归覆盖嵌套清单中重名的文件、同文不同 DOI、合并索引补充缺失论文、DOCX/JATS 原始定位以及损坏文件。具体指标写入本地生成的 `self_test_report.json`。
 
-| 测试夹具（合成） | 覆盖场景 | 实测结果 |
-|---|---|---|
-| `k1_revised_jats_corpus` | 双篇独立 JSON + JATS XML 清单、`CO2RR` 跨篇合并、`Cu-In2O3` 不同条件不合并保护、5 个真实查询、GraphML XML 校验、**3 项负向故障注入（伪造 `pdf_page=1` / 泄漏 paper_1 DOI / 伪造 `paragraph_id`）** | `pass: true`；`13` 节点 / `7` 边；`evidence_grounding_rate: 1.0`（24/24）；`graphml_valid: true`；`do_not_merge_count: 1`；3 项负向故障全部成功拦截 |
-| `k2_incremental_update` | 基于 Paper 1 底图增量合入 Paper 2 | `pass: true`；`all_base_node_ids_preserved: true`（3/3 保留），新增 3 节点 / 2 边 |
-| `k3_duplicate_format_guard` | 同篇 `.md` + `.json` 重复格式拦截 | `pass: true`；`paper_count: 1`，`duplicate_formats_skipped: 1` |
-| `k4_encrypted_and_scanned` | 加密拒答与扫描件无文字层降级 | `pass: true`；加密 `refused`、扫描件 `unverifiable`（0 节点/边） |
+## 可运行的最小示例
 
-与“扁平共现抽取”基线在 `K1` 上的对照：
-- **跨篇不合并保护检查**：基线 `0` → Skill `1`
-- **JATS 段落锚点落地率**：基线 `0.0` → Skill `1.0`
-- **实际可执行图谱查询数**：基线 `0` → Skill `5`
-- **有效 GraphML XML 导出**：基线 `false` → Skill `true`
+[示例案例](examples/example_case.json) 指向同目录两篇虚构的光学材料。下面的命令从原段落生成图谱，并回查滤光片与光谱漂移的关系。
+
+```bash
+python3 -B scripts/ingest_corpus.py --input examples --case examples/example_case.json --out ../reading15-demo/work
+python3 -B scripts/build_kg.py --corpus ../reading15-demo/work/corpus.json --out ../reading15-demo/output --review-out ../reading15-demo/work/review_plan.json
+python3 -B scripts/query_kg.py --kg ../reading15-demo/output/kg.json --query-type relation_evidence_probe --source-id bench --entity-a "reference filter" --entity-b "Spectral drift" --direction forward --relation decreases --out ../reading15-demo/output/forward.json
+```
+
+正向查询命中 `bench/a1` 的被动句，反向查询返回零条。[示意输出](examples/example_result.json) 含图谱、四项执行结果和原文定位，[查询参数](examples/example_kg_queries.json) 可用于重放。默认规则擅长带明确谓词的英文句子。多句指代、复杂数值限定和其他语言的段落可用逐段复核接口编入图谱。

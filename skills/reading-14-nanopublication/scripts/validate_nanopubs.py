@@ -14,9 +14,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from decompose_assertions import load_relation_vocabulary
+from decompose_assertions import _match_clause_to_triple, assertion_scope, extract_source_metadata, load_relation_vocabulary
+from output_contract import contract_issues
 from pdf_utils import write_json_atomic
-from serialize_nanopubs import verify_nquads_syntax
+from serialize_nanopubs import serialize_to_jsonld, serialize_to_markdown, serialize_to_trig_and_nquads, verify_nquads_syntax
 
 VALID_STATUSES = {"success", "partial", "unverifiable", "refused"}
 PLACEHOLDER_PATS = [
@@ -33,19 +34,6 @@ POS_SNIPPET_RE = re.compile(r"\b(?:increases?|enhances?|catalyzes?|improves?|pro
 
 def _norm_tokens(s: str) -> List[str]:
     return re.findall(r"[a-z0-9\u4e00-\u9fff]+", s.lower())
-
-
-def _required_keys(case_data: Dict[str, Any]) -> List[str]:
-    contract = case_data.get("output_contract")
-    if not contract:
-        return ["case_id", "status"]
-    if isinstance(contract, list):
-        return [str(k) for k in contract]
-    if isinstance(contract, dict):
-        if "required" in contract and isinstance(contract["required"], list):
-            return [str(k) for k in contract["required"]]
-        return [str(k) for k in contract.keys()]
-    return ["case_id", "status"]
 
 
 def validate_nanopubs(
@@ -72,9 +60,7 @@ def validate_nanopubs(
     if expected_cid and result.get("case_id") != expected_cid:
         errors.append(f"case_id mismatch: expected '{expected_cid}', got '{result.get('case_id')}'.")
 
-    for rk in _required_keys(case_data):
-        if rk not in result:
-            errors.append(f"Missing required output_contract key '{rk}'.")
+    errors.extend(issue["message"] for issue in contract_issues(case_data.get("output_contract"), result))
 
     status = result.get("status")
     if status not in VALID_STATUSES:
@@ -92,17 +78,31 @@ def validate_nanopubs(
             errors.append(f"Placeholder token matching {pat.pattern} found in result.")
 
     # Build source element lookup across all docs
-    elem_map: Dict[str, Dict[str, Any]] = {}
+    elem_map = {}
     for doc in docs:
+        sha = extract_source_metadata(doc)["source_sha256"]
         for b in doc.get("blocks", []):
-            elem_map[b["block_id"]] = {"page": b["page"], "text": b.get("structured_text") or b.get("text") or ""}
+            elem_map[sha, b["block_id"]] = {"bbox": b.get("bbox"), "page": b.get("page"),
+                                           "native": b.get("native_locator"),
+                                           "text": b.get("structured_text") or b.get("text") or ""}
         for t in doc.get("tables", []):
-            elem_map[t["table_id"]] = {
-                "pages": t.get("pages", []),
+            elem_map[sha, t["table_id"]] = {
+                "bbox": t["bbox"], "pages": t.get("pages", []), "table": t,
                 "text": f"{t.get('caption') or ''} {t.get('label') or ''} {t.get('markdown') or ''}",
             }
 
     nps = bundle.get("nanopublications", [])
+    if result.get("nanopublications") != nps or result.get("nanopub_count") != len(nps):
+        errors.append("Result claims/count differ from the reviewed bundle.")
+    if bundle.get("nanopub_count") != len(nps):
+        errors.append("Bundle count differs from its records.")
+    if "assertions" in result:
+        summaries = result["assertions"]
+        if not isinstance(summaries, list) or len(summaries) != len(nps) or any(
+            not isinstance(summary, dict) or any(summary.get(k) != v for k, v in record["assertion"].items())
+            for summary, record in zip(summaries, nps)
+        ):
+            errors.append("Contract assertion summaries differ from the reviewed bundle.")
     if status not in ("refused", "unverifiable"):
         smeta = bundle.get("source_metadata", {})
         for req_m in ("paper_title", "source_file", "source_sha256", "authors", "year", "doi"):
@@ -136,7 +136,24 @@ def validate_nanopubs(
             pol = vocab[pred]["polarity"]
             snip = str(p.get("minimal_evidence_snippet", ""))
             # Only check pure single-clause snippet polarity (skip multi-clause source snippets if clause matches)
-            if len(snip) <= 140:
+            if a.get("predicate_uri") != vocab[pred]["uri"]:
+                gate_failures["gate2_relation_or_contradiction"].append(f"{nid}: predicate URI disagrees with vocabulary")
+            if p.get("location", {}).get("block_id"):
+                modality, polarity = assertion_scope(snip)
+                if ((a.get("modality", "asserted"), a.get("polarity", "affirmative")) != (modality, polarity)
+                        or assertion_scope(stmt) != assertion_scope(" ".join([p.get("condition_quote", ""), snip]))):
+                    gate_failures["gate2_relation_or_contradiction"].append(f"{nid}: changed modality or grammatical polarity")
+                expected = _match_clause_to_triple(snip, vocab)
+                if expected and (expected[1] != pred or a.get("subject", "").casefold() == expected[2].casefold()):
+                    gate_failures["gate2_relation_or_contradiction"].append(f"{nid}: evidence predicate or direction mismatch")
+                # Digits can be grounded in a clause or its separate shared condition;
+                # a copied quote cannot justify inserting a new quantitative result.
+                numbers = lambda s: set(re.findall(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", s))
+                if (numbers(str(a.get("object", ""))) | numbers(stmt)) - numbers(snip + " " + str(p.get("condition_quote", ""))):
+                    gate_failures["gate2_relation_or_contradiction"].append(f"{nid}: numerical value absent from quoted evidence")
+                if not all(str(cond).casefold() in stmt.casefold() for cond in a.get("conditions", [])):
+                    gate_failures["gate2_relation_or_contradiction"].append(f"{nid}: statement omits a condition")
+            if len(snip) <= 140 and a.get("polarity") != "negative":
                 if pol == "positive" and NEG_SNIPPET_RE.search(snip) and not POS_SNIPPET_RE.search(snip):
                     gate_failures["gate2_relation_or_contradiction"].append(
                         f"{nid}: assertion_evidence_contradiction (positive '{pred}' vs negative evidence)"
@@ -150,29 +167,69 @@ def validate_nanopubs(
         loc = p.get("location", {})
         eid = loc.get("block_id") or loc.get("table_id")
         snip = str(p.get("minimal_evidence_snippet", ""))
-        if not eid or eid not in elem_map:
+        key = (p.get("source_metadata", {}).get("source_sha256"), eid)
+        if not eid or key not in elem_map:
             gate_failures["gate3_grounding_and_entity"].append(f"{nid}: evidence_not_grounded (missing '{eid}')")
         else:
-            src = elem_map[eid]
+            src = elem_map[key]
             pg = loc.get("pdf_page")
             page_ok = (pg in src["pages"]) if "pages" in src else (pg == src["page"])
+            if loc.get("location_type") == "text_lines":
+                rect = src["bbox"]
+                page_ok = pg is None and (loc.get("line_start"), loc.get("line_end")) == (int(rect[1]), int(rect[3]))
+            if src.get("native"):
+                page_ok = page_ok and all(loc.get(k) == v for k, v in src["native"].items())
+            if "table" not in src and loc.get("bbox") is not None and loc["bbox"] != src.get("bbox"):
+                page_ok = False
+            if "table" in src and "row_index" in loc:
+                table = src["table"]
+                columns = table.get("col_paths", [])
+                ri, col = loc["row_index"], loc.get("column_name")
+                if isinstance(ri, int) and col in columns:
+                    cell = next((c for c in table.get("cells", []) if c["row"] == ri - 1 + table.get("header_row_count", 1)
+                                 and c["col"] == columns.index(col)), {})
+                    if cell.get("native_locator"):
+                        page_ok = pg is None and all(loc.get(k) == v for k, v in cell["native_locator"].items())
+                    elif cell.get("bbox"):
+                        page_ok = pg == cell.get("page") and loc.get("bbox") == cell["bbox"]
             if not page_ok:
                 gate_failures["gate3_grounding_and_entity"].append(f"{nid}: evidence_not_grounded (page mismatch {pg})")
             else:
-                sw = set(_norm_tokens(snip))
-                tw = set(_norm_tokens(src["text"]))
-                overlap = len(sw & tw) / max(1, len(sw))
-                if len(snip) > 650:
+                def norm(text: str) -> str:
+                    return " ".join(text.split()).casefold()
+                condition = p.get("condition_quote", "")
+                if "table" in src:
+                    table = src["table"]
+                    columns = table.get("col_paths") or []
+                    rows = table.get("records", [])
+                    ri, col = loc.get("row_index"), loc.get("column_name")
+                    cell_match = (columns and isinstance(ri, int) and 1 <= ri <= len(rows) and col in columns[1:]
+                                  and str(rows[ri - 1].get(columns[0], "")) == a.get("subject") == loc.get("row_label")
+                                  and f"{col} = {rows[ri - 1].get(col)}" == a.get("object")
+                                  and str(rows[ri - 1].get(col)) == snip)
+                    if ri is None and col is None and columns:
+                        # Earlier full records quoted a formatted caption/row/column tuple.
+                        caption = table.get("caption") or table.get("label") or table["table_id"]
+                        cell_match = any(
+                            str(row.get(columns[0])) == a.get("subject") and
+                            f"{column} = {row.get(column)}" == a.get("object") and
+                            snip == f"{caption} | {columns[0]}={a['subject']}, {column}={row.get(column)}"[:260]
+                            for row in rows for column in columns[1:])
+                    if not cell_match:
+                        gate_failures["gate3_grounding_and_entity"].append(f"{nid}: table record/column mismatch")
+                    else:
+                        grounded_count += 1
+                elif not snip.strip() or norm(snip) not in norm(src["text"]) or norm(condition) not in norm(src["text"]):
+                    gate_failures["gate3_grounding_and_entity"].append(f"{nid}: source quote or condition mismatch")
+                elif len(snip) > 650:
                     gate_failures["gate3_grounding_and_entity"].append(f"{nid}: evidence_too_bloated (len={len(snip)})")
-                elif sw and overlap < 0.72:
-                    gate_failures["gate3_grounding_and_entity"].append(f"{nid}: evidence_not_grounded (overlap={overlap:.2f})")
                 else:
                     grounded_count += 1
 
         # Entity confusion check: core tokens of subject must appear in evidence snippet
         subj_toks = [t for t in _norm_tokens(str(a.get("subject", ""))) if len(t) >= 2]
         snip_toks = set(_norm_tokens(snip))
-        if subj_toks and not any(t in snip_toks for t in subj_toks):
+        if not loc.get("table_id") and subj_toks and not any(t in snip_toks for t in subj_toks):
             gate_failures["gate3_grounding_and_entity"].append(
                 f"{nid}: entity_confusion (subject '{a.get('subject')}' absent from evidence snippet)"
             )
@@ -184,6 +241,14 @@ def validate_nanopubs(
 
     # Gate 6: N-Quads syntax check
     nq_res = None
+    if nquads_text is not None or any(key in result for key in ("trig", "jsonld", "nquads", "markdown")):
+        expected_trig, expected_nq = serialize_to_trig_and_nquads(bundle)
+        if nquads_text is not None and set(nquads_text.splitlines()) != set(expected_nq.splitlines()):
+            gate_failures["gate6_nquads_syntax"].append("N-Quads differ from the reviewed claims.")
+        for key, expected in (("trig", expected_trig), ("jsonld", serialize_to_jsonld(bundle)),
+                              ("nquads", expected_nq), ("markdown", serialize_to_markdown(bundle))):
+            if key in result and result[key] != expected:
+                gate_failures["gate6_nquads_syntax"].append(f"Embedded {key} differs from the reviewed claims.")
     if nquads_text is not None:
         nq_res = verify_nquads_syntax(nquads_text)
         if not nq_res["valid"]:

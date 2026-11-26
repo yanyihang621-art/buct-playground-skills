@@ -14,6 +14,29 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from pdf_utils import write_json_atomic
+from evidence_claims import canon
+
+
+def _matches(nodes, term, edges=(), source_id=None):
+    text = (term or "").strip().casefold()
+    if not text:
+        return []
+    by_id = [n for n in nodes if n["node_id"].casefold() == text]
+    if by_id:
+        return by_id
+    named = [(n, {str(s).casefold() for s in [n["label"], *n.get("aliases", [])]}) for n in nodes]
+    exact = [n for n, labels in named if text in labels]
+    normal = canon(text)
+    matched = exact or [node for node, labels in named if normal and any(canon(label) == normal for label in labels)]
+    if not matched and len(text) > 3:
+        matched = [n for n, labels in named if any(text in s for s in labels)]
+    if source_id and len(matched) == 2:
+        ids = {node["node_id"] for node in matched}
+        for e in edges:
+            if (e["source_id"] == source_id and e["relation_type"] == "instance_of"
+                    and ids == {e["source_node"], e["target_node"]}):
+                return [node for node in matched if node["node_id"] == e["source_node"]]
+    return matched
 
 
 def execute_query(
@@ -23,12 +46,35 @@ def execute_query(
     entity_a: Optional[str] = None,
     entity_b: Optional[str] = None,
     query_id: str = "q_1",
+    source_id: Optional[str] = None,
+    direction: str = "either",
+    relation: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one deterministic query over kg.json and return subgraph + grounded evidence."""
     nodes = kg.get("nodes", [])
     edges = kg.get("edges", [])
     node_map = {n["node_id"]: n for n in nodes}
 
+    if source_id is not None:
+        nodes = [n for n in nodes if source_id in n["source_ids"]]
+        edges = [e for e in edges if e["source_id"] == source_id]
+    def represented_ids(node_id):
+        return {node_id} | {e["source_node"] for e in edges if e["relation_type"] == "instance_of"
+                            and e["target_node"] == node_id}
+
+    if query_type == "paper_evidence":
+        rows = [
+            {"edge_id": e["edge_id"], "source": node_map[e["source_node"]]["label"],
+             "relation": e["relation_type"], "target": node_map[e["target_node"]]["label"],
+             "conditions": e.get("conditions", []), "evidence_strength": e["evidence_strength"],
+             "source_id": e["source_id"], "paragraph_id": e["paragraph_id"],
+             "location_type": e["location_type"], "pdf_page": e.get("pdf_page"),
+             "quote_snippet": e["quote_snippet"]}
+            for e in edges if e["relation_type"] != "instance_of"
+        ]
+        return {"query_id": query_id, "query_type": query_type, "source_id": source_id,
+                "answer_status": "supported" if rows else "no_relations_extracted",
+                "hit_count": len(rows), "evidence_edges": rows}
     if query_type == "cross_paper_shared_concepts":
         shared = [
             {
@@ -45,7 +91,7 @@ def execute_query(
         return {
             "query_id": query_id,
             "query_type": query_type,
-            "answer_status": "supported" if shared or kg.get("do_not_merge_records") else "no_shared_concepts_found",
+            "answer_status": "supported" if shared else "no_shared_concepts_found",
             "hit_count": len(shared),
             "shared_concepts": shared,
             "merge_decisions": kg.get("merge_decisions", []),
@@ -55,8 +101,12 @@ def execute_query(
     if query_type == "entity_neighborhood":
         target_node = None
         if entity:
-            low = entity.lower()
-            target_node = next((n for n in nodes if low in n["label"].lower() or any(low in a.lower() for a in n.get("aliases", []))), None)
+            matches = _matches(nodes, entity, edges, source_id)
+            if len(matches) > 1:
+                return {"query_id": query_id, "query_type": query_type, "target": entity,
+                        "answer_status": "ambiguous_entity", "hit_count": 0,
+                        "candidates": [{"node_id": n["node_id"], "label": n["label"], "source_ids": n["source_ids"]} for n in matches]}
+            target_node = matches[0] if matches else None
         elif nodes:
             # Pick highest-degree non-Researcher node
             deg: Dict[str, int] = {}
@@ -77,7 +127,8 @@ def execute_query(
             }
 
         tid = target_node["node_id"]
-        rel_edges = [e for e in edges if e["source_node"] == tid or e["target_node"] == tid]
+        members = represented_ids(tid)
+        rel_edges = [e for e in edges if e["source_node"] in members or e["target_node"] in members]
         formatted_edges = [
             {
                 "edge_id": e["edge_id"],
@@ -88,6 +139,7 @@ def execute_query(
                 "evidence_strength": e.get("evidence_strength"),
                 "source_id": e["source_id"],
                 "paragraph_id": e["paragraph_id"],
+                "location_type": e["location_type"],
                 "pdf_page": e.get("pdf_page"),
                 "quote_snippet": e["quote_snippet"],
             }
@@ -112,6 +164,7 @@ def execute_query(
                         "edge_id": e["edge_id"],
                         "source_id": e["source_id"],
                         "paragraph_id": e["paragraph_id"],
+                        "location_type": e["location_type"],
                         "pdf_page": e.get("pdf_page"),
                         "subject": node_map.get(e["source_node"], {}).get("label"),
                         "relation": e["relation_type"],
@@ -134,24 +187,42 @@ def execute_query(
         for e in edges:
             st = e.get("evidence_strength", "unknown")
             strength_counts[st] = strength_counts.get(st, 0) + 1
+        boundaries = [b for b in kg.get("boundary_records", []) if source_id is None or b["source_id"] == source_id]
+        conflicts = [c for c in kg.get("conflicts", []) if source_id is None or source_id in c.get("sources", [])]
+        unknowns = [u for u in kg.get("uncertainties", []) if source_id is None or u.get("source_id") == source_id]
         return {
             "query_id": query_id,
             "query_type": query_type,
             "answer_status": "supported",
-            "hit_count": len(kg.get("conflicts", [])) + len(kg.get("uncertainties", [])),
+            "hit_count": len(conflicts) + len(unknowns) + len(boundaries),
             "evidence_strength_breakdown": strength_counts,
-            "conflicts": kg.get("conflicts", []),
-            "uncertainties": kg.get("uncertainties", []),
+            "conflicts": conflicts, "boundary_evidence": boundaries, "uncertainties": unknowns,
         }
 
     if query_type == "relation_evidence_probe":
-        la = (entity_a or "").lower()
-        lb = (entity_b or "").lower()
+        if direction not in ("forward", "either"):
+            raise ValueError("direction must be 'forward' or 'either'")
+        left = _matches(nodes, entity_a, edges, source_id)
+        right = _matches(nodes, entity_b, edges, source_id)
         matches = []
+        if len(left) > 1 or len(right) > 1:
+            return {"query_id": query_id, "query_type": query_type, "entity_a": entity_a,
+                    "entity_b": entity_b, "answer_status": "ambiguous_entity", "hit_count": 0, "evidence_edges": []}
+        left_ids = represented_ids(left[0]["node_id"]) if left else set()
+        right_ids = represented_ids(right[0]["node_id"]) if right else set()
         for e in edges:
-            sl = node_map.get(e["source_node"], {}).get("label", "").lower()
-            tl = node_map.get(e["target_node"], {}).get("label", "").lower()
-            if (la in sl and lb in tl) or (lb in sl and la in tl):
+            if relation and e["relation_type"] != relation:
+                continue
+            # Identity links are structural. Include them only for an explicit
+            # identity question or a literal pair of graph endpoints.
+            if e["relation_type"] == "instance_of":
+                left_match = {n["node_id"] for n in left}
+                right_match = {n["node_id"] for n in right}
+            else:
+                left_match, right_match = left_ids, right_ids
+            forwards = e["source_node"] in left_match and e["target_node"] in right_match
+            backwards = e["source_node"] in right_match and e["target_node"] in left_match
+            if forwards or (direction == "either" and backwards):
                 matches.append(
                     {
                         "edge_id": e["edge_id"],
@@ -160,6 +231,8 @@ def execute_query(
                         "target": node_map.get(e["target_node"], {}).get("label"),
                         "source_id": e["source_id"],
                         "paragraph_id": e["paragraph_id"],
+                        "location_type": e["location_type"], "pdf_page": e.get("pdf_page"),
+                        "conditions": e.get("conditions", []), "evidence_strength": e["evidence_strength"],
                         "quote_snippet": e["quote_snippet"],
                     }
                 )
@@ -168,6 +241,10 @@ def execute_query(
             "query_type": query_type,
             "entity_a": entity_a,
             "entity_b": entity_b,
+            "direction": direction,
+            "relation_filter": relation,
+            "has_direct_observation": any(row["evidence_strength"] in ("direct_author_evidence", "direct_tabular_evidence")
+                                          for row in matches),
             "answer_status": "supported" if matches else "no_direct_evidence_unverifiable",
             "hit_count": len(matches),
             "evidence_edges": matches,
@@ -177,20 +254,24 @@ def execute_query(
 
 
 def run_default_query_suite(kg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Execute 4+ real queries covering cross-paper alignment, neighborhood, comparison, conflicts, and negative probe."""
-    return [
-        execute_query(kg, "cross_paper_shared_concepts", query_id="q_1"),
-        execute_query(kg, "entity_neighborhood", query_id="q_2"),
-        execute_query(kg, "method_metric_comparison", query_id="q_3"),
-        execute_query(kg, "conflict_and_boundary_audit", query_id="q_4"),
-        execute_query(
-            kg,
-            "relation_evidence_probe",
-            entity_a="Nonexistent Unreported Compound X",
-            entity_b="Unreported Metric Y",
-            query_id="q_5",
-        ),
+    """Run actual corpus queries with replayable parameters and per-paper evidence."""
+    params = [
+        {"query_type": "cross_paper_shared_concepts"}, {"query_type": "entity_neighborhood"},
+        {"query_type": "method_metric_comparison"}, {"query_type": "conflict_and_boundary_audit"},
     ]
+    for entry in kg.get("sources_manifest", []):
+        params.append({"query_type": "paper_evidence", "source_id": entry["source_id"]})
+    edges = [e for e in kg.get("edges", []) if e["relation_type"] != "instance_of"]
+    if edges:
+        edge = edges[0]
+        params.append({"query_type": "relation_evidence_probe", "entity_a": edge["source_node"],
+                       "entity_b": edge["target_node"], "source_id": edge["source_id"],
+                       "relation": edge["relation_type"], "direction": "forward"})
+    results = []
+    for index, spec in enumerate(params, 1):
+        query = execute_query(kg, query_id=f"q_{index}", **spec)
+        results.append({**query, "parameters": spec})
+    return results
 
 
 def main() -> int:
@@ -200,25 +281,22 @@ def main() -> int:
     parser.add_argument("--run-default-suite", action="store_true")
     parser.add_argument("--query-type", default="cross_paper_shared_concepts")
     parser.add_argument("--entity", default=None)
+    parser.add_argument("--source-id", default=None)
     parser.add_argument("--entity-a", default=None)
     parser.add_argument("--entity-b", default=None)
+    parser.add_argument("--direction", choices=("forward", "either"), default="either")
+    parser.add_argument("--relation", help="Restrict a relation probe to one ontology predicate.")
     args = parser.parse_args()
 
     kg = json.loads(Path(args.kg).read_text(encoding="utf-8"))
     if args.run_default_suite:
         out_obj = {"queries": run_default_query_suite(kg)}
     else:
-        out_obj = {
-            "queries": [
-                execute_query(
-                    kg,
-                    args.query_type,
-                    entity=args.entity,
-                    entity_a=args.entity_a,
-                    entity_b=args.entity_b,
-                )
-            ]
-        }
+        spec = {"query_type": args.query_type, "entity": args.entity, "entity_a": args.entity_a,
+                "entity_b": args.entity_b, "source_id": args.source_id}
+        if args.query_type == "relation_evidence_probe":
+            spec.update(direction=args.direction, relation=args.relation)
+        out_obj = {"queries": [{**execute_query(kg, **spec), "parameters": spec}]}
     write_json_atomic(args.out, out_obj)
     print(json.dumps({"executed_query_count": len(out_obj["queries"])}, ensure_ascii=False))
     return 0

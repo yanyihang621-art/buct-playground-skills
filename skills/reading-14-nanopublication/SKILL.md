@@ -5,6 +5,16 @@ description: Atomic scientific claim decomposition and 4-graph Nanopublication e
 
 # Scientific Nanopublication Extraction (`reading-14-nanopublication`)
 
+## Run a case
+
+Read the case questions, target sections and named deliverables first. In Harbor run:
+
+```sh
+python3 -B /skills/weekly-skill/scripts/run_case.py
+```
+
+This writes an early extraction checkpoint and then exports and validates the result. Inspect `/app/output/result.json` and `/app/work/nanopubs/validation_report.json`. For each question compare the actual source with the extracted answer, including findings without a dictionary match. Record omissions and repairs. Use `--reviewed /app/work/reviewed.json` for evidence-checked claims and `--answers /app/work/answers.json` for case-specific result fields. Rerun the same command with those arguments to regenerate the JSON and RDF together. A nonzero validation exit preserves the partial result and reports which fields or evidence need work. Local runs accept `--input`, `--work` and `--out`.
+
 Deterministic Python pipeline for scientific Nanopublications focused on four core guarantees:
 1. **拆得细 (Atomic Decomposition)**: Splits compound, causal, and conditional sentences into single, independently truth-evaluable `(subject, predicate, object, conditions)` claims while propagating shared leading operating conditions.
 2. **对得上 (Minimal Sufficient Evidence)**: Binds every assertion to its minimal evidence snippet and exact source location (`pdf_page`, `printed_page`, `block_id`/`table_id`, `bbox`), distinguishing `direct_experimental`, `direct_tabular_or_figure`, `indirect_inference`, and `cited_prior_work`.
@@ -21,81 +31,56 @@ Deterministic Python pipeline for scientific Nanopublications focused on four co
 
 ---
 
-## Standard 6-Step Execution Workflow
+## Runtime workflow
 
-### Step 1: Inspect Task & Contract
-Read `/input/case.json` and `/input/task.md` to confirm `case_id`, input document paths, and `output_contract` fields.
+Read the case prompt, target sections, requested output fields and deliverable names. Work through the original sources and select the claims needed for the case. For a synthesis, include distinct findings, null results and stated limitations. A vocabulary match only supplies a candidate.
 
-### Step 2: Ingest Source Document(s)
-Run `ingest_source.py` on `/input` (supports PDF, Markdown, and TXT):
+~~~bash
+SKILL_DIR=/skills/weekly-skill
+[ -f "$SKILL_DIR/scripts/decompose_assertions.py" ] || SKILL_DIR=/app/submission
+export PYTHONDONTWRITEBYTECODE=1
+WORK=/app/work/nanopubs
+OUT=/app/output
+mkdir -p "$WORK" "$OUT"
+python3 "$SKILL_DIR/scripts/ingest_source.py" --input /input --case /input/case.json --out "$WORK/input" --ocr auto
+python3 "$SKILL_DIR/scripts/decompose_assertions.py" --manifest "$WORK/input/ingest_manifest.json" --out "$WORK"
+python3 "$SKILL_DIR/scripts/build_nanopub_result.py" --case /input/case.json --nanopubs "$WORK/nanopubs.json" --manifest "$WORK/input/ingest_manifest.json" --out "$OUT/result.json"
+~~~
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/ingest_source.py" \
-  --input /input \
-  --case /input/case.json \
-  --out /app/work/ingested \
-  --ocr auto \
-  --crops
-```
+Inspect the ingestion manifest and its uncertainties. Discovery includes PDF, Markdown, TXT, JSON and JATS XML recursively. Named files take precedence. Article paragraphs embedded in case material fields can be used beside external papers. Text files provide physical lines. PDFs provide page and coordinates. JSON passages and regular data cells retain a JSON Pointer. JATS paragraphs and regular data cells retain an element path. Use the paper's paragraph ID, section, or page if supplied. Case instructions and reference lists are outside the primary evidence scope. Inspect unfamiliar JSON layouts, spanning tables or image-only figures directly before making claims from them.
 
-### Step 3: Decompose Claims & Build 4-Graph Nanopublications
-Run `decompose_assertions.py` to split compound/causal sentences, extract tabular metrics, map predicates strictly to `schemas/relation_vocabulary.yaml`, classify `evidence_type`, deduplicate, and detect cross-assertion conflicts:
+### Review the claims against the sources
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/decompose_assertions.py" \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --out /app/work/nanopubs
-```
+1. Read each requested section and any referenced table, including headers, units and operating conditions. Find important results that the deterministic patterns missed. Preserve the document's actual subject, relation direction, value, uncertainty and attribution. Distinguish an association from a causal assertion and a hypothesized relation from an observed relation.
+2. Use the smallest exact supporting clause. If a preceding condition governs several clauses, store the condition's exact text separately in provenance.condition_quote. For table claims, identify the actual row, column and value. Each item carries the source file/hash and a block or table location. Inspect repeated appearances before merging; retain scope differences in the report.
+3. Independently review every candidate and fill in missed claims. Supply a revised list for each changed paper in a JSON object keyed by its manifest paper_id, e.g. {"paper_1": [ ...full records... ]}. Copy the candidate structure or follow schemas/nanopublication.schema.json. For a prose assertion supply subject, controlled predicate, object, conditions, grammatical polarity (affirmative/negative), modality (asserted/hedged), and a faithful atomic_statement. The polarity field records the wording of the claim. Use the original phrase to preserve distinctions such as “no significant difference” versus proof of equivalence. Add a minimal_evidence_snippet, location, evidence_type, original source_metadata, and confidence basis. Omit an unsupported claim and record the gap. Provide the complete list for each changed paper, including unchanged claims. Papers absent from the review stay in the collection.
+4. If revisions were required, save the review as /app/work/nanopubs/reviewed.json and regenerate the bundle. The program derives graph identifiers and recomputes duplicates and conflicts.
 
-### Step 4: Serialize to W3C JSON-LD, TriG, N-Quads & Markdown
-Run zero-dependency serializers (`serialize_nanopubs.py`) and verify N-Quads grammar:
+For new prose claims, the same per-paper list also accepts compact rows alongside unchanged full records. Read the actual block ids and text from the paper's `document_json` in the manifest. The following row illustrates the format with fictional material. The builder copies the real source metadata and coordinates and checks the quote and separate condition against that block. Use the original modal phrasing in the statement. Choose the evidence type from the field dictionary and justify confidence individually.
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/serialize_nanopubs.py" \
-  --nanopubs /app/work/nanopubs/nanopubs.json \
-  --out /app/work/nanopubs
-```
+~~~json
+{"paper_1":[{"block_id":"/paragraphs/0/text","quote":"Band C reached a width of 7.4 nm.",
+  "subject":"Band C","predicate":"achieves_metric","object":"a width of 7.4 nm",
+  "statement":"Band C reached a width of 7.4 nm.","conditions":[],
+  "evidence_type":"direct_textual","confidence_score":0.9,
+  "confidence_basis":"The authors explicitly give the band, the measured width and its unit in this paragraph."}]}
+~~~
 
-Generated artifacts under `/app/work/nanopubs/`:
-- `nanopubs.json`, `nanopubs.jsonld`, `nanopubs.trig`, `nanopubs.nq`, `nanopubs.md`.
+~~~bash
+python3 "$SKILL_DIR/scripts/decompose_assertions.py" --manifest "$WORK/input/ingest_manifest.json" --reviewed "$WORK/reviewed.json" --out "$WORK"
+~~~
 
-### Step 5: Build Early Checkpoint & Optional Deep Refinement
-Write `/app/output/result.json` matching `/input/case.json`:
+### Deliver the verified collection
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/build_nanopub_result.py" \
-  --case /input/case.json \
-  --nanopubs /app/work/nanopubs/nanopubs.json \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --trig /app/work/nanopubs/nanopubs.trig \
-  --jsonld /app/work/nanopubs/nanopubs.jsonld \
-  --nquads /app/work/nanopubs/nanopubs.nq \
-  --markdown /app/work/nanopubs/nanopubs.md \
-  --out /app/output/result.json
-```
+The bundle is the source of the final result and all renderings. Export the reviewed bundle, produce the final contract fields and run the auditor on that same bundle. Use --override-json with build_nanopub_result.py for supported, case-specific synthesis fields. Ground these in the reviewed claims and resolve missing_contract_field and contract_shape_mismatch entries, or record the concrete missing evidence and partial status.
 
-If subtle claims require domain synthesis beyond regex patterns, add validated entries via `--override-json /app/work/override.json` (strictly using predicates from `schemas/relation_vocabulary.yaml` and grounded `block_id`/`table_id` anchors) and re-run `build_nanopub_result.py`.
+~~~bash
+python3 "$SKILL_DIR/scripts/serialize_nanopubs.py" --nanopubs "$WORK/nanopubs.json" --out "$OUT"
+python3 "$SKILL_DIR/scripts/build_nanopub_result.py" --case /input/case.json --nanopubs "$WORK/nanopubs.json" --manifest "$WORK/input/ingest_manifest.json" --trig "$OUT/nanopubs.trig" --jsonld "$OUT/nanopubs.jsonld" --nquads "$OUT/nanopubs.nq" --markdown "$OUT/nanopubs.md" --out "$OUT/result.json"
+python3 "$SKILL_DIR/scripts/validate_nanopubs.py" --case /input/case.json --nanopubs "$WORK/nanopubs.json" --manifest "$WORK/input/ingest_manifest.json" --result "$OUT/result.json" --nquads "$OUT/nanopubs.nq" --out "$WORK/validation_report.json"
+~~~
 
-### Step 6: Run 6-Gate Quality Validation
-Always run `validate_nanopubs.py` before finishing:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/validate_nanopubs.py" \
-  --case /input/case.json \
-  --result /app/output/result.json \
-  --nanopubs /app/work/nanopubs/nanopubs.json \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --nquads /app/work/nanopubs/nanopubs.nq \
-  --out /app/work/validation_report.json
-```
-
-Verify `"pass": true`, `anchor_grounding_rate == 1.0`, `nquads_valid == true`, and all 6 gates green:
-1. `over_broad_assertion` (single claim, `<= 280` chars)
-2. `invalid_relation_type` & `assertion_evidence_contradiction`
-3. `evidence_not_grounded` & `entity_confusion`
-4. `missing_provenance_metadata` (4 graphs + `source_metadata` + `confidence_basis` + `status` honesty)
-5. `cross_assertion_conflict` scan
-6. `nquads_syntax_valid`
+Inspect any validation failure before delivery. Check exact source quotes and condition spans, entity direction, contradiction reports, and final artifact names. A reported disagreement can be correct when both independent observations are grounded. In RDF, the assertion graph reifies qualified statements so downstream consumers can inspect their subject, predicate, object, modality, polarity and scope. For a grounded unconditional affirmative claim, it also emits the direct relation.
 
 ---
 
@@ -113,11 +98,11 @@ Verify `"pass": true`, `anchor_grounding_rate == 1.0`, `nquads_valid == true`, a
 
 ## Minimal Illustrative Example (Example Only — Not Formal Test Data)
 
-See [`examples/example_case.json`](examples/example_case.json), [`examples/example_result.json`](examples/example_result.json), and [`examples/example_20_nanopubs.json`](examples/example_20_nanopubs.json) (all explicitly marked as synthetic illustrative examples).
+The included `examples/sample_paper.md` and `examples/example_case.json` form a runnable synthetic case. From the Skill directory, run `python3 -B scripts/run_case.py --input examples --case examples/example_case.json --work /tmp/np-example/work --out /tmp/np-example/output`. The run produces the two optical-filter assertions illustrated in `examples/example_result.json`; generation timestamps vary. `examples/example_20_nanopubs.json` contains twenty short review cards with addressable source sentences.
 
 ```bash
 # Illustrative local invocation example:
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/ingest_source.py --input ./sample_dir --case examples/example_case.json --out ./work/ingested --ocr auto
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/ingest_source.py --input ./examples --case examples/example_case.json --out ./work/ingested --ocr auto
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/decompose_assertions.py --manifest ./work/ingested/ingest_manifest.json --out ./work/nanopubs
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/serialize_nanopubs.py --nanopubs ./work/nanopubs/nanopubs.json --out ./work/nanopubs
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/build_nanopub_result.py --case examples/example_case.json --nanopubs ./work/nanopubs/nanopubs.json --manifest ./work/ingested/ingest_manifest.json --nquads ./work/nanopubs/nanopubs.nq --out ./work/result.json

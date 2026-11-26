@@ -10,7 +10,8 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from zipfile import BadZipFile, ZipFile
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -34,116 +35,57 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _extract_paragraphs_from_json_doc(data: Any, default_source_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Extract per-paper metadata and paragraph records from flexible JSON material structures."""
-    meta: Dict[str, Any] = {
-        "source_id": default_source_id,
-        "title": None,
-        "authors": [],
-        "doi": None,
-        "year": None,
-        "license": None,
+def _extract_paragraphs_from_json_doc(data: Any, default_source_id: str,
+                                      jats_index: bool = False) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Retain per-paper IDs, and distinguish supplied locators from generated ones."""
+    paper = data if isinstance(data, dict) else {}
+    sid = str(paper.get("source_id") or paper.get("id") or default_source_id)
+    meta = {
+        "source_id": sid, "title": paper.get("title") or paper.get("paper_title"),
+        "authors": paper.get("authors") if isinstance(paper.get("authors"), list) else [],
+        "doi": paper.get("doi"), "year": paper.get("year"), "license": paper.get("license"),
     }
     paragraphs: List[Dict[str, Any]] = []
 
-    if isinstance(data, dict):
-        meta["source_id"] = str(data.get("source_id") or data.get("id") or default_source_id)
-        meta["title"] = data.get("title") or data.get("paper_title")
-        if isinstance(data.get("authors"), list):
-            meta["authors"] = [str(a) for a in data["authors"]]
-        meta["doi"] = data.get("doi")
-        meta["year"] = str(data["year"]) if data.get("year") else None
-        meta["license"] = data.get("license")
+    def append(item: Any, section: str, fallback_id: str) -> None:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            return
+        text = item.get("text") or item.get("content")
+        if not isinstance(text, str) or not text.strip():
+            return
+        reported_id = item.get("jats_id") or item.get("paragraph_id") or item.get("pid") or item.get("id")
+        locator = item.get("location_type") or (
+            "jats_paragraph_id" if reported_id and (jats_index or item.get("jats_id") or paper.get("jats"))
+            else "json_paragraph_id"
+        )
+        paragraphs.append({
+            "source_id": str(item.get("source_id") or sid), "paragraph_id": str(reported_id or fallback_id),
+            "location_type": locator if reported_id else "json_generated_locator",
+            "pdf_page": None, "printed_page": None, "bbox": None,
+            "section_title": item.get("section_title") or item.get("section") or section, "text": text.strip(),
+        })
 
-        # Abstract if present
-        if data.get("abstract"):
-            paragraphs.append(
-                {
-                    "source_id": meta["source_id"],
-                    "paragraph_id": str(data.get("abstract_id") or f"{meta['source_id']}_abs"),
-                    "location_type": "jats_paragraph_id" if data.get("jats") else "json_paragraph_id",
-                    "pdf_page": None,
-                    "printed_page": None,
-                    "bbox": None,
-                    "section_title": "Abstract",
-                    "text": str(data["abstract"]).strip(),
-                }
-            )
-
-        raw_list = data.get("paragraphs") or data.get("blocks") or data.get("items") or []
-        if isinstance(raw_list, list):
-            for idx, item in enumerate(raw_list, start=1):
-                if isinstance(item, dict):
-                    txt = str(item.get("text") or item.get("content") or "").strip()
-                    if not txt:
-                        continue
-                    pid = str(item.get("paragraph_id") or item.get("id") or item.get("pid") or f"{meta['source_id']}_p{idx}")
-                    sid = str(item.get("source_id") or meta["source_id"])
-                    paragraphs.append(
-                        {
-                            "source_id": sid,
-                            "paragraph_id": pid,
-                            "location_type": str(item.get("location_type") or "jats_paragraph_id"),
-                            "pdf_page": None,
-                            "printed_page": None,
-                            "bbox": None,
-                            "section_title": str(item.get("section_title") or item.get("section") or "Body"),
-                            "text": txt,
-                        }
-                    )
-        # Nested sections list
-        secs = data.get("sections")
-        if isinstance(secs, list) and not raw_list:
-            for s_idx, sec in enumerate(secs, start=1):
-                if not isinstance(sec, dict):
-                    continue
-                stitle = str(sec.get("title") or f"Section {s_idx}")
-                for p_idx, pitem in enumerate(sec.get("paragraphs", []), start=1):
-                    if isinstance(pitem, dict):
-                        txt = str(pitem.get("text") or pitem.get("content") or "").strip()
-                        pid = str(pitem.get("paragraph_id") or pitem.get("id") or f"{meta['source_id']}_s{s_idx}_p{p_idx}")
-                    else:
-                        txt = str(pitem).strip()
-                        pid = f"{meta['source_id']}_s{s_idx}_p{p_idx}"
-                    if txt:
-                        paragraphs.append(
-                            {
-                                "source_id": meta["source_id"],
-                                "paragraph_id": pid,
-                                "location_type": "jats_paragraph_id",
-                                "pdf_page": None,
-                                "printed_page": None,
-                                "bbox": None,
-                                "section_title": stitle,
-                                "text": txt,
-                            }
-                        )
-    elif isinstance(data, list):
-        for idx, item in enumerate(data, start=1):
-            if isinstance(item, dict):
-                txt = str(item.get("text") or item.get("content") or "").strip()
-                if not txt:
-                    continue
-                sid = str(item.get("source_id") or default_source_id)
-                pid = str(item.get("paragraph_id") or item.get("id") or f"{sid}_p{idx}")
-                paragraphs.append(
-                    {
-                        "source_id": sid,
-                        "paragraph_id": pid,
-                        "location_type": str(item.get("location_type") or "jats_paragraph_id"),
-                        "pdf_page": None,
-                        "printed_page": None,
-                        "bbox": None,
-                        "section_title": str(item.get("section_title") or item.get("section") or "Body"),
-                        "text": txt,
-                    }
-                )
+    if isinstance(paper.get("abstract"), str):
+        append({"text": paper["abstract"], "id": paper.get("abstract_id")}, "Abstract", f"{sid}_abs")
+    items = data if isinstance(data, list) else paper.get("paragraphs") or paper.get("blocks") or paper.get("items") or []
+    if isinstance(items, list):
+        for idx, item in enumerate(items, start=1):
+            append(item, "Body", f"{sid}_p{idx}")
+    if not items:
+        for sec_idx, section in enumerate(paper.get("sections") or [], start=1):
+            if isinstance(section, dict):
+                for idx, item in enumerate(section.get("paragraphs") or [], start=1):
+                    append(item, section.get("title") or f"Section {sec_idx}", f"{sid}_s{sec_idx}_p{idx}")
     return meta, paragraphs
 
 
 def _parse_jats_xml(xml_path: Path, default_source_id: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Parse JATS XML (<article>) preserving <p id='...'> paragraph IDs without fake PDF page numbers."""
     root = ET.fromstring(xml_path.read_text(encoding="utf-8", errors="replace"))
+    for element in root.iter():
+        element.tag = element.tag.rsplit("}", 1)[-1]
     title_el = root.find(".//article-title")
     title = "".join(title_el.itertext()).strip() if title_el is not None else xml_path.stem
 
@@ -171,7 +113,7 @@ def _parse_jats_xml(xml_path: Path, default_source_id: str) -> Tuple[Dict[str, A
                 {
                     "source_id": default_source_id,
                     "paragraph_id": pid,
-                    "location_type": "jats_paragraph_id",
+                    "location_type": "jats_paragraph_id" if p_el.get("id") else "xml_generated_locator",
                     "pdf_page": None,
                     "printed_page": None,
                     "bbox": None,
@@ -180,29 +122,28 @@ def _parse_jats_xml(xml_path: Path, default_source_id: str) -> Tuple[Dict[str, A
                 }
             )
 
-    # Body sections
+    # Visit all body paragraphs in source order, including direct children of body.
     body = root.find(".//body")
     if body is not None:
-        sec_idx = 0
-        for sec in body.findall(".//sec"):
-            sec_idx += 1
-            stitle = "".join(sec.find("title").itertext()).strip() if sec.find("title") is not None else f"Section {sec_idx}"
-            for p_idx, p_el in enumerate(sec.findall("p"), start=1):
-                txt = re.sub(r"\s+", " ", "".join(p_el.itertext())).strip()
+        def append_body(element: ET.Element, section: str) -> None:
+            if element.tag == "sec":
+                heading = element.find("title")
+                if heading is not None:
+                    section = "".join(heading.itertext()).strip() or section
+            if element.tag == "p":
+                txt = re.sub(r"\s+", " ", "".join(element.itertext())).strip()
                 if txt:
-                    pid = p_el.attrib.get("id") or f"{default_source_id}_s{sec_idx}_p{p_idx}"
-                    paragraphs.append(
-                        {
-                            "source_id": default_source_id,
-                            "paragraph_id": pid,
-                            "location_type": "jats_paragraph_id",
-                            "pdf_page": None,
-                            "printed_page": None,
-                            "bbox": None,
-                            "section_title": stitle,
-                            "text": txt,
-                        }
-                    )
+                    pid = element.get("id") or f"{default_source_id}_body_{len(paragraphs) + 1}"
+                    paragraphs.append({
+                        "source_id": default_source_id, "paragraph_id": pid,
+                        "location_type": "jats_paragraph_id" if element.get("id") else "xml_generated_locator",
+                        "pdf_page": None, "printed_page": None, "bbox": None,
+                        "section_title": section, "text": txt,
+                    })
+            else:
+                for child in element:
+                    append_body(child, section)
+        append_body(body, "Body")
 
     meta = {
         "source_id": default_source_id,
@@ -213,135 +154,6 @@ def _parse_jats_xml(xml_path: Path, default_source_id: str) -> Tuple[Dict[str, A
         "license": None,
     }
     return meta, paragraphs
-
-
-def _ingest_revised_manifest(in_dir: Path) -> Optional[Dict[str, Any]]:
-    """Ingest Harbor revised corpus-manifest.json / primary-material.json / secondary-material.json / JATS XML."""
-    manifest_path = in_dir / "corpus-manifest.json"
-    prim_path = in_dir / "primary-material.json"
-    sec_path = in_dir / "secondary-material.json"
-    if not (manifest_path.exists() or prim_path.exists() or sec_path.exists()):
-        return None
-
-    manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
-    entries = (
-        manifest_raw.get("sources")
-        or manifest_raw.get("papers")
-        or manifest_raw.get("corpus")
-        or manifest_raw.get("materials")
-        or []
-    )
-    if isinstance(entries, dict):
-        entries = [dict({"source_id": k}, **v) for k, v in entries.items()]
-
-    # Build source_id -> manifest metadata lookup
-    manifest_meta_by_file: Dict[str, Dict[str, Any]] = {}
-    manifest_meta_by_id: Dict[str, Dict[str, Any]] = {}
-    for idx, ent in enumerate(entries, start=1):
-        if not isinstance(ent, dict):
-            continue
-        sid = str(ent.get("source_id") or ent.get("id") or f"paper_{idx}")
-        manifest_meta_by_id[sid] = ent
-        for k in ("file", "path", "material_file", "filename"):
-            if ent.get(k):
-                manifest_meta_by_file[Path(str(ent[k])).name] = dict(ent, source_id=sid)
-
-    papers_out: List[Dict[str, Any]] = []
-    seen_sids = set()
-
-    candidate_files: List[Tuple[str, Path]] = []
-    if prim_path.exists():
-        candidate_files.append(("paper_1", prim_path))
-    if sec_path.exists():
-        candidate_files.append(("paper_2", sec_path))
-
-    # Also check any manifest-listed files not already added
-    for ent in entries:
-        if not isinstance(ent, dict):
-            continue
-        fpath_str = ent.get("file") or ent.get("path") or ent.get("material_file")
-        if fpath_str:
-            fp = in_dir / str(fpath_str)
-            if fp.exists() and fp.name not in ("material.json", "corpus-manifest.json"):
-                if not any(fp.resolve() == p.resolve() for _, p in candidate_files):
-                    candidate_files.append((str(ent.get("source_id") or fp.stem), fp))
-
-    # Fallback: JATS XML if secondary-material.json wasn't present
-    if not sec_path.exists() and (in_dir / "secondary-publisher.xml").exists():
-        candidate_files.append(("paper_2", in_dir / "secondary-publisher.xml"))
-
-    for default_sid, fpath in candidate_files:
-        m_entry = manifest_meta_by_file.get(fpath.name, {})
-        if fpath.suffix.lower() == ".xml":
-            parsed_meta, paras = _parse_jats_xml(fpath, m_entry.get("source_id") or default_sid)
-        else:
-            raw_obj = json.loads(fpath.read_text(encoding="utf-8"))
-            parsed_meta, paras = _extract_paragraphs_from_json_doc(raw_obj, m_entry.get("source_id") or default_sid)
-
-        sid = str(m_entry.get("source_id") or parsed_meta["source_id"] or default_sid)
-        if sid in seen_sids:
-            continue
-        seen_sids.add(sid)
-
-        # Normalize all paragraph source_id values strictly to this paper's source_id
-        for p in paras:
-            p["source_id"] = sid
-
-        papers_out.append(
-            {
-                "source_id": sid,
-                "source_file": str(fpath.name),
-                "source_sha256": m_entry.get("source_hash") or m_entry.get("sha256") or _sha256_file(fpath),
-                "title": m_entry.get("title") or parsed_meta.get("title") or sid,
-                "authors": m_entry.get("authors") or parsed_meta.get("authors") or ["not_reported"],
-                "doi": m_entry.get("doi") or parsed_meta.get("doi") or "not_reported",
-                "year": str(m_entry.get("year") or parsed_meta.get("year") or "not_reported"),
-                "license": m_entry.get("license") or parsed_meta.get("license") or "not_reported",
-                "status": "success" if paras else "unverifiable",
-                "location_type": "jats_paragraph_id",
-                "paragraphs": paras,
-                "tables": [],
-                "uncertainties": [],
-                "anomalies": [],
-            }
-        )
-
-    # If material.json exists and no separate primary/secondary files were found, split by source_id inside material.json
-    mat_path = in_dir / "material.json"
-    if not papers_out and mat_path.exists():
-        mat_raw = json.loads(mat_path.read_text(encoding="utf-8"))
-        _, all_paras = _extract_paragraphs_from_json_doc(mat_raw, "paper_1")
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
-        for p in all_paras:
-            grouped.setdefault(p["source_id"], []).append(p)
-        for sid, paras in grouped.items():
-            m_ent = manifest_meta_by_id.get(sid, {})
-            papers_out.append(
-                {
-                    "source_id": sid,
-                    "source_file": mat_path.name,
-                    "source_sha256": m_ent.get("source_hash") or _sha256_file(mat_path),
-                    "title": m_ent.get("title") or sid,
-                    "authors": m_ent.get("authors") or ["not_reported"],
-                    "doi": m_ent.get("doi") or "not_reported",
-                    "year": str(m_ent.get("year") or "not_reported"),
-                    "license": m_ent.get("license") or "not_reported",
-                    "status": "success" if paras else "unverifiable",
-                    "location_type": "jats_paragraph_id",
-                    "paragraphs": paras,
-                    "tables": [],
-                    "uncertainties": [],
-                    "anomalies": [],
-                }
-            )
-
-    return {
-        "schema_version": "1.0.0",
-        "corpus_mode": "revised_manifest_jats",
-        "paper_count": len(papers_out),
-        "papers": papers_out,
-        "duplicate_formats_skipped": [],
-    }
 
 
 def _parse_plain_or_md(path: Path, sid: str) -> Dict[str, Any]:
@@ -407,157 +219,314 @@ def _parse_plain_or_md(path: Path, sid: str) -> Dict[str, Any]:
     }
 
 
-def ingest_corpus(
-    input_path: str | Path,
-    out_dir: str | Path,
-    case_path: Optional[str | Path] = None,
-    ocr_mode: str = "auto",
-) -> Dict[str, Any]:
-    """Ingest a single or multi-paper corpus into unified corpus.json."""
-    in_p = Path(input_path)
-    out_p = Path(out_dir)
-    out_p.mkdir(parents=True, exist_ok=True)
+PAPER_EXTENSIONS = {".pdf", ".md", ".txt", ".json", ".xml", ".docx"}
 
-    if in_p.is_dir():
-        revised = _ingest_revised_manifest(in_p)
-        if revised is not None and revised["papers"]:
-            write_json_atomic(out_p / "corpus.json", revised)
-            return revised
 
-    # Standard file discovery (PDF / MD / TXT / JSON)
-    files: List[Path] = []
-    if case_path and Path(case_path).exists():
-        try:
-            cobj = json.loads(Path(case_path).read_text(encoding="utf-8"))
-            if isinstance(cobj.get("input_files"), list) and cobj["input_files"]:
-                base = in_p if in_p.is_dir() else in_p.parent
-                files = [base / str(x) if not Path(str(x)).is_absolute() else Path(str(x)) for x in cobj["input_files"]]
-                files = [f for f in files if f.exists()]
-        except Exception:
-            files = []
+def _read_docx(path: Path, sid: str) -> Dict[str, Any]:
+    with ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs = []
+    for index, element in enumerate(root.findall(".//w:body//w:p", ns), start=1):
+        text = "".join(node.text or "" for node in element.findall(".//w:t", ns)).strip()
+        if text:
+            paragraphs.append({
+                "source_id": sid, "paragraph_id": f"p{index}", "location_type": "docx_paragraph",
+                "pdf_page": None, "printed_page": None, "bbox": None, "section_title": "Body", "text": text,
+            })
+    return {
+        "source_id": sid, "source_file": path.name, "source_sha256": _sha256_file(path),
+        "title": path.stem, "authors": ["not_reported"], "doi": "not_reported",
+        "year": "not_reported", "license": "not_reported", "status": "success" if paragraphs else "unverifiable",
+        "location_type": "docx_paragraph", "paragraphs": paragraphs, "tables": [], "uncertainties": [], "anomalies": [],
+    }
 
-    if not files:
-        if in_p.is_file():
-            files = [in_p]
-        elif in_p.is_dir():
-            files = [
-                p
-                for p in sorted(in_p.iterdir())
-                if p.is_file()
-                and p.suffix.lower() in (".pdf", ".md", ".txt", ".json", ".xml")
-                and p.name.lower() not in IGNORE_FILES
-            ]
 
-    papers: List[Dict[str, Any]] = []
-    dup_skipped: List[Dict[str, str]] = []
-    seen_fingerprints: Dict[str, str] = {}
-
-    for idx, fpath in enumerate(files, start=1):
-        sid = f"paper_{idx}"
-        suf = fpath.suffix.lower()
-        if suf == ".pdf":
-            pdf_out = out_p / "parsed" / sid
-            doc = run_parse_pipeline(fpath, pdf_out, ocr_mode=ocr_mode, save_crops=False)
-            meta = doc.get("metadata", {})
-            paras = [
-                {
-                    "source_id": sid,
-                    "paragraph_id": b["block_id"],
-                    "location_type": "pdf_block",
-                    "pdf_page": b["page"],
-                    "printed_page": b.get("printed_page"),
-                    "bbox": b["bbox"],
-                    "section_title": " > ".join(b.get("section_path", [])) or b.get("role", "body"),
-                    "text": b.get("structured_text") or b.get("text") or "",
-                }
-                for b in doc.get("blocks", [])
-                if b.get("role") not in ("header", "footer", "table_ref", "reference")
-            ]
-            rec = {
+def _read_paper(fpath: Path, sid: str, out_p: Path, ocr_mode: str, jats_index: bool) -> Dict[str, Any]:
+    suf = fpath.suffix.lower()
+    if suf == ".pdf":
+        pdf_out = out_p / "parsed" / _sha256_text(str(fpath))[:16]
+        doc = run_parse_pipeline(fpath, pdf_out, ocr_mode=ocr_mode, save_crops=False)
+        meta = doc.get("metadata", {})
+        paras = [
+            {
                 "source_id": sid,
-                "source_file": fpath.name,
-                "source_sha256": _sha256_file(fpath),
-                "title": meta.get("title") or fpath.stem,
-                "authors": meta.get("authors") or ["not_reported"],
-                "doi": "not_reported",
-                "year": "not_reported",
-                "license": "not_reported",
-                "status": doc.get("status", "partial"),
+                "paragraph_id": b["block_id"],
                 "location_type": "pdf_block",
-                "paragraphs": paras,
-                "tables": doc.get("tables", []),
-                "uncertainties": doc.get("uncertainties", []),
-                "anomalies": doc.get("diagnostics", {}).get("anomalies", []),
+                "pdf_page": b["page"],
+                "printed_page": b.get("printed_page"),
+                "bbox": b["bbox"],
+                "section_title": " > ".join(b.get("section_path", [])) or b.get("role", "body"),
+                "text": b.get("structured_text") or b.get("text") or "",
             }
-        elif suf == ".xml":
-            pm, paras = _parse_jats_xml(fpath, sid)
-            rec = {
-                "source_id": sid,
-                "source_file": fpath.name,
-                "source_sha256": _sha256_file(fpath),
-                "title": pm.get("title") or fpath.stem,
-                "authors": pm.get("authors") or ["not_reported"],
-                "doi": pm.get("doi") or "not_reported",
-                "year": pm.get("year") or "not_reported",
-                "license": "not_reported",
-                "status": "success" if paras else "unverifiable",
-                "location_type": "jats_paragraph_id",
-                "paragraphs": paras,
-                "tables": [],
-                "uncertainties": [],
-                "anomalies": [],
-            }
-        elif suf == ".json":
-            raw_obj = json.loads(fpath.read_text(encoding="utf-8"))
-            pm, paras = _extract_paragraphs_from_json_doc(raw_obj, sid)
-            rec = {
-                "source_id": sid,
-                "source_file": fpath.name,
-                "source_sha256": _sha256_file(fpath),
-                "title": pm.get("title") or fpath.stem,
-                "authors": pm.get("authors") or ["not_reported"],
-                "doi": pm.get("doi") or "not_reported",
-                "year": pm.get("year") or "not_reported",
-                "license": pm.get("license") or "not_reported",
-                "status": "success" if paras else "unverifiable",
-                "location_type": "json_paragraph_id",
-                "paragraphs": paras,
-                "tables": [],
-                "uncertainties": [],
-                "anomalies": [],
-            }
-        else:
-            rec = _parse_plain_or_md(fpath, sid)
+            for b in doc.get("blocks", [])
+            if b.get("role") not in ("header", "footer", "table_ref", "reference")
+        ]
+        rec = {
+            "source_id": sid,
+            "source_file": fpath.name,
+            "source_sha256": _sha256_file(fpath),
+            "title": meta.get("title") or fpath.stem,
+            "authors": meta.get("authors") or ["not_reported"],
+            "doi": "not_reported",
+            "year": "not_reported",
+            "license": "not_reported",
+            "status": doc.get("status", "partial"),
+            "location_type": "pdf_block",
+            "paragraphs": paras,
+            "tables": doc.get("tables", []),
+            "uncertainties": doc.get("uncertainties", []),
+            "anomalies": doc.get("diagnostics", {}).get("anomalies", []),
+        }
+    elif suf == ".xml":
+        pm, paras = _parse_jats_xml(fpath, sid)
+        rec = {
+            "source_id": sid,
+            "source_file": fpath.name,
+            "source_sha256": _sha256_file(fpath),
+            "title": pm.get("title") or fpath.stem,
+            "authors": pm.get("authors") or ["not_reported"],
+            "doi": pm.get("doi") or "not_reported",
+            "year": pm.get("year") or "not_reported",
+            "license": "not_reported",
+            "status": "success" if paras else "unverifiable",
+            "location_type": "jats_paragraph_id",
+            "paragraphs": paras,
+            "tables": [],
+            "uncertainties": [],
+            "anomalies": [],
+        }
+    elif suf == ".json":
+        raw_obj = json.loads(fpath.read_text(encoding="utf-8-sig"))
+        pm, paras = _extract_paragraphs_from_json_doc(raw_obj, sid, jats_index)
+        sid = pm.get("source_id") or sid
+        rec = {
+            "source_id": sid,
+            "source_file": fpath.name,
+            "source_sha256": _sha256_file(fpath),
+            "title": pm.get("title") or fpath.stem,
+            "authors": pm.get("authors") or ["not_reported"],
+            "doi": pm.get("doi") or "not_reported",
+            "year": pm.get("year") or "not_reported",
+            "license": pm.get("license") or "not_reported",
+            "status": "success" if paras else "unverifiable",
+            "location_type": paras[0]["location_type"] if paras else "json_paragraph_id",
+            "paragraphs": paras,
+            "tables": [],
+            "uncertainties": [],
+            "anomalies": [],
+        }
+    elif suf == ".docx":
+        rec = _read_docx(fpath, sid)
+    else:
+        rec = _parse_plain_or_md(fpath, sid)
 
-        # Same-paper multi-format guard: identical normalized text hash or identical non-empty DOI
-        norm_body = re.sub(r"\s+", " ", " ".join(p["text"].lower() for p in rec["paragraphs"])).strip()
-        fp_body = _sha256_text(norm_body) if norm_body else rec["source_sha256"]
-        fp_doi = f"doi:{rec['doi'].lower()}" if rec["doi"] != "not_reported" else None
+    return rec
 
-        dup_of = seen_fingerprints.get(fp_body) or (seen_fingerprints.get(fp_doi) if fp_doi else None)
-        if dup_of:
-            dup_skipped.append(
-                {
-                    "skipped_file": rec["source_file"],
-                    "duplicate_format_of": dup_of,
-                    "reason": "same_paper_multi_format_deduplicated",
-                }
-            )
+
+def _local_path(root: Path, parent: Path, name: str) -> Optional[Path]:
+    path = (parent / name).resolve()
+    if path.is_relative_to(root) and path.is_file():
+        return path
+    return None
+
+
+def _entry_path(entry: Dict[str, Any]) -> str:
+    for key in ("file", "path", "material_file", "filename"):
+        if isinstance(entry.get(key), str) and entry[key]:
+            return entry[key]
+    return ""
+
+
+def _unavailable_paper(sid: str, file: str, code: str, message: str) -> Dict[str, Any]:
+    return {
+        "source_id": sid, "source_file": file, "source_sha256": None,
+        "title": sid, "authors": ["not_reported"], "doi": "not_reported",
+        "year": "not_reported", "license": "not_reported", "status": "unverifiable",
+        "location_type": "unavailable", "paragraphs": [], "tables": [], "anomalies": [code],
+        "uncertainties": [{"code": code, "message": message}],
+    }
+
+
+def _read_source(path: Path, sid: str, root: Path, out: Path, ocr: str, jats_index: bool = False) -> Dict[str, Any]:
+    name = path.relative_to(root).as_posix()
+    try:
+        rec = _read_paper(path, sid, out, ocr, jats_index)
+    except (OSError, ValueError, ET.ParseError, BadZipFile, KeyError) as error:
+        return _unavailable_paper(sid, name, "unreadable_source", f"{name}: {type(error).__name__}")
+    rec["source_file"] = name
+    return rec
+
+
+def _read_manifest(parent: Path, root: Path, out: Path, ocr: str) -> List[Dict[str, Any]]:
+    manifest = parent / "corpus-manifest.json"
+    data = json.loads(manifest.read_text(encoding="utf-8-sig")) if manifest.is_file() else {}
+    if isinstance(data, dict):
+        entries = data.get("sources") or data.get("papers") or data.get("corpus") or data.get("materials") or []
+    else:
+        entries = data
+    if isinstance(entries, dict):
+        entries = [dict(value, source_id=value.get("source_id") or key) for key, value in entries.items() if isinstance(value, dict)]
+    by_id = {}
+    by_file = {}
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
             continue
+        sid = str(entry.get("source_id") or entry.get("id") or f"paper_{index}")
+        by_id[sid] = entry
+        name = _entry_path(entry)
+        if name:
+            path = _local_path(root, parent, name)
+            if path and path.suffix.lower() in PAPER_EXTENSIONS and path.name not in {"material.json", "corpus-manifest.json"}:
+                by_file[path] = sid
 
-        seen_fingerprints[fp_body] = sid
-        if fp_doi:
-            seen_fingerprints[fp_doi] = sid
+    # Some releases use conventional filenames and a metadata-only manifest.
+    for name, sid in (("primary-material.json", "paper_1"), ("secondary-material.json", "paper_2"),
+                      ("secondary-publisher.xml", "paper_2")):
+        path = _local_path(root, parent, name)
+        if path:
+            if name.endswith(".xml") and (parent / "secondary-material.json").is_file():
+                continue
+            by_file.setdefault(path, sid)
+
+    papers = []
+    for path, default_sid in by_file.items():
+        rec = _read_source(path, default_sid, root, out, ocr, jats_index=True)
+        parsed_sid = rec["source_id"]
+        sid = default_sid if default_sid in by_id else parsed_sid
+        entry = by_id.get(sid, {})
+        for key in ("doi", "title", "authors", "year", "license"):
+            if entry.get(key):
+                rec[key] = entry[key]
+        rec["source_id"] = sid
+        if entry.get("source_hash") or entry.get("sha256"):
+            rec["declared_source_hash"] = entry.get("source_hash") or entry["sha256"]
+        for paragraph in rec["paragraphs"]:
+            paragraph["source_id"] = sid
         papers.append(rec)
 
-    corpus = {
-        "schema_version": "1.0.0",
-        "corpus_mode": "standard_files",
-        "paper_count": len(papers),
-        "papers": papers,
-        "duplicate_formats_skipped": dup_skipped,
-    }
-    write_json_atomic(out_p / "corpus.json", corpus)
+    # A combined index can fill an absent paper only with paragraphs attributed to that paper.
+    combined = parent / "material.json"
+    covered = {p["source_id"] for p in papers if p["paragraphs"]}
+    if combined.is_file() and (not covered or set(by_id) - covered):
+        combined_data = json.loads(combined.read_text(encoding="utf-8-sig"))
+        _, paragraphs = _extract_paragraphs_from_json_doc(combined_data, "", jats_index=True)
+        groups: Dict[str, list] = {}
+        for para in paragraphs:
+            sid = para["source_id"]
+            if sid and sid not in covered and (not by_id or sid in by_id):
+                groups.setdefault(sid, []).append(para)
+        for sid, group in groups.items():
+            entry = by_id.get(sid, {})
+            papers = [p for p in papers if p["source_id"] != sid]
+            papers.append({
+                "source_id": sid, "source_file": combined.relative_to(root).as_posix(),
+                "source_sha256": _sha256_file(combined),
+                "title": entry.get("title") or sid, "authors": entry.get("authors") or ["not_reported"],
+                "doi": entry.get("doi") or "not_reported", "year": entry.get("year") or "not_reported",
+                "license": entry.get("license") or "not_reported", "status": "success",
+                "location_type": group[0]["location_type"], "paragraphs": group, "tables": [],
+                "uncertainties": [], "anomalies": [],
+            })
+    present = {p["source_id"] for p in papers}
+    for sid, entry in by_id.items():
+        if sid not in present:
+            rec = _unavailable_paper(sid, _entry_path(entry), "missing_source", f"No readable material for {sid}.")
+            rec.update({key: entry[key] for key in ("title", "authors", "doi", "year", "license") if entry.get(key)})
+            papers.append(rec)
+    return papers
+
+
+def ingest_corpus(input_path: str | Path, out_dir: str | Path, case_path: Optional[str | Path] = None,
+                  ocr_mode: str = "auto") -> Dict[str, Any]:
+    """Resolve the case inventory first, and deduplicate representations after parsing."""
+    source = Path(input_path).resolve()
+    root = source if source.is_dir() else source.parent
+    out = Path(out_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    case = json.loads(Path(case_path).read_text(encoding="utf-8-sig")) if case_path and Path(case_path).is_file() else {}
+    declared = case.get("input_files") or []
+    missing = []
+    if source.is_file():
+        files = [source]
+    elif isinstance(declared, list) and declared:
+        files = []
+        for entry in declared:
+            name = entry if isinstance(entry, str) else _entry_path(entry) if isinstance(entry, dict) else ""
+            path = _local_path(root, root, name) if name else None
+            if path:
+                files.append(path)
+            elif name:
+                missing.append(name)
+    else:
+        files = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()
+                 and not (out != root and p.is_relative_to(out)) and p.resolve().is_relative_to(root)]
+    files = sorted(set(f for f in files if f.suffix.lower() in PAPER_EXTENSIONS and f.name.lower() not in IGNORE_FILES))
+    manifests = sorted({f.parent for f in files if f.name == "corpus-manifest.json"})
+    if not manifests:
+        manifests = sorted({f.parent for f in files if f.name in {"primary-material.json", "secondary-material.json"}})
+    records = []
+    if manifests:
+        for parent in manifests:
+            records.extend(_read_manifest(parent, root, out, ocr_mode))
+    if manifests and declared:
+        already_read = {rec["source_file"] for rec in records}
+        loose = [f for f in files if f.relative_to(root).as_posix() not in already_read and
+                 f.name not in {"corpus-manifest.json", "material.json", "secondary-publisher.xml"}]
+    else:
+        loose = [] if manifests else files
+    for index, path in enumerate(loose, start=1):
+        rec = _read_source(path, f"paper_{index}", root, out, ocr_mode)
+        groups: Dict[str, list] = {}
+        for para in rec["paragraphs"]:
+            groups.setdefault(para["source_id"], []).append(para)
+        if not groups or set(groups) == {rec["source_id"]}:
+            records.append(rec)
+            continue
+        # Some standalone JSON indexes contain independent papers. Root metadata
+        # can be assigned only to the paper explicitly identified by the root.
+        for sid, paragraphs in groups.items():
+            scoped = dict(rec, source_id=sid, paragraphs=paragraphs)
+            if sid != rec["source_id"]:
+                scoped.update(title=sid, authors=["not_reported"], doi="not_reported",
+                              year="not_reported", license="not_reported")
+            records.append(scoped)
+
+    papers, duplicates = [], []
+    fingerprints: Dict[str, str] = {}
+    used_ids = set()
+    doi_by_source = {}
+    for rec in records:
+        doi = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", str(rec["doi"]).strip().casefold())
+        body = " ".join(" ".join(p["text"].split()).casefold() for p in rec["paragraphs"])
+        keys = ["text:" + _sha256_text(body)] if body else []
+        if doi and doi != "not_reported":
+            keys.append("doi:" + doi)
+        match = None
+        for key in keys:
+            existing = fingerprints.get(key)
+            if existing and (doi in ("", "not_reported") or doi_by_source[existing] in ("", "not_reported", doi)):
+                match = existing
+                break
+        if match:
+            duplicates.append({"skipped_file": rec["source_file"], "duplicate_format_of": match,
+                               "reason": "same_paper_multi_format_deduplicated"})
+            continue
+        sid = rec["source_id"]
+        if sid in used_ids:
+            sid = f"{sid}_{_sha256_text(rec['source_file'])[:10]}"
+            rec["source_id"] = sid
+            for para in rec["paragraphs"]:
+                para["source_id"] = sid
+        used_ids.add(sid)
+        doi_by_source[sid] = doi
+        fingerprints.update(dict.fromkeys(keys, sid))
+        papers.append(rec)
+
+    corpus = {"schema_version": "1.0.0", "corpus_mode": "revised_manifest_jats" if manifests else "standard_files",
+              "paper_count": len(papers), "papers": papers, "duplicate_formats_skipped": duplicates,
+              "missing_input_files": missing}
+    write_json_atomic(out / "corpus.json", corpus)
     return corpus
 
 

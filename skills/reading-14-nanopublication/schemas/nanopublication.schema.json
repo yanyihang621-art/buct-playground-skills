@@ -35,6 +35,8 @@
               "predicate": { "type": "string" },
               "predicate_uri": { "type": "string" },
               "object": { "type": "string" },
+              "modality": { "enum": ["asserted", "hedged"] },
+              "polarity": { "enum": ["affirmative", "negative"] },
               "conditions": { "type": "array", "items": { "type": "string" } },
               "atomic_statement": { "type": "string" }
             }
