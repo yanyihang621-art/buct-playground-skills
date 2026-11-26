@@ -1,78 +1,8 @@
 {
-  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
   "case_id": "example-reading-10-synthetic",
   "status": "success",
-  "paper_card": {
-    "bibliographic": {
-      "title": "Selective CO2 Reduction over Cu-In2O3 Catalysts",
-      "authors": ["Alice Zhang", "Bob Li"],
-      "page_count": 2,
-      "verification_tier": "machine_verified"
-    },
-    "research_question": {
-      "summary": "Investigate CO2 reduction reaction (CO2RR) selectivity at 573 K and 3.0 MPa.",
-      "verification_tier": "needs_human_review",
-      "anchors": [
-        { "pdf_page": 1, "printed_page": "1", "section_id": "sec_1", "block_id": "p1_b05", "bbox": [50.0, 210.0, 280.0, 250.0], "quote_snippet": "We investigate CO2 reduction reaction (CO2RR) selectivity at 573 K." }
-      ]
-    },
-    "operating_conditions_and_preconditions": {
-      "summary": "573 K, 3.0 MPa, GHSV = 6000 mL g-1 h-1; restricted to dry feed gas.",
-      "verification_tier": "needs_human_review",
-      "anchors": [
-        { "pdf_page": 1, "printed_page": "1", "section_id": "sec_2", "block_id": "p1_b09", "bbox": [315.0, 195.0, 545.0, 240.0], "quote_snippet": "Tested at 573 K and 3.0 MPa under dry feed gas." }
-      ]
-    },
-    "limitations_and_threats_to_validity": {
-      "summary": "Results are restricted to dry feed gas without water co-feeding.",
-      "verification_tier": "needs_human_review",
-      "anchors": [
-        { "pdf_page": 2, "printed_page": "2", "section_id": "sec_4", "block_id": "p2_b04", "bbox": [50.0, 220.0, 280.0, 260.0], "quote_snippet": "This conclusion is restricted to dry feed gas without water co-feeding." }
-      ]
-    },
-    "unreported_or_missing_items": []
-  },
-  "section_notes": [
-    {
-      "section_id": "sec_1",
-      "level": 1,
-      "number": "1",
-      "title": "Introduction",
-      "discourse_role": "background_problem",
-      "pages": [1, 1],
-      "cue_evidence": [
-        { "cue_type": "objective_problem", "text": "We investigate CO2 reduction reaction (CO2RR) selectivity.", "pdf_page": 1, "block_id": "p1_b05", "bbox": [50.0, 210.0, 280.0, 250.0] }
-      ]
-    }
-  ],
-  "knowledge_entries": [
-    {
-      "entry_id": "ke_1",
-      "entry_type": "variable_condition",
-      "canonical_term": "573 K / 3.0 MPa",
-      "statement": "Catalytic testing performed at 573 K and 3.0 MPa (GHSV = 6000 mL g-1 h-1).",
-      "anchors": [
-        { "pdf_page": 1, "section_id": "sec_2", "block_id": "p1_b09", "bbox": [315.0, 195.0, 545.0, 240.0] }
-      ],
-      "verification_tier": "machine_verified"
-    }
-  ],
-  "terminology_glossary": [
-    {
-      "acronym": "CO2RR",
-      "full_name": "CO2 reduction reaction",
-      "definition_anchor": { "pdf_page": 1, "section_id": "sec_1", "block_id": "p1_b05", "bbox": [50.0, 210.0, 280.0, 250.0] },
-      "occurrence_count": 3
-    }
-  ],
-  "conflicts": [],
-  "sources": [
-    { "element_id": "p1_b05", "kind": "body", "pdf_page": 1, "printed_page": "1", "bbox": [50.0, 210.0, 280.0, 250.0], "section_id": "sec_1" }
-  ],
-  "verification_ledger": {
-    "machine_verified_count": 3,
-    "needs_human_review_count": 4,
-    "anchor_verification_rate": 1.0
-  },
-  "uncertainties": []
+  "answer": {
+    "comparison": "在观察期内，传感器 A 漂移 0.4 nm，传感器 B 漂移 0.7 nm。",
+    "scope": "实验仅覆盖干燥舱；潮湿条件下的表现尚未得到验证。"
+  }
 }

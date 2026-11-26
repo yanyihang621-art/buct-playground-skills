@@ -15,10 +15,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from parse_pdf import run_parse_pipeline
 from pdf_utils import write_json_atomic
+from structured_sources import adapt_article, json_documents, material_path, read_structured
 
 IGNORE_INPUT_NAMES = {"case.json", "task.md", "resources.yaml", "readme.md", "challenge.json", "config.json"}
+SUPPORTED = {".pdf", ".md", ".txt", ".json", ".xml", ".jats"}
 MD_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$")
 NUM_HEADING_RE = re.compile(r"^(\d+(?:\.\d+){0,2})\.?\s+([A-Z\u4e00-\u9fff].{1,90})$")
 MD_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
@@ -51,7 +52,7 @@ def _parse_markdown_table(lines: Sequence[str], start_line: int, table_idx: int)
         html_parts.append("<tr>" + "".join(f"<td>{html_lib.escape(c)}</td>" for c in r) + "</tr>")
     html_parts.append("</tbody></table>")
 
-    end_line = start_line + len(lines)
+    end_line = start_line + len(lines) - 1
     return {
         "table_id": f"tab_{table_idx}",
         "label": f"Table {table_idx}",
@@ -328,7 +329,7 @@ def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
             else:
                 sections.append(node)
             sec_stack.append(node)
-            in_refs = False
+            in_refs = bool(re.search(r"references|bibliography|参考文献", sec_title, re.IGNORECASE))
             blocks.append(
                 {
                     "block_id": bid,
@@ -360,7 +361,9 @@ def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
         i += 1
         while i < len(lines):
             nxt = lines[i].strip()
-            if not nxt or MD_HEADING_RE.match(nxt) or nxt.startswith("|") or nxt.startswith("$$"):
+            if not nxt or MD_HEADING_RE.match(nxt) or nxt.startswith("|") or nxt.startswith("$$") or (
+                NUM_HEADING_RE.match(nxt) and len(nxt) <= 90 and not nxt.endswith(".")
+            ):
                 break
             p_lines.append(nxt)
             i += 1
@@ -469,7 +472,8 @@ def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
     }
 
 
-def _discover_inputs(input_path: Path, explicit_files: Optional[Sequence[str]] = None) -> List[Path]:
+def _discover_inputs(input_path: Path, explicit_files: Optional[Sequence[str]] = None,
+                     skip_dir: Optional[Path] = None) -> List[Path]:
     if explicit_files:
         resolved: List[Path] = []
         base_dir = input_path if input_path.is_dir() else input_path.parent
@@ -477,7 +481,7 @@ def _discover_inputs(input_path: Path, explicit_files: Optional[Sequence[str]] =
             p = Path(item)
             if not p.is_absolute():
                 p = base_dir / p
-            if p.exists():
+            if p.is_file() and p not in resolved:
                 resolved.append(p)
         return resolved
 
@@ -485,15 +489,10 @@ def _discover_inputs(input_path: Path, explicit_files: Optional[Sequence[str]] =
         return [input_path]
 
     if input_path.is_dir():
-        pdfs = sorted(input_path.glob("*.pdf"))
-        if pdfs:
-            return pdfs
-        others = [
-            p
-            for p in sorted(list(input_path.glob("*.md")) + list(input_path.glob("*.txt")))
-            if p.name.lower() not in IGNORE_INPUT_NAMES
-        ]
-        return others
+        files = (p for p in input_path.rglob("*") if p.suffix.lower() in SUPPORTED
+                 and p.is_file() and p.name.lower() not in IGNORE_INPUT_NAMES
+                 and (skip_dir is None or skip_dir not in p.resolve().parents))
+        return sorted(files, key=lambda p: (p.suffix.lower() != ".pdf", p.as_posix()))
     return []
 
 
@@ -510,41 +509,35 @@ def ingest_input(
     out_p = Path(out_dir)
     out_p.mkdir(parents=True, exist_ok=True)
 
-    explicit_files: Optional[List[str]] = None
+    explicit_files: List[str] = []
+    case_data = {}
     if case_path and Path(case_path).exists():
-        try:
-            case_data = json.loads(Path(case_path).read_text(encoding="utf-8"))
-            if isinstance(case_data.get("input_files"), list) and case_data["input_files"]:
-                explicit_files = [str(x) for x in case_data["input_files"]]
-            elif case_data.get("pdf_path"):
-                explicit_files = [str(case_data["pdf_path"])]
-        except Exception:
-            explicit_files = None
+        case_data = json.loads(Path(case_path).read_text(encoding="utf-8-sig"))
+        for key in ("input_files", "material_files", "source_files", "pdf_path"):
+            entries = case_data.get(key) or []
+            for entry in entries if isinstance(entries, list) else [entries]:
+                name = entry if isinstance(entry, str) else material_path(entry)
+                if name and name not in explicit_files:
+                    explicit_files.append(name)
 
-    files = _discover_inputs(in_p, explicit_files)
+    skip_output = out_p.resolve() if in_p.resolve() in out_p.resolve().parents else None
+    files = _discover_inputs(in_p, explicit_files, skip_output)
     manifest: List[Dict[str, Any]] = []
+    issues = []
+    root = in_p if in_p.is_dir() else in_p.parent
+    for name in explicit_files:
+        if not (root / name).is_file():
+            issues.append({"code": "declared_material_missing", "message": name})
 
-    for idx, fpath in enumerate(files, start=1):
-        paper_id = f"paper_{idx}"
+    def add(fpath, doc):
+        paper_id = f"paper_{len(manifest) + 1}"
         p_out = out_p / "papers" / paper_id
-        p_out.mkdir(parents=True, exist_ok=True)
-
-        if fpath.suffix.lower() == ".pdf":
-            doc = run_parse_pipeline(
-                fpath,
-                p_out,
-                ocr_mode=ocr_mode,
-                save_crops=save_crops,
-                max_pages=max_pages,
-            )
-        else:
-            doc = parse_markdown_or_text(fpath)
-            write_json_atomic(p_out / "document.json", doc)
-
+        write_json_atomic(p_out / "document.json", doc)
         manifest.append(
             {
                 "paper_id": paper_id,
                 "source_file": str(fpath),
+                "source_record": doc.get("source_record"),
                 "title": doc.get("metadata", {}).get("title") or fpath.stem,
                 "status": doc.get("status", "partial"),
                 "page_count": doc.get("diagnostics", {}).get("page_count", 0),
@@ -552,7 +545,54 @@ def ingest_input(
             }
         )
 
-    out_manifest = {"paper_count": len(manifest), "papers": manifest}
+    visited = set()
+    def ingest_file(fpath):
+        if fpath.resolve() in visited:
+            return
+        visited.add(fpath.resolve())
+        ext = fpath.suffix.lower()
+        if ext == ".pdf":
+            from parse_pdf import run_parse_pipeline
+            dest = out_p / "papers" / f"paper_{len(manifest) + 1}"
+            add(fpath, run_parse_pipeline(fpath, dest, ocr_mode=ocr_mode, save_crops=save_crops, max_pages=max_pages))
+        elif ext in {".md", ".txt"}:
+            add(fpath, parse_markdown_or_text(fpath))
+        elif ext in {".json", ".jats", ".xml"}:
+            if ext == ".json":
+                data = json.loads(fpath.read_text(encoding="utf-8-sig"))
+                if isinstance(data, dict):
+                    for key in ("papers", "documents", "materials", "sources", "files", "input_files"):
+                        entries = data.get(key, [])
+                        for entry in entries if isinstance(entries, list) else []:
+                            name = entry if isinstance(entry, str) and len(entry) < 260 and "\n" not in entry else material_path(entry)
+                            if not name or Path(name).suffix.lower() not in SUPPORTED:
+                                continue
+                            linked = (fpath.parent / name).resolve()
+                            if not linked.is_relative_to(root.resolve()):
+                                continue
+                            if linked.is_file():
+                                ingest_file(linked)
+                            else:
+                                issues.append({"code": "linked_material_missing", "message": str(linked)})
+                articles = json_documents(fpath, data)
+            else:
+                articles = read_structured(fpath)
+            for article in articles:
+                if article["blocks"] or article["tables"]:
+                    add(fpath, adapt_article(article))
+        else:
+            issues.append({"code": "unsupported_material_format", "message": str(fpath)})
+    for fpath in files:
+        try:
+            ingest_file(fpath)
+        except (OSError, ValueError, SyntaxError, ImportError, RuntimeError) as exc:
+            issues.append({"code": "material_read_error", "message": f"{fpath}: {exc}"})
+    if case_path and case_data:
+        for article in json_documents(Path(case_path), case_data, inline=True):
+            add(Path(case_path), adapt_article(article))
+    if not manifest:
+        issues.append({"code": "no_readable_papers", "message": "Inspect the case and original materials for missing or unsupported content."})
+    out_manifest = {"paper_count": len(manifest), "papers": manifest, "uncertainties": issues}
     write_json_atomic(out_p / "ingest_manifest.json", out_manifest)
     return out_manifest
 

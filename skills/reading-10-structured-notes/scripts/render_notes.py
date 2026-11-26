@@ -7,7 +7,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -21,10 +21,18 @@ def _fmt_anchors(anchors: List[Dict[str, Any]], limit: int = 3) -> str:
         return "—"
     parts = []
     for a in anchors[:limit]:
-        eid = a.get("block_id") or a.get("table_id") or a.get("eq_id") or "loc"
+        eid = a.get("block_id") or a.get("table_id") or a.get("eq_id") or a.get("figure_id") or "loc"
         sec = a.get("section_id") or "-"
-        parts.append(f"`[p.{a.get('pdf_page')} | {sec} | {eid} | bbox:{a.get('bbox')}]`")
-    return "; ".join(parts)
+        if a.get("native_locator"):
+            loc = a["native_locator"]
+            address = loc.get("json_pointer") or loc.get("xml_xpath") or eid
+            parts.append(f"`[{sec} | {address}]`")
+        elif a.get("source_lines"):
+            start, end = a["source_lines"]
+            parts.append(f"`[lines {start}–{end} | {sec} | {eid}]`")
+        else:
+            parts.append(f"`[p.{a.get('pdf_page')} | {sec} | {eid} | bbox:{a.get('bbox')}]`")
+    return "; ".join(parts).replace("|", "\\|")
 
 
 def render_single_paper_markdown(paper_notes: Dict[str, Any]) -> str:
@@ -83,20 +91,19 @@ def render_single_paper_markdown(paper_notes: Dict[str, Any]) -> str:
     for sn in paper_notes.get("section_notes", []):
         indent = "#" * min(5, 2 + int(sn.get("level", 1)))
         sec_label = f"{sn['number']} {sn['title']}".strip() if sn.get("number") else sn["title"]
-        lines.append(f"{indent} {sec_label} (`{sn['section_id']}` · `{sn['discourse_role']}` · pp.{sn['pages'][0]}–{sn['pages'][1]})")
+        pages = f" · pp.{sn['pages'][0]}–{sn['pages'][1]}" if Path(paper_notes["source_file"]).suffix.lower() == ".pdf" else ""
+        lines.append(f"{indent} {sec_label} (`{sn['section_id']}` · `{sn['discourse_role']}`{pages})")
         if sn.get("transition_cues"):
             lines.append(f"- *Transition cues:* {', '.join(sn['transition_cues'])}")
         xr = sn.get("cross_references", {})
         xr_parts = [f"{k}: {v}" for k, v in xr.items() if v]
         if xr_parts:
             lines.append(f"- *Cross-references:* {'; '.join(xr_parts)}")
-        if sn.get("cue_evidence"):
-            for ce in sn["cue_evidence"]:
-                tags_str = ", ".join(ce.get("cue_types", []))
-                lines.append(
-                    f"- **[{tags_str}]** {ce['text']}  \n"
-                    f"  <sub>`[p.{ce['pdf_page']} | {sn['section_id']} | {ce['block_id']} | bbox:{ce['bbox']}]`</sub>"
-                )
+        if sn.get("summary"):
+            lines.append(f"{sn['summary']}  \n{_fmt_anchors(sn['summary_anchors'])}")
+        if sn.get("key_points"):
+            for point in sn["key_points"]:
+                lines.append(f"- **{point['role']}** {point['text']} — {_fmt_anchors([point['anchor']])}")
         elif sn.get("lead_excerpt"):
             lines.append(f"- *Excerpt:* {sn['lead_excerpt']} ({_fmt_anchors(sn.get('anchors', []), limit=1)})")
         lines.append("")
@@ -164,7 +171,7 @@ def build_comparison_matrix(papers_notes: List[Dict[str, Any]]) -> Tuple[List[Di
         rows.append(row)
 
         def _cell(s: Any) -> str:
-            return str(s)[:140].replace("|", "\\|").replace("\n", " ")
+            return str(s).replace("|", "\\|").replace("\n", " ")
 
         md_lines.append(
             f"| `{row['paper_id']}` | {_cell(row['title'])} | `{row['status']}` | "
@@ -174,19 +181,36 @@ def build_comparison_matrix(papers_notes: List[Dict[str, Any]]) -> Tuple[List[Di
     return rows, "\n".join(md_lines) + "\n"
 
 
+def annotate_text_locations(value: Any) -> None:
+    """The Markdown/TXT parser stores 1-based source lines in the y coordinates."""
+    if isinstance(value, list):
+        for child in value:
+            annotate_text_locations(child)
+    elif isinstance(value, dict):
+        if value.get("bbox") and "pdf_page" in value:
+            value["source_lines"] = [int(value["bbox"][1]), int(value["bbox"][3])]
+            value["pdf_page"] = None
+            value["printed_page"] = None
+        for child in value.values():
+            annotate_text_locations(child)
+
+
 def render_notes_bundle(
     docs_and_notes: List[Dict[str, Any]],
     out_dir: Path,
+    input_issues=(),
 ) -> Dict[str, Any]:
     """Assemble full structured_notes.json, structured_notes.md, comparison_matrix, and notes_index.json."""
     out_dir.mkdir(parents=True, exist_ok=True)
     combined_search: Dict[str, Any] = {}
-    all_uncertainties: List[Dict[str, Any]] = []
+    all_uncertainties: List[Dict[str, Any]] = list(input_issues)
     md_sections: List[str] = []
 
     mv_total = 0
     hr_total = 0
     for pn in docs_and_notes:
+        if Path(pn.get("source_file") or "").suffix.lower() in {".md", ".txt"}:
+            annotate_text_locations(pn)
         vl = pn.get("verification_ledger", {})
         mv_total += int(vl.get("machine_verified_count", 0))
         hr_total += int(vl.get("needs_human_review_count", 0))
@@ -239,24 +263,120 @@ def render_notes_bundle(
     return bundle
 
 
+def apply_section_reviews(skeleton: Dict[str, Any], doc: Dict[str, Any], reviews: Dict[str, Any]) -> None:
+    """Attach the author's interpretations to exact quotations in each source section."""
+    from audit_notes import _claim_problem
+
+    sections = {s["section_id"]: s for s in skeleton["section_notes"]}
+    for sid, reviewed in reviews.items():
+        if sid not in sections:
+            raise ValueError(f"Unknown section {skeleton['paper_id']}/{sid}")
+        anchors = resolve_evidence(skeleton["paper_id"], doc, reviewed.get("evidence", []))
+        for a in anchors:
+            if a.get("block_id") not in sections[sid]["block_ids"] and a.get("section_id") != sid:
+                raise ValueError(f"{sid}: evidence is outside this section")
+        summary = reviewed.get("summary", "").strip()
+        issue = _claim_problem(summary, [a["quote_snippet"] for a in anchors])
+        if issue:
+            raise ValueError(f"{sid}: {issue}")
+        sections[sid].update(summary=summary, summary_anchors=anchors, verification_tier="needs_human_review")
+
+
+def source_elements(doc):
+    """Yield comparable body, figure, equation and table evidence with its original address."""
+    for block in doc.get("blocks", []):
+        yield ("block_id", block["block_id"], block.get("structured_text") or block.get("text") or "",
+               block.get("section_id"), block.get("page"), block.get("bbox"), block.get("native_locator"))
+    for table in doc.get("tables", []):
+        content = "\n".join(filter(None, (table.get("caption"), table.get("markdown"))))
+        yield ("table_id", table["table_id"], content, table.get("section_id"), next(iter(table.get("pages", [])), None),
+               table.get("bbox"), None)
+    for figure in doc.get("figures", []):
+        yield ("figure_id", figure["figure_id"], figure.get("caption") or "", figure.get("section_id"),
+               figure.get("page"), figure.get("caption_bbox"), None)
+    for eq in doc.get("formulas", {}).get("display_equations", []):
+        yield ("eq_id", eq["eq_id"], eq.get("structured_text") or "", eq.get("section_id"),
+               eq.get("page"), eq.get("bbox"), None)
+
+
+def resolve_evidence(pid, doc, citations):
+    from audit_notes import _quote_matches
+    elements = {e[1]: e for e in source_elements(doc)}
+    anchors = []
+    for citation in citations:
+        eid = next((citation[k] for k in ("element_id", "block_id", "table_id", "figure_id", "eq_id") if citation.get(k)), None)
+        quote = citation.get("quote_snippet", "")
+        if citation.get("paper_id", pid) != pid or eid not in elements or not _quote_matches(quote, elements[eid][2]):
+            raise ValueError(f"{pid}/{eid}: quote differs or element is missing from the named source")
+        kind, _, _, section, page, bbox, native = elements[eid]
+        anchor = {"paper_id": pid, "source_file": doc["source_file"], kind: eid, "section_id": section,
+                  "pdf_page": page, "bbox": bbox, "quote_snippet": quote}
+        if native:
+            anchor["native_locator"] = native
+        if Path(doc["source_file"]).suffix.lower() in {".md", ".txt"}:
+            annotate_text_locations(anchor)
+        anchors.append(anchor)
+    return anchors
+
+
+def apply_card_reviews(skeleton, doc, slots):
+    from audit_notes import _claim_problem
+    card = skeleton["paper_card"]
+    for name, item in slots.items():
+        if not isinstance(card.get(name), dict) or "anchors" not in card[name]:
+            raise ValueError(f"Unknown Paper Card text field {name}")
+        anchors = resolve_evidence(skeleton["paper_id"], doc, item.get("evidence", []))
+        summary = item.get("summary", "").strip()
+        status = item.get("status", "reviewed")
+        if status == "not_reported" and not anchors:
+            searched = item.get("searched_sections", [])
+            ids = {s["section_id"] for s in skeleton["section_notes"]}
+            if not summary or not searched or not set(searched).issubset(ids):
+                raise ValueError(f"{name}: list the sections checked for an unreported field")
+        else:
+            issue = _claim_problem(summary, [a["quote_snippet"] for a in anchors])
+            if issue:
+                raise ValueError(f"{name}: {issue}")
+        card[name] = {"summary": summary, "items": [a["quote_snippet"] for a in anchors], "anchors": anchors,
+                      "status": status, "verification_tier": "needs_human_review",
+                      "searched_sections": item.get("searched_sections", [])}
+    card["unreported_or_missing_items"] = [name for name, slot in card.items()
+                                           if isinstance(slot, dict) and slot.get("status") == "not_reported"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Render structured notes bundle from parsed docs.")
     parser.add_argument("--manifest", required=True, help="ingest_manifest.json path.")
     parser.add_argument("--out", required=True, help="Output directory for notes bundle.")
+    parser.add_argument("--review-json", help="Agent-authored section summaries and quoted evidence, keyed by paper and section ID.")
     args = parser.parse_args()
 
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    reviews = json.loads(Path(args.review_json).read_text(encoding="utf-8")) if args.review_json else {}
+    bundle = render_manifest(manifest, Path(args.out), reviews)
+    print(json.dumps({"status": bundle["status"], "paper_count": bundle["paper_count"]}, ensure_ascii=False))
+    return 0
+
+
+def render_manifest(manifest, destination, reviews, cards=None):
     from extract_knowledge_entries import extract_knowledge_entries
     from extract_note_skeleton import build_note_skeleton
-
-    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    cards = cards or {}
+    if (set(reviews) | set(cards)) - {p["paper_id"] for p in manifest["papers"]}:
+        raise ValueError("A section review names a paper outside the ingest manifest")
     papers_notes: List[Dict[str, Any]] = []
     for item in manifest.get("papers", []):
         doc = json.loads(Path(item["document_json"]).read_text(encoding="utf-8"))
         pid = item["paper_id"]
         skel = build_note_skeleton(doc, paper_id=pid)
+        apply_section_reviews(skel, doc, reviews.get(pid, {}))
+        if pid in cards:
+            apply_card_reviews(skel, doc, cards[pid])
         ke_res = extract_knowledge_entries(doc, skel)
-        mv_cnt = sum(1 for e in ke_res["knowledge_entries"] if e["verification_tier"] == "machine_verified") + 4
-        hr_cnt = sum(1 for e in ke_res["knowledge_entries"] if e["verification_tier"] == "needs_human_review") + 5 + len(ke_res["conflicts"])
+        assessed = [*ke_res["knowledge_entries"], *ke_res["conflicts"],
+                    *(s for s in skel["paper_card"].values() if isinstance(s, dict))]
+        mv_cnt = sum(e.get("verification_tier") == "machine_verified" for e in assessed)
+        hr_cnt = sum(e.get("verification_tier") == "needs_human_review" for e in assessed)
         papers_notes.append(
             {
                 **skel,
@@ -271,9 +391,20 @@ def main() -> int:
             }
         )
 
-    bundle = render_notes_bundle(papers_notes, Path(args.out))
-    print(json.dumps({"status": bundle["status"], "paper_count": bundle["paper_count"]}, ensure_ascii=False))
-    return 0
+        native = {b["block_id"]: b["native_locator"] for b in doc["blocks"] if b.get("native_locator")}
+        if native:
+            def label_locations(obj):
+                if isinstance(obj, dict):
+                    if obj.get("block_id") in native:
+                        obj.setdefault("native_locator", native[obj["block_id"]])
+                    for key, value in obj.items():
+                        if key != "native_locator":
+                            label_locations(value)
+                elif isinstance(obj, list):
+                    for value in obj:
+                        label_locations(value)
+            label_locations(papers_notes[-1])
+    return render_notes_bundle(papers_notes, destination, manifest.get("uncertainties", []))
 
 
 if __name__ == "__main__":

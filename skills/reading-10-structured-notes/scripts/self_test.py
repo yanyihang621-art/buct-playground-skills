@@ -17,11 +17,9 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from audit_notes import audit_notes
 from build_note_result import build_note_result
-from extract_knowledge_entries import extract_knowledge_entries
-from extract_note_skeleton import build_note_skeleton
 from ingest_source import ingest_input
 from pdf_utils import write_json_atomic, write_text_lf
-from render_notes import render_notes_bundle
+from render_notes import apply_section_reviews, render_notes_bundle, render_manifest
 
 try:
     import fitz  # type: ignore
@@ -194,7 +192,6 @@ def _run_pipeline_for_dir(in_dir: Path, work_dir: Path, case_data: Dict[str, Any
 
     docs: List[Dict[str, Any]] = []
     docs_by_id: Dict[str, Dict[str, Any]] = {}
-    papers_notes: List[Dict[str, Any]] = []
 
     for item in manifest["papers"]:
         doc = json.loads(Path(item["document_json"]).read_text(encoding="utf-8"))
@@ -202,26 +199,8 @@ def _run_pipeline_for_dir(in_dir: Path, work_dir: Path, case_data: Dict[str, Any
         docs.append(doc)
         docs_by_id[pid] = doc
 
-        skel = build_note_skeleton(doc, paper_id=pid)
-        ke_res = extract_knowledge_entries(doc, skel)
-        mv_cnt = sum(1 for e in ke_res["knowledge_entries"] if e["verification_tier"] == "machine_verified") + 4
-        hr_cnt = sum(1 for e in ke_res["knowledge_entries"] if e["verification_tier"] == "needs_human_review") + 5 + len(ke_res["conflicts"])
-        papers_notes.append(
-            {
-                **skel,
-                "knowledge_entries": ke_res["knowledge_entries"],
-                "terminology_glossary": ke_res["terminology_glossary"],
-                "conflicts": ke_res["conflicts"],
-                "search_index": ke_res["search_index"],
-                "verification_ledger": {
-                    "machine_verified_count": mv_cnt,
-                    "needs_human_review_count": hr_cnt,
-                },
-            }
-        )
-
     notes_dir = work_dir / "notes"
-    bundle = render_notes_bundle(papers_notes, notes_dir)
+    bundle = render_manifest(manifest, notes_dir, {})
     md_txt = (notes_dir / "structured_notes.md").read_text(encoding="utf-8")
     comp_md = (notes_dir / "comparison_matrix.md").read_text(encoding="utf-8")
     result = build_note_result(case_data, bundle, docs=docs, markdown_text=md_txt, comparison_md=comp_md)
@@ -348,6 +327,59 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
         "pass": True,
         "encrypted_status": s4a_run["result"]["status"],
         "scanned_status": s4b_run["result"]["status"],
+    }
+
+    # S5: nested mixed inputs without an explicit list; the claim sits beyond the lead excerpt.
+    s5_in = out_dir / "s5_in"
+    papers_dir = s5_in / "materials"
+    papers_dir.mkdir(parents=True, exist_ok=True)
+    _build_s1_catalysis_paper(papers_dir / "paper.pdf")
+    boundary = "Under humid conditions, treatment A did not improve accuracy by 4% compared with treatment B."
+    source = "# Sensor replication\n\n## Results\n\n" + (
+        "The measurement protocol describes preparation and sample handling. " * 10
+    ) + "\n\n" + boundary
+    write_text_lf(papers_dir / "replication.md", source)
+    write_text_lf(s5_in / "task.md", "Describe the supplied papers.")
+    s5_case = {"case_id": "selftest-s5", "output_contract": ["case_id", "paper_cards", "section_notes"]}
+    s5 = _run_pipeline_for_dir(s5_in, out_dir / "s5_work", s5_case)
+    assert s5["audit"]["pass"], s5["audit"]["errors"]
+    assert s5["manifest"]["paper_count"] == 2
+    note = s5["bundle"]["papers"][1]
+    section = next(sn for sn in note["section_notes"] if any(p["text"] == boundary for p in sn["key_points"]))
+    assert boundary not in section["lead_excerpt"]
+    point = next(p for p in section["key_points"] if p["text"] == boundary)
+    assert point["anchor"]["source_lines"] == [7, 7]
+    sid = section["section_id"]
+    review = {sid: {"summary": "潮湿条件下，相比 B，A 未能将准确率提高 4%。",
+                    "evidence": [{"block_id": point["anchor"]["block_id"], "quote_snippet": boundary}]}}
+    apply_section_reviews(note, s5["docs_by_id"]["paper_2"], review)
+    reviewed = render_notes_bundle(s5["bundle"]["papers"], out_dir / "s5_reviewed")
+    markdown = (out_dir / "s5_reviewed" / "structured_notes.md").read_text(encoding="utf-8")
+    assert review[sid]["summary"] in markdown and "lines 7–7" in markdown
+    assert audit_notes(s5_case, s5["result"], s5["docs_by_id"], reviewed)["pass"]
+    mutations = {
+        "negation": boundary.replace("did not improve", "did improve"),
+        "unit": boundary.replace("4%", "4 K"),
+        "number": boundary.replace("4%", "14%"),
+        "comparator": boundary.replace("treatment A", "treatment X").replace("treatment B", "treatment A").replace("treatment X", "treatment B"),
+    }
+    for label, changed in mutations.items():
+        bad_result = copy.deepcopy(s5["result"])
+        # Alter only the exported second paper's card, leaving its real source quote intact.
+        slot = bad_result["paper_cards"][1]["key_findings_and_metrics"]
+        slot["summary"] = changed
+        assert not audit_notes(s5_case, bad_result, s5["docs_by_id"], reviewed)["pass"], label
+    forged = copy.deepcopy(review)
+    forged[sid]["evidence"][0]["quote_snippet"] = mutations["negation"]
+    try:
+        apply_section_reviews(note, s5["docs_by_id"]["paper_2"], forged)
+    except ValueError as exc:
+        assert "quote differs" in str(exc)
+    else:
+        raise AssertionError("A quotation with the negation removed passed the review")
+    report["tests"]["s5_nested_materials_and_final_claims"] = {
+        "pass": True, "papers": 2, "late_finding_source_lines": [7, 7],
+        "corrupted_claims_rejected": list(mutations), "forged_quote_rejected": True,
     }
 
     if compare_baseline:

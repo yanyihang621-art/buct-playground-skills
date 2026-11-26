@@ -1,23 +1,15 @@
 {
-  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "_example_notice": "Synthetic tutorial created to illustrate the interface.",
   "case_id": "example-reading-10-synthetic",
-  "task_type": "literature_structured_notes",
-  "instruction": "Read the input scientific paper and produce section-aligned structured notes, a unified Paper Card (recording conditions and limitations), searchable knowledge entries, and verifiable page/block anchors.",
-  "input_files": [
-    "sample_catalysis_paper.pdf"
-  ],
+  "input_files": ["example_paper.md"],
+  "instruction": "Compare the two sensors and bound the claim in Chinese. Keep the reusable reading note as a separate artifact.",
   "output_contract": {
-    "required": [
-      "case_id",
-      "status",
-      "paper_card",
-      "section_notes",
-      "knowledge_entries",
-      "terminology_glossary",
-      "conflicts",
-      "sources",
-      "verification_ledger",
-      "uncertainties"
-    ]
+    "type": "object", "additionalProperties": false,
+    "required": ["case_id", "status", "answer"],
+    "properties": {
+      "case_id": {"type": "string"}, "status": {"type": "string"},
+      "answer": {"type": "object", "additionalProperties": false, "required": ["comparison", "scope"],
+                 "properties": {"comparison": {"type": "string"}, "scope": {"type": "string"}}}
+    }
   }
 }

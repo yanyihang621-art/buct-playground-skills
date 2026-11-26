@@ -1,0 +1,15 @@
+{
+  "case_id": "example-reading-10-synthetic",
+  "papers": {"paper_1": {"sections": {
+    "sec_1": {"summary": "作者在 25 °C 下预热 30 min 后比较两种光学传感器。", "evidence": [{"block_id":"p1_b03","quote_snippet":"We compared two optical sensors after a 30 min warm-up at 25 °C."}]},
+    "sec_2": {"summary": "在观察期内，传感器 A 的漂移小于 B。", "evidence":[{"block_id":"p1_b05","quote_snippet":"Sensor A drifted by 0.4 nm and sensor B by 0.7 nm during the observation window."}]},
+    "sec_3": {"summary": "实验只在干燥舱内进行，潮湿环境尚未测试。", "evidence":[{"block_id":"p1_b07","quote_snippet":"The comparison was restricted to the dry chamber. Humid conditions were not tested."}]}
+  }, "card": {
+    "key_findings_and_metrics": {"summary": "在观察期内，传感器 A 漂移 0.4 nm，传感器 B 漂移 0.7 nm。", "evidence":[{"block_id":"p1_b05","quote_snippet":"Sensor A drifted by 0.4 nm and sensor B by 0.7 nm during the observation window."}]}
+  }}},
+  "fields": {"answer": {"comparison": "在观察期内，传感器 A 漂移 0.4 nm，传感器 B 漂移 0.7 nm。", "scope": "实验仅覆盖干燥舱；潮湿条件下的表现尚未得到验证。"}},
+  "field_evidence": {
+    "/answer/comparison": [{"paper_id":"paper_1","element_id":"p1_b05","quote_snippet":"Sensor A drifted by 0.4 nm and sensor B by 0.7 nm during the observation window."}],
+    "/answer/scope": [{"paper_id":"paper_1","element_id":"p1_b07","quote_snippet":"The comparison was restricted to the dry chamber. Humid conditions were not tested."}]
+  }
+}

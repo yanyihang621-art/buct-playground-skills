@@ -1,141 +1,81 @@
 ---
 name: reading-10-structured-notes
-description: Section-aligned scientific literature summarization and structured note-taking with a unified 12-field Paper Card, preconditions/limitations preservation, acronym canonicalization, intra-paper numeric conflict detection, cross-paper comparison matrices, searchable inverted index, and deterministic anchor/quote grounding audit. Use under Harbor /input and /app/output contracts for single or multi-paper PDF/Markdown reading notes.
+description: Read scientific papers and their tables, write section-aligned notes, answer case-specific questions with verifiable quotations, and package searchable paper cards and comparison notes. Supports PDF, Markdown, text, JSON articles and JATS.
 ---
 
-# Literature Summary & Structured Notes (`reading-10-structured-notes`)
+# 文献总结与结构化笔记
 
-Deterministic Python pipeline for scientific literature reading notes focused on four guarantees:
-1. **对得上 (Section-Aligned Skeleton)**: Preserves the paper's actual hierarchical section tree, reading order, discourse roles, cross-references, and section-to-section transitions instead of forcing a generic abstract template.
-2. **留得住 (Conditions, Findings & Limitations)**: Captures unified 12-field Paper Cards explicitly recording research questions, data/materials, methods, operating conditions/preconditions, quantitative findings, limitations, and `not_reported` boundaries.
-3. **找得回 (Fine-Grained Anchors)**: Binds every section note, Paper Card slot, and knowledge entry to `[p.<pdf_page> | <section_id> | <block_id/table_id> | bbox:<bbox>]` with verbatim `quote_snippet` grounding.
-4. **用得上 (Searchable & Comparable)**: Outputs Obsidian-ready `structured_notes.md`, JSON `structured_notes.json`, `comparison_matrix.md/.json`, `notes_index.json`, and an independent deterministic `audit_notes.py` report.
+你是本次案例的科研读者。交付物是对本次问题的回答、可继续使用的论文笔记和支持它们的原文位置。按案例要求选择语言、字段、文件名和证据范围。下面两次运行之间，由你读原文、回答问题并写出解读。
 
----
+## 一、建立可复核的阅读材料
 
-## Path Discovery & Runtime Contract
-
-- Resolve `SKILL_DIR` dynamically: check `/skills/weekly-skill` first; if absent, use the directory containing this `SKILL.md` (or `/app/submission`). Never hardcode Windows drive letters or personal home directories.
-- Prefer `python3` (fallback `python`) with `PYTHONDONTWRITEBYTECODE=1`.
-- Standard Harbor paths:
-  - Case contract & instructions: `/input/case.json`, `/input/task.md`
-  - Workspace scratch outputs: `/app/work/notes/`
-  - Final deliverable: `/app/output/result.json`
-
----
-
-## Standard 6-Step Execution Workflow
-
-### Step 1: Inspect Task & Contract
-Read `/input/case.json` and `/input/task.md` to confirm `case_id`, input document paths (`.pdf`, `.md`, or `.txt`), and required `output_contract` keys.
-
-### Step 2: Ingest Input Document(s)
-Run `ingest_source.py` on `/input` (supports single or multiple PDF/Markdown/TXT files):
+先读 `/input/task.md`、`/input/case.json` 的完整要求和 `output_contract`。查看材料清单、补充文件、同一篇论文的多个版本和优先采用的原始来源。特别记下比较对象、评价指标、条件、要求回答的子问题以及限定的输出格式。
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/ingest_source.py" \
-  --input /input \
-  --case /input/case.json \
-  --out /app/work/ingested \
-  --ocr auto \
-  --crops
+export PYTHONDONTWRITEBYTECODE=1
+S=/skills/weekly-skill
+[ -f "$S/scripts/run_case.py" ] || S=/app/submission
+python3 "$S/scripts/run_case.py" prepare
 ```
 
-### Step 3: Build Section-Aligned Skeletons, Paper Cards & Knowledge Entries
-For each paper in `/app/work/ingested/ingest_manifest.json`, extract its section-aligned skeleton and knowledge entries, then render the combined notes bundle:
+普通本地使用可将 `S` 设为本目录。两个命令都支持 `--input DIR --case FILE --work DIR --out DIR`。默认读取 `/input`，在 `/app/work/reading` 工作，交付至 `/app/output`。prepare 递归读取可支持的材料，写出原始文档、逐篇便于检索的完整段落文本和表格，以及清楚标记的阶段性结果。重复解析前，请查看 `ingested/ingest_manifest.json` 并核对原始文件，显式指定而未找到的来源会列为不确定项。未支持的材料可由 Agent 直接打开，保留原始位置。
+
+## 二、精读和写作
+
+打开 `/app/work/reading/reader/paper_*.md`，用论文目录定位相关章节。每段前给出 paper_id、section_id、element_id 及物理页、源文件行或原生路径。表格、图注、公式在同一文件内也有独立条目。必要时打开 PDF 对照文字、图形、坐标轴和跨页列，尤其是显著数值、脚注和条件。JSON Pointer 或 XML 路径可以直接定位结构化原文。章节解析本身有疑问时用原文实际标题和页码澄清。案例的辅助清单、题目文字、示例和领域标签需与论文内容区分。
+
+逐项写出读者可以独立理解的答案。
+
+- 按原有章节、论证顺序和层级说明该节的问题、做法、发现及其与下一节的关系。方法与操作条件应分开记录。摘要不能代替正文实验。文献综述中引述的他人成果保留归属。
+- 数值比较读全表头、单位、分组和脚注。说明比较组与对照组、指标方向和可比较的实验预算。保留不利、无显著差异和作者的推测；跨模型、跨数据集或不同预算的结果单列。对提问涉及的每个数值绑定实际行或段落。
+- 修订论文卡片中的研究问题、数据与材料、方法、适用条件、主要发现及限制。初稿依靠规则选择候选证据，须将直接摘录与自己的解释分开。摘要、比较矩阵及卡片共享复核后的内容。
+- 每项结论给可重新找到的确切出处。对缺失、无法辨认和来源冲突分别说明。多篇来源不得混用局部 ID，报告它们相同与不同的实验条件。
+- 按案例契约把问题的实质答案写进 `fields`。特别留意嵌套对象、数组、语言和额外字段限制。通用笔记和原文索引保存在 `notes/`，契约中的答案字段需能独立使用。如果要求自定义成品路径，在 `/app/output` 写出对应文件并检查内容。
+
+将复核结果存入 `/app/work/reading/review.json`。以实际文件 ID 替换以下接口示意。仅填写此次任务的字段。
+
+```json
+{
+  "case_id": "example",
+  "papers": {
+    "paper_1": {
+      "sections": {
+        "sec_1": {
+          "summary": "Interpret the section in the case language.",
+          "evidence": [{"block_id": "p1_b02", "quote_snippet": "Copy a supporting clause verbatim."}]
+        }
+      },
+      "card": {
+        "key_findings_and_metrics": {
+          "summary": "Write the result with its comparator and conditions.",
+          "evidence": [{"table_id": "tab_1", "quote_snippet": "Copy the relevant row."}]
+        }
+      }
+    }
+  },
+  "fields": {"answer": {"conclusion": "Write the answer to the actual question."}},
+  "field_evidence": {
+    "/answer/conclusion": [
+      {"paper_id": "paper_1", "element_id": "tab_1", "quote_snippet": "Copy the pertinent data row."}
+    ]
+  }
+}
+```
+
+`field_evidence` 的键是进入 `fields` 的 JSON Pointer，如 `/answer/groups/0/metric`。用同一条原文可以定位多个具体字段。同一比较可引用多个表头、行、脚注和段落。允许 `block_id`、`table_id`、`figure_id`、`eq_id` 或统一 `element_id`。没有额外题目字段时可以只交逐章和卡片复核。确实未报告的卡片字段可写 `{"status":"not_reported","summary":"说明所查范围及未报告的内容","searched_sections":["实际节 ID"]}`。字段缺证、资料损坏及 OCR 遗漏需在案例结果说明，当可用材料仍能回答部分问题时保留已完成部分。
+
+## 三、生成最终结果并验收
+
+每个自定义科学答案的具体值须由 `field_evidence` 中对应指针或上级指针绑定原文。题目要求但证据缺失时，按契约填写可表达缺失的值，同时在 `field_limits` 添加同一指针及 `{"reason":"实际缺失的证据或原因","checked":["检查过的文件、章节或表格"]}`。运行会保留已有答案，记录未完成字段和可接手位置。计算得到的新数值应注明算式、输入值及其出处，区分原文值与推导值。
+
+对差值、和、比值与百分变化，可在 `derivations` 以答案值的指针指定算式。如 `{"operation":"difference","operands":[2.4,1.9],"decimal_places":1,"unit":"nm"}`。两项输入都须出现在该指针绑定的原句中。操作选项为 `difference`、`sum`、`ratio`、`percent_change`，最后一种以第二个值为基准。若题意涉及更复杂的计算，单独交付可重跑的计算及输入来源，按契约注明推导。
+
+论文级解析状态与问题完成状态可分开记录。若原文中某些公式或图片无法识别，但所有被问到的事实均已由可读正文或表格逐项确认，可在 `fields.status` 填写契约要求的完成状态，在 `status_reason` 写明已覆盖的范围和不影响该结论的材料告警。仍影响答案的缺口应如实标为部分完成。
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/render_notes.py" \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --out /app/work/notes
+python3 "$S/scripts/run_case.py" finish
 ```
 
-(To inspect or process a single paper step-by-step, invoke `extract_note_skeleton.py` followed by `extract_knowledge_entries.py`.)
+`finish` 复用已解析材料，核对输入摘要、引文和来源，重新渲染复核后的笔记，并检查最终契约（含嵌套类型、必填字段与闭合对象）。错误细节在 `/app/work/reading/latest_audit.json`；修复复核稿再运行。程序完成后重新打开 `/app/output/result.json`、`notes/structured_notes.md`、`notes/comparison_matrix.md`、`notes/case_evidence.json` 以及题目明确要求的成品。检查每个子问题、所有对照组、真实数值与具体定位。审计可以核对引文、数字和部分语义矛盾，跨语种推断和科学解释由你逐项对照原文。预算不足时将有依据的进度和仍缺的证据作为部分结果交付。
 
-Generated artifacts under `/app/work/notes/`:
-- `structured_notes.json`: Full machine-readable notes, Paper Cards, terminology glossary, conflicts, and verification ledger.
-- `structured_notes.md`: Human/Obsidian-ready Markdown notes with YAML frontmatter and anchor tags.
-- `comparison_matrix.json` & `comparison_matrix.md`: Side-by-side Paper Card matrix across all ingested papers.
-- `notes_index.json`: Searchable inverted index over terms, acronyms, sections, and pages.
-
-### Step 4: Write Early Checkpoint & Review `needs_human_review` Boundaries
-Immediately generate an early contract-compliant `/app/output/result.json`:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/build_note_result.py" \
-  --case /input/case.json \
-  --notes /app/work/notes/structured_notes.json \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --markdown /app/work/notes/structured_notes.md \
-  --comparison-md /app/work/notes/comparison_matrix.md \
-  --out /app/output/result.json
-```
-
-Inspect `verification_ledger`, `conflicts`, `unreported_or_missing_items`, and `uncertainties` in `structured_notes.json`. Distinguish clearly between:
-- **`machine_verified`**: Bibliographic metadata, section structure, extracted tables/figures/equations, acronym counts, and verbatim numeric findings verified against source anchors.
-- **`needs_human_review`**: High-level research question synthesis, implicit preconditions/limitations, `not_reported` confirmation, and flagged intra-paper numeric discrepancies (`conflicts`).
-
-### Step 5: Refine Task-Specific Fields (Optional Override) & Finalize `result.json`
-If `/input/case.json` asks specific reading/summarization questions or custom `output_contract` fields, synthesize evidence-backed answers citing exact `[pdf_page, section_id, block_id, bbox, quote_snippet]` into `/app/work/override.json`, then rebuild `/app/output/result.json`:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/build_note_result.py" \
-  --case /input/case.json \
-  --notes /app/work/notes/structured_notes.json \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --markdown /app/work/notes/structured_notes.md \
-  --comparison-md /app/work/notes/comparison_matrix.md \
-  --override-json /app/work/override.json \
-  --out /app/output/result.json
-```
-
-### Step 6: Run Deterministic Anchor & Grounding Audit
-Always run `audit_notes.py` before finishing:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/audit_notes.py" \
-  --case /input/case.json \
-  --result /app/output/result.json \
-  --notes /app/work/notes/structured_notes.json \
-  --manifest /app/work/ingested/ingest_manifest.json \
-  --out /app/work/audit_report.json
-```
-
-Confirm `"pass": true`, `anchor_verification_rate == 1.0`, `section_coverage_ratio >= 0.90`, and zero placeholder tokens.
-
----
-
-## Exception Handling Matrix
-
-| Condition / Anomaly | Required Action & Honest Output |
-|---|---|
-| `encrypted_pdf` / `corrupt_pdf` | Keep `status: "refused"`; record `all_fields_unreadable_due_to_encryption_or_corruption`; NEVER fabricate notes. |
-| `scanned_no_text` | Check OCR output; if OCR binary unavailable, keep `status: "unverifiable"` (or `"partial"` if mixed) and cite rendered page PNGs. |
-| `garbled_font_cid` | Keep raw-layer warning in `uncertainties`, apply OCR fallback if available, and set `status: "partial"`. |
-| Double-column / Long paper | Multi-column XY-cut reading order runs automatically across all pages; use `section_notes` outline rather than dumping raw full text. |
-| Missing figures / equations | Record `table_count`/`figure_count`/`equation_count: 0` honestly; never invent equations or captions. |
-| Unreported Paper Card fields | Record `"status": "not_reported"` and list field names in `unreported_or_missing_items`. |
-
----
-
-## Self-Check Checklist
-
-- [ ] `/app/output/result.json` contains `case_id` and every required `output_contract` key.
-- [ ] `section_notes` follows the paper's actual section order (`section_order_monotonic: true`).
-- [ ] Every anchor cites valid `pdf_page`, `block_id`/`table_id`/`eq_id`, `bbox`, and grounded `quote_snippet`.
-- [ ] `operating_conditions_and_preconditions`, `limitations_and_threats_to_validity`, and `unreported_or_missing_items` are explicitly populated.
-- [ ] `audit_notes.py` exits 0 with `"pass": true`.
-
----
-
-## Minimal Illustrative Example (Example Only — Not Formal Test Data)
-
-See [`examples/example_case.json`](examples/example_case.json) and [`examples/example_result.json`](examples/example_result.json) (both explicitly marked as synthetic illustrative examples).
-
-```bash
-# Illustrative local invocation example:
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/ingest_source.py --input ./sample_dir --case examples/example_case.json --out ./work/ingested --ocr auto
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/render_notes.py --manifest ./work/ingested/ingest_manifest.json --out ./work/notes
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/build_note_result.py --case examples/example_case.json --notes ./work/notes/structured_notes.json --manifest ./work/ingested/ingest_manifest.json --markdown ./work/notes/structured_notes.md --out ./work/result.json
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/audit_notes.py --case examples/example_case.json --result ./work/result.json --notes ./work/notes/structured_notes.json --manifest ./work/ingested/ingest_manifest.json --out ./work/audit_report.json
-```
+字段定义及完整示例见 README 和 schemas。底层摄取、渲染、结果打包与审计仍可分别调用，可用 `python3 scripts/self_test.py --out-dir /tmp/reading10-tests` 验证。

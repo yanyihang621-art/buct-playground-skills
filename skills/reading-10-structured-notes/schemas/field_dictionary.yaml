@@ -40,7 +40,7 @@ paper_card_fields:
     verification_tier: "needs_human_review"
   key_findings_and_metrics:
     description: "Primary quantitative and qualitative results with verbatim numeric values and anchors."
-    verification_tier: "machine_verified"
+    verification_tier: "needs_human_review"
   tables_and_figures_digest:
     description: "Structured digest of extracted tables and figures with captions and page/bbox provenance."
     verification_tier: "machine_verified"

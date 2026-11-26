@@ -16,27 +16,35 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from pdf_utils import write_json_atomic
 
-SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+(?=[A-Z0-9\u4e00-\u9fff\(])")
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\u4e00-\u9fff\(])|(?<=[。！？])\s*")
 
 CUE_PATTERNS: Dict[str, re.Pattern[str]] = {
     "objective_problem": re.compile(
-        r"\b(we\s+(?:investigate|propose|present|study|aim|report|demonstrate|develop|design)|"
-        r"objective|aim\s+of|research\s+question|hypothesis|challenge|problem|address(?:es)?\s+the)\b|"
+        r"\b(we\s+(?:investigate|propose|introduce|present|study|aim|explore|ask|develop|design)|"
+        r"this (?:study|paper|work) (?:asks|aims|introduces|examines|investigates|addresses)|"
+        r"(?:objective|aim)\s+of|research\s+question|our\s+hypothesis|to\s+address\s+(?:this|the))\b|"
         r"(?:本文(?:提出|研究|旨在|探讨)|针对.{1,20}问题|研究目标)",
         re.IGNORECASE,
     ),
     "data_materials": re.compile(
-        r"\b(dataset|corpus|benchmark|samples?|specimens?|catalysts?|synthesized|prepared|purchased|"
+        r"\b(datasets?|corpora|corpus|benchmarks?|samples?|specimens?|catalysts?|synthesized|prepared|purchased|"
         r"collected\s+from|training\s+set|test\s+set|feed\s+gas)\b|"
         r"(?:数据集|语料|样品|催化剂|材料|制备|合成|采集)",
         re.IGNORECASE,
     ),
     "method_condition": re.compile(
-        r"(?:\b(?:trained|evaluated|measured|tested|operated|characterized|annealed|calcined|assuming|"
+        r"(?:\b(?:train(?:ed)?|evaluat(?:e|ed)|measur(?:e|ed)|test(?:ed)?|calculat(?:e|ed)|"
+        r"normaliz(?:e|ed)|fit(?:ted)?|estimat(?:e|es|ed)|use(?:d)?|operated|characterized|annealed|calcined|"
         r"under\s+the\s+condition|temperature|pressure|ghsv|flow\s+rate|learning\s+rate|batch\s+size|"
         r"protocol|pipeline|architecture)\b|\b\d+(?:\.\d+)?\s*(?:K|°C|MPa|bar|kPa|mL|h-1|wt%|mol%|epochs?|mg)\b|"
         r"(?:实验条件|操作条件|参数|温度|压力|空速|假设|前提))",
         re.IGNORECASE,
+    ),
+    "operating_condition": re.compile(
+        r"\b(?:under\b|only when|provided (?:that|the)|assuming|conditional on|restricted to|"
+        r"at (?:a |an )?(?:temperature|pressure|flow rate)|(?:batch size|learning rate|seed) (?:of |was |is )?\d)|"
+        r"\b\d+(?:\.\d+)?\s*(?:K\b|°C|MPa\b|bar\b|kPa\b|mL\b|epochs?\b|mg\b)|"
+        r"(?:在.{1,25}(?:条件下|温度下|压力下)|仅当|前提|假设|工况|批量大小|学习率)", re.I
     ),
     "quantitative_finding": re.compile(
         r"(?:\b(?:selectivity|yield|conversion|accuracy|f1|precision|recall|auc|r2|rmse|mae|"
@@ -45,13 +53,87 @@ CUE_PATTERNS: Dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "limitation_precondition": re.compile(
-        r"\b(limitation|caveat|restricted\s+to|only\s+valid|only\s+under|requires?\s+dry|without\s+\w+|"
+        r"\b(limitations?|caveats?|restricted\s+to|only\s+valid|only\s+under|requires?\s+dry|"
         r"fail(?:s|ed)?\s+when|drawback|threat\s+to\s+validity|future\s+work|not\s+reported|"
-        r"cannot\s+generalize|assume[sd]?\s+that|however,\s+our)\b|"
+        r"cannot\s+generalize|may not (?:hold|apply|generalize)|not (?:tested|evaluated|validated)|"
+        r"remain(?:s)? (?:unclear|unknown|to be (?:seen|tested))|does not (?:work|apply)|fails? to (?:converge|generalize)|"
+        r"differences? .{0,72}(?:may be|likely) due to|not (?:directly )?comparable|generalizability|limited (?:by|to))\b|"
         r"(?:局限|不足|限制|仅适用|前提条件|未报告|未来工作)",
         re.IGNORECASE,
     ),
+    "qualitative_finding": re.compile(
+        r"\b(?:we (?:found|observed|conclude)|results? (?:suggest|show|indicate)s?|"
+        r"(?:did not|failed to) (?:improve|increase|reduce|differ|detect)|"
+        r"(?:higher|lower|greater|smaller) than|no (?:significant )?difference)\b|"
+        r"(?:研究发现|结果表明|未能提高|无显著差异|显著低于|显著高于)", re.I
+    ),
 }
+
+SECTION_PRIORITIES = {
+    "background_problem": ("objective_problem", "limitation_precondition"),
+    "methods_materials": ("data_materials", "method_condition", "operating_condition"),
+    "results_analysis": ("quantitative_finding", "qualitative_finding", "limitation_precondition", "method_condition"),
+    "discussion_limitations": ("limitation_precondition", "qualitative_finding", "quantitative_finding"),
+    "conclusion": ("qualitative_finding", "quantitative_finding", "limitation_precondition"),
+}
+
+ROLE_PREFERENCE = {
+    "objective_problem": ("abstract", "background_problem", "conclusion"),
+    "data_materials": ("methods_materials", "results_analysis"),
+    "method_condition": ("methods_materials", "abstract"),
+    "operating_condition": ("methods_materials", "results_analysis", "discussion_limitations"),
+    "qualitative_finding": ("results_analysis", "conclusion", "abstract"),
+    "limitation_precondition": ("discussion_limitations", "conclusion", "results_analysis"),
+}
+AUTHOR_ACTION = re.compile(r"\b(?:we|this (?:study|paper|work))\s+(?:\w+\s+){0,2}(?:use|train|test|collect|evaluat|observ|found|investigat|propos|introduc|examin|report|measure|conclud|study|show)|(?:本研究|本文|我们)", re.I)
+AMOUNT = re.compile(r"\d\s*(?:%|±|°C|K\b|MPa\b|epochs?\b)|\d+\.\d+|\b\d+\s+(?:samples|participants|subjects|images|iterations)\b", re.I)
+AXIS_LABEL = re.compile(r"^(?:[+−-]?\d+(?:\.\d+)?\s+){2}[+−-]?\d+(?:\.\d+)?(?:\s|$)")
+PROCEDURE = re.compile(r"\b(?:we (?:first |then |also )?(?:train|test|use|run|measur|implement|apply|calculat|collect|set|sampl|initializ)|(?:proposed|our) (?:method|algorithm)|we (?:randomly |directly )?(?:split|draw)|were (?:trained|measured|collected|prepared))|(?:我们(?:首先|随后)?(?:采用|训练|测定)|本方法)", re.I)
+DATA_USE = re.compile(r"\b(?:on|using|from|with|collected|recruited|consist(?:s|ed)? of)\b.{0,65}\b(?:datasets?|corpus|cohort|participants|samples?|training set)\b|\b(?:datasets?|corpus|cohort) (?:contains?|comprises?|consists?|was)|(?:使用|采集|纳入).{0,25}(?:数据集|样本|语料)", re.I)
+EXPLICIT_SETTING = re.compile(r"\b(?:batch size|learning rate|seed|sequence length|pressure|temperature)\b.{0,20}\d|\d+(?:\.\d+)?\s*(?:K\b|°C|MPa\b|kPa\b|bar\b)|\b(?:only (?:when|under)|provided that|not directly comparable)\b|(?:仅当|仅在|仅适用|前提条件)", re.I)
+
+
+def _slot_score(kind, hit):
+    text = hit["text"]
+    roles = ROLE_PREFERENCE.get(kind, ())
+    role = hit.get("discourse_role")
+    score = (len(roles) - roles.index(role) + 1) if role in roles else 0
+    if AUTHOR_ACTION.search(text):
+        score += 4
+    if kind == "method_condition" and PROCEDURE.search(text):
+        score += 7
+    if kind == "data_materials" and DATA_USE.search(text):
+        score += 6
+    if kind == "operating_condition" and PROCEDURE.search(text):
+        score += 4
+    if kind == "operating_condition" and EXPLICIT_SETTING.search(text):
+        score += 8
+    if kind in ("data_materials", "operating_condition", "qualitative_finding") and AMOUNT.search(text):
+        score += 2
+    if role == "related_work" or re.match(r"^(?:Fig(?:ure)?\.?|Table|Eq\.?)\s*\d", text, re.I):
+        score -= 4
+    return score
+
+
+def _section_points(role: str, cues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Select different evidence roles across the whole section; retain original order and clauses."""
+    selected = {}
+    priorities = SECTION_PRIORITIES.get(role, ()) + tuple(CUE_PATTERNS)
+    for kind in dict.fromkeys(priorities):
+        candidates = [(idx, item) for idx, item in enumerate(cues) if kind in item["cue_types"]]
+        if not candidates:
+            continue
+        # Prefer a claim that includes its condition or measured value. Later evidence
+        # breaks ties so a concluding observation can survive a long lead-in.
+        idx, item = max(candidates, key=lambda pair: (
+            len(pair[1]["cue_types"]), bool(re.search(r"\d", pair[1]["text"])), pair[0]))
+        if idx not in selected and len(selected) < 4:
+            selected[idx] = {
+                "role": kind, "text": item["text"],
+                "anchor": {key: item[key] for key in (
+                    "pdf_page", "printed_page", "section_id", "block_id", "bbox", "quote_snippet")},
+            }
+    return [selected[idx] for idx in sorted(selected)]
 
 CROSS_REF_RE = {
     "tables": re.compile(r"\b(?:Table|Tab\.?)\s*([A-Za-z]?\d+(?:\.\d+)?)|表\s*(\d+)", re.IGNORECASE),
@@ -75,9 +157,9 @@ def _infer_discourse_role(title: str, level: int) -> str:
         return "background_problem"
     if any(k in low for k in ("related work", "literature review", "相关工作")):
         return "related_work"
-    if any(k in low for k in ("method", "methodology", "materials", "synthesis", "experimental", "setup", "方法", "材料", "实验")):
+    if any(k in low for k in ("method", "materials", "algorithm", "synthesis", "setup", "experimental design", "experimental procedure", "实验设置", "实验方法", "方法", "材料")):
         return "methods_materials"
-    if any(k in low for k in ("result", "evaluation", "experiment", "finding", "performance", "结果", "性能")):
+    if any(k in low for k in ("result", "evaluation", "experiment", "finding", "performance", "结果", "实验", "性能")):
         return "results_analysis"
     if any(k in low for k in ("discussion", "limitation", "threat", "讨论", "局限")):
         return "discussion_limitations"
@@ -190,7 +272,7 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
     all_cues: Dict[str, List[Dict[str, Any]]] = {k: [] for k in CUE_PATTERNS}
     section_notes: List[Dict[str, Any]] = []
 
-    def _scan_block_cues(blk: Dict[str, Any], sec_id: Optional[str]) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]], List[str]]:
+    def _scan_block_cues(blk: Dict[str, Any], sec_id: Optional[str], role: str) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]], List[str]]:
         txt = (blk.get("structured_text") or blk.get("text") or "").strip()
         if not txt:
             return [], {"tables": [], "figures": [], "equations": [], "sections": []}, []
@@ -198,19 +280,20 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
         matched_items: List[Dict[str, Any]] = []
         for sent in sents:
             s_clean = sent.strip()
-            if len(s_clean) < 12:
+            if len(s_clean) < 12 or AXIS_LABEL.match(s_clean):
                 continue
             cues_hit = [cname for cname, pat in CUE_PATTERNS.items() if pat.search(s_clean)]
             if cues_hit:
                 item = {
                     "cue_types": cues_hit,
                     "text": s_clean,
+                    "discourse_role": role,
                     "pdf_page": blk["page"],
                     "printed_page": blk.get("printed_page"),
                     "section_id": sec_id or blk.get("section_id"),
                     "block_id": blk["block_id"],
                     "bbox": blk["bbox"],
-                    "quote_snippet": s_clean[:240],
+                    "quote_snippet": s_clean,
                 }
                 matched_items.append(item)
                 for cn in cues_hit:
@@ -221,12 +304,16 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
         return matched_items, xrefs, transitions
 
     for b in front_blocks:
-        _scan_block_cues(b, b.get("section_id") or "frontmatter")
+        _scan_block_cues(b, b.get("section_id") or "frontmatter", b.get("role", "body"))
 
+    section_roles = {}
     for sec in flat_secs:
         sec_id = sec["section_id"]
         sec_blocks = [blk_by_id[bid] for bid in sec.get("block_ids", []) if bid in blk_by_id]
         role = _infer_discourse_role(sec["title"], sec["level"])
+        if role == "other":
+            role = section_roles.get(sec.get("parent_section_id"), role)
+        section_roles[sec_id] = role
 
         sec_cues: List[Dict[str, Any]] = []
         sec_xrefs: Dict[str, set] = {"tables": set(), "figures": set(), "equations": set(), "sections": set()}
@@ -240,14 +327,18 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
                 sec_xrefs["tables"].add(blk.get("table_id", ""))
                 continue
             body_texts.append((blk.get("structured_text") or blk.get("text") or "").strip())
-            c_items, xr, tr = _scan_block_cues(blk, sec_id)
+            if role == "references" or blk.get("role") == "reference":
+                continue
+            c_items, xr, tr = _scan_block_cues(blk, sec_id, role)
             sec_cues.extend(c_items)
             for k, vals in xr.items():
                 sec_xrefs[k].update(vals)
             sec_transitions.extend(tr)
 
-        # Anchor list for section
+        points = _section_points(role, sec_cues) if role != "references" else []
         sec_anchors = [_make_anchor(blk) for blk in sec_blocks if blk.get("role") != "heading"][:5]
+        if points:
+            sec_anchors = [point["anchor"] for point in points]
         if not sec_anchors and sec_blocks:
             sec_anchors = [_make_anchor(sec_blocks[0])]
 
@@ -266,6 +357,7 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
                 "pages": [sec["page_start"], sec["page_end"]],
                 "block_ids": sec.get("block_ids", []),
                 "lead_excerpt": lead_summary,
+                "key_points": points,
                 "cue_evidence": sec_cues,
                 "cross_references": {k: sorted(v - {""}) for k, v in sec_xrefs.items()},
                 "transition_cues": sorted(set(sec_transitions)),
@@ -283,7 +375,7 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
         seen = set()
         uniq_hits: List[Dict[str, Any]] = []
         for h in hits:
-            k = (h.get("block_id"), h.get("text", "")[:120])
+            k = (h.get("block_id"), h.get("text", ""))
             if k not in seen:
                 seen.add(k)
                 uniq_hits.append(h)
@@ -297,6 +389,13 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
                 "verification_tier": tier,
             }
 
+        uniq_hits.sort(key=lambda hit: _slot_score(cue_key, hit), reverse=True)
+        # Give the reader distinct observations before secondary clauses from the same paragraph.
+        first_by_block = {}
+        for hit in uniq_hits:
+            first_by_block.setdefault(hit["block_id"], hit)
+        selected = {id(hit) for hit in first_by_block.values()}
+        uniq_hits = list(first_by_block.values()) + [hit for hit in uniq_hits if id(hit) not in selected]
         anchors = [
             {
                 "pdf_page": h["pdf_page"],
@@ -306,7 +405,7 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
                 "bbox": h["bbox"],
                 "quote_snippet": h["quote_snippet"],
             }
-            for h in uniq_hits[:8]
+            for h in uniq_hits[:10]
         ]
         summary = " | ".join(h["text"] for h in uniq_hits[:4])
         return {
@@ -320,25 +419,25 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
     # Include Abstract block as fallback objective_problem cue if no explicit cue hit
     abs_fallback = []
     if not all_cues["objective_problem"] and meta.get("abstract"):
-        abs_blk = next((b for b in blocks if b.get("role") == "abstract"), None)
+        abs_blk = next((b for b in blocks if b.get("role") == "abstract" and len(b["text"]) > 20), None)
         if abs_blk:
             abs_fallback.append(
                 {
-                    "text": meta["abstract"],
+                    "text": abs_blk.get("structured_text") or abs_blk.get("text") or "",
                     "pdf_page": abs_blk["page"],
                     "printed_page": abs_blk.get("printed_page"),
                     "section_id": abs_blk.get("section_id"),
                     "block_id": abs_blk["block_id"],
                     "bbox": abs_blk["bbox"],
-                    "quote_snippet": meta["abstract"][:240],
+                    "quote_snippet": abs_blk.get("structured_text") or abs_blk.get("text") or "",
                 }
             )
 
     rq_slot = _build_slot("objective_problem", extra_items=abs_fallback, tier="needs_human_review")
     data_slot = _build_slot("data_materials", tier="needs_human_review")
     method_slot = _build_slot("method_condition", tier="needs_human_review")
-    cond_slot = _build_slot("method_condition", tier="needs_human_review")
-    finding_slot = _build_slot("quantitative_finding", tier="machine_verified")
+    cond_slot = _build_slot("operating_condition", tier="needs_human_review")
+    finding_slot = _build_slot("qualitative_finding", extra_items=all_cues["quantitative_finding"])
     limit_slot = _build_slot("limitation_precondition", tier="needs_human_review")
 
     tables_digest = [
@@ -429,8 +528,8 @@ def build_note_skeleton(doc: Dict[str, Any], paper_id: str = "paper_1") -> Dict[
         "reusability_tags": tags,
         "verification_summary": {
             "section_count": len(section_notes),
-            "machine_verified_fields": 4,
-            "needs_human_review_fields": 5,
+            "machine_verified_fields": 3,
+            "needs_human_review_fields": 6,
         },
     }
 
