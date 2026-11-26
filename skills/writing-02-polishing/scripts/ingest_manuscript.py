@@ -27,8 +27,16 @@ DRAFT_KEYS = {"manuscript", "manuscript_text", "draft", "draft_text", "source_te
               "原稿", "待润色文本", "正文", "原文", "段落", "manuscripts"}
 FILE_KEYS = {"manuscript_file", "manuscript_files", "draft_file", "draft_files", "manuscript_path"}
 CONTAINERS = {"input", "inputs", "data", "materials", "resources", "input_materials", "documents",
-              "payload", "content", "files", "document", "input_data", "source_materials"}
+              "payload", "content", "files", "document", "input_data", "source_materials", "attachments",
+              "assets", "source_documents", "artifacts"}
 GLOSSARY_KEYS = {"glossary", "custom_glossary", "terminology", "term_map", "termbase", "术语表"}
+GLOSSARY_ROLE = re.compile(r"glossar|terminolog|termbase|term.?table|term.?list|词表|术语", re.I)
+TERM_FROM = ("term", "variant", "source", "source_term", "original", "incorrect", "原词", "原文", "变体", "zh")
+TERM_TO = ("preferred", "canonical", "target", "preferred_term", "target_term", "preferred_form",
+           "approved", "规范词", "首选词", "推荐形式", "推荐译法", "译文", "en")
+PROSE_KEYS = {"title", "heading", "section_title", "text", "body", "paragraphs", "sections", "sentences",
+              "source_text", "original_text", "manuscript_text", "content", "paragraph", "正文"}
+PATH_KEYS = {"path", "file", "filename", "file_path", "relative_path"}
 
 
 def _decode(data):
@@ -91,8 +99,13 @@ def _term_pairs(config):
             if isinstance(config.get(key), (dict, list)):
                 yield from _term_pairs(config[key])
                 return
+        if any(k in config for k in TERM_TO) and any(k in config for k in (*TERM_FROM, "variants")):
+            yield from _term_pairs([config])
+            return
         for term, pref in config.items():
-            if isinstance(pref, str) and pref.strip() and term.strip():
+            if str(term).lower() in {"name", "title", "description", "version", "notes", *PATH_KEYS, "role", "type", "kind"}:
+                continue
+            if isinstance(term, str) and isinstance(pref, str) and pref.strip() and term.strip():
                 yield term.strip(), pref.strip()
     if isinstance(config, list):
         for item in config:
@@ -100,16 +113,47 @@ def _term_pairs(config):
                 yield item[0], item[1]
             if not isinstance(item, dict):
                 continue
-            target = next((item[k] for k in ("preferred", "canonical", "target", "preferred_term", "规范词", "首选词", "译文", "en")
+            target = next((item[k] for k in TERM_TO
                            if isinstance(item.get(k), str)), "")
             variants = item.get("variants", [])
             variants = variants if isinstance(variants, list) else [variants]
-            for k in ("term", "variant", "source", "source_term", "原词", "原文", "zh"):
+            for k in TERM_FROM:
                 if isinstance(item.get(k), str):
                     variants = [*variants, item[k]]
             for variant in variants:
                 if isinstance(variant, str) and target.strip() and variant.strip():
                     yield variant.strip(), target.strip()
+
+
+def _markdown_terms(body):
+    """Use only tables with explicitly identified variant and preferred columns."""
+    headers = []
+    for line in body.splitlines():
+        if "|" not in line:
+            headers = []
+            continue
+        cells = [c.strip().strip("`* ") for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+        columns = [c.casefold().replace(" ", "_") for c in cells]
+        if set(columns).intersection(TERM_FROM) and set(columns).intersection(TERM_TO):
+            headers = columns
+        elif headers and len(headers) == len(cells) and not all(re.fullmatch(r":?-+:?", c) for c in cells):
+            yield dict(zip(headers, cells))
+
+
+def _external_glossary(path, body):
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return json.loads(body)
+    if suffix in {".csv", ".tsv"}:
+        sep = "\t" if suffix == ".tsv" else ","
+        return [{k.strip().casefold().replace(" ", "_"): v for k, v in row.items() if k}
+                for row in csv.DictReader(io.StringIO(body), delimiter=sep)]
+    if suffix in {".yaml", ".yml"}:
+        import yaml
+        return yaml.safe_load(body)
+    if suffix in {".md", ".markdown", ".txt"}:
+        return list(_markdown_terms(body))
+    return None
 
 
 def _resolve(root, value):
@@ -134,22 +178,27 @@ def _inline(value, pointer):
         for index, item in enumerate(value):
             yield from _inline(item, f"{pointer}/{index}")
     if isinstance(value, dict):
-        for key in ("title", "heading", "section_title", "text", "content", "body", "paragraphs",
-                    "sections", "sentences", "source_text", "original_text", "manuscript_text"):
-            if key in value:
-                yield from _inline(value[key], f"{pointer}/{key}")
+        keyed_sections = pointer.rsplit("/", 1)[-1] in {"sections", "chapters", "paragraphs"}
+        for key, part in value.items():
+            if key in PROSE_KEYS or keyed_sections and key not in {"id", "section_id", "metadata", "instructions"}:
+                escaped = str(key).replace("~", "~0").replace("/", "~1")
+                yield from _inline(part, f"{pointer}/{escaped}")
 
 
-def _case_items(obj, ptr="case.json#", root=False):
+def _case_items(obj, ptr="case.json#", root=False, role_hint="", material_map=False):
     """Visit input material containers only. Keep requirements and output schemas out of prose."""
     if isinstance(obj, list):
         for n, item in enumerate(obj):
-            yield from _case_items(item, f"{ptr}/{n}")
+            yield from _case_items(item, f"{ptr}/{n}", role_hint=role_hint, material_map=material_map)
         return
     if not isinstance(obj, dict):
         return
-    role = " ".join(str(obj.get(k, "")) for k in ("role", "kind", "type", "name", "label"))
+    role = " ".join([role_hint, *(str(obj.get(k, "")) for k in ("role", "kind", "type", "name", "label",
+                                                                "document_role", "material_type", "purpose"))])
     is_reference = bool(ROLE_CONTEXT.search(role))
+    if is_reference:
+        yield ("glossary" if GLOSSARY_ROLE.search(role) else "reference"), ptr, obj
+        return
     for key, value in obj.items():
         k = str(key).lower()
         ref = ptr + "/" + str(key).replace("~", "~0").replace("/", "~1")
@@ -159,23 +208,30 @@ def _case_items(obj, ptr="case.json#", root=False):
             continue
         elif k in {"glossary_overrides"} and isinstance(value, list):
             yield "overrides", ref, value
-        elif k in FILE_KEYS and not is_reference:
+        elif k in FILE_KEYS:
             yield "path", ref, value
-        elif k in {"path", "file", "filename"}:
-            yield ("reference" if is_reference else "path" if ROLE_DRAFT.search(role) else "asset"), ref, value
-        elif k in DRAFT_KEYS or k in {"text", "body", "content"} and (
-                root or ROLE_DRAFT.search(role) or isinstance(value, str) and not is_reference):
-            if is_reference:
-                yield "context", ref, value
+        elif k in PATH_KEYS:
+            yield ("path" if ROLE_DRAFT.search(role) else "asset"), ref, value
+        elif k in DRAFT_KEYS or k in {"text", "body", "content"} and isinstance(value, str):
+            if isinstance(value, dict) and PATH_KEYS.intersection(value):
+                yield from _case_items(value, ref, role_hint="manuscript")
+            elif isinstance(value, list) and any(isinstance(v, dict) and PATH_KEYS.intersection(v) for v in value):
+                for i, item in enumerate(value):
+                    if isinstance(item, dict):
+                        yield from _case_items(item, f"{ref}/{i}", role_hint="manuscript")
+                    elif isinstance(item, str):
+                        yield "inline", f"{ref}/{i}", item
             else:
                 yield from (("inline", p, v) for p, v in _inline(value, ref))
         elif k in CONTAINERS:
-            yield from _case_items(value, ref)
+            yield from _case_items(value, ref, material_map=True)
         elif ROLE_CONTEXT.search(k) or k in {"task", "task_description", "register", "audience",
                                               "genre", "language", "requirements", "target_venue"}:
             yield "context", ref, value
         elif k in {"abstract", "introduction", "methods", "results", "discussion", "conclusion"} and not is_reference:
             yield from (("inline", p, v) for p, v in _inline(value, ref))
+        elif material_map and isinstance(value, (dict, list)) and k not in {"metadata", "constraints", "instructions", "schema"}:
+            yield from _case_items(value, ref, role_hint=k, material_map=True)
 
 
 def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None):
@@ -185,7 +241,7 @@ def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None
              and not any(c.startswith(".") for c in p.relative_to(root).parts)
              and p.name.lower() not in IGNORE}
     context, issues, selected, inline, refs = [], [], [], {}, set()
-    terms, overrides = {}, []
+    terms, overrides, glossary_files = {}, [], set()
 
     def add_terms(value):
         for key, pref in _term_pairs(value):
@@ -208,11 +264,8 @@ def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None
         issues.append({"code": "missing_declared_manuscript", "source": ref,
                        "requested": str(raw), "blocking": True})
 
-    for kind, ref, obj in _case_items(case, root=True):
-        if kind == "glossary":
-            add_terms(obj)
-            add_context(ref, obj)
-        elif kind == "overrides":
+    def consume(kind, ref, obj):
+        if kind == "overrides":
             overrides.extend(v for v in obj if isinstance(v, dict))
         elif kind == "path":
             for value in obj if isinstance(obj, list) else [obj]:
@@ -221,15 +274,29 @@ def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None
             p = _resolve(root, obj)
             if p:
                 add_path(obj, ref)
+            elif not re.search(r"\s", obj.strip()) and Path(obj.strip()).suffix.lower() in MANUSCRIPT:
+                add_path(obj, ref)
             else:
                 inline[ref] = obj
-        elif kind in {"context", "reference"}:
+        elif kind in {"context", "reference", "glossary"}:
             add_context(ref, obj)
+            if kind == "glossary":
+                payload = obj
+                if isinstance(obj, dict):
+                    payload = next((obj[k] for k in ("text", "body", "content", "entries", "terms") if k in obj), obj)
+                add_terms(list(_markdown_terms(payload)) if isinstance(payload, str) else payload)
             for value in obj if isinstance(obj, list) else [obj]:
-                value = value.get("path", value.get("file")) if isinstance(value, dict) else value
+                if isinstance(value, dict):
+                    value = next((value[k] for k in value if k in PATH_KEYS), None)
                 p = _resolve(root, value)
                 if p:
-                    refs.add(p.relative_to(root).as_posix())
+                    label = p.relative_to(root).as_posix()
+                    refs.add(label)
+                    if kind == "glossary":
+                        glossary_files.add(label)
+
+    for item in _case_items(case, root=True):
+        consume(*item)
 
     # Structured draft files are common material bundles. Unwrap only recognized
     # prose fields so instructions, IDs and expected outputs cannot become text.
@@ -242,12 +309,26 @@ def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None
             data = json.loads(_decode(path.read_bytes()))
         except (UnicodeError, ValueError):
             continue
-        entries = [(ref, value) for kind, ref, value in _case_items(data, label + "#", root=True) if kind == "inline"]
-        for ref, value in entries:
-            inline[ref] = value
+        entries = []
+        for kind, ref, value in _case_items(data, label + "#", root=True):
+            if kind in {"context", "reference", "glossary", "overrides"}:
+                consume(kind, ref, value)
+            elif kind == "inline":
+                entries.append(ref)
+                inline[ref] = value
+            elif kind == "path" and isinstance(value, str):
+                relative_to_manifest = (path.parent / value).resolve()
+                resolved = _resolve(root, value)
+                if relative_to_manifest.is_relative_to(root) and relative_to_manifest.is_file():
+                    resolved = relative_to_manifest
+                if resolved and resolved != path:
+                    target_name = resolved.relative_to(root).as_posix()
+                    entries.append(target_name)
+                    if label not in selected and target_name not in selected:
+                        selected.append(target_name)
         if label in selected and entries:
             pos = selected.index(label)
-            selected[pos:pos + 1] = [ref for ref, _ in entries]
+            selected[pos:pos + 1] = entries
 
     if sources:
         selected = []
@@ -306,14 +387,10 @@ def load_materials(input_dir: Path, case: dict, sources: list[str] | None = None
         rows = _read_rows(path, issues, name, False)
         body = "\n".join(line for line, _ in rows)
         add_context(name, body)
-        if re.search(r"glossar|terminolog|term.?table|词表|术语", name, re.I):
+        if name in glossary_files or GLOSSARY_ROLE.search(name):
             try:
-                if path.suffix.lower() == ".json":
-                    add_terms(json.loads(body))
-                elif path.suffix.lower() in {".csv", ".tsv"}:
-                    sep = "\t" if path.suffix.lower() == ".tsv" else ","
-                    add_terms(list(csv.DictReader(io.StringIO(body), delimiter=sep)))
-            except (ValueError, csv.Error) as exc:
+                add_terms(_external_glossary(path, body))
+            except Exception as exc:
                 issues.append({"code": "glossary_parse_error", "source": name, "message": str(exc)})
     fmt = formats[0] if len(set(formats)) == 1 else "md"
     trailing_newline = bool(lines)

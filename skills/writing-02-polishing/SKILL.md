@@ -18,7 +18,7 @@ RUN="$SKILL_DIR/scripts/build_polish_result.py"
 python3 "$RUN" --input-dir /input --work-dir /app/work --output-dir /app/output --prepare-only
 ```
 
-The work files under `/app/work/polishing/` include `manuscript.txt`, `materials.json`, `guarded_sentences.json`, and `glossary.json`. Compare the extracted body with the original including the first and last paragraph, section order and tables. If discovery selected the wrong manuscript, repeat with `--source relative/path` (repeat for each requested source); use identical source arguments in the final run. Look at the original PDF or Word page if a symbol, equation, superscript or cell is ambiguous. Record unresolved symbols with their page or paragraph. For a long paper, read one section at a time while retaining its neighboring paragraph for context. The directory may contain style guides, references, and reviewer comments that must never become draft paragraphs.
+Read `manuscript.txt`, `materials.json`, `glossary.json` and `language_review.json` under `/app/work/polishing/`. Check that the extraction reaches the last requested paragraph, contains the requested sections and preserves table order. If needed repeat with `--source relative/path` for each requested source. Keep the same source arguments at finalization. Optional language diagnostics locate patterns such as subject–verb disagreement. Confirm each in context and still read through the full text. Use the original PDF or Word page to resolve symbols, equations and table cells. Keep style guides, references and reviewer comments distinct from the author's draft.
 
 ## 2. Edit the actual prose
 
@@ -48,6 +48,8 @@ python3 "$RUN" --input-dir /input --work-dir /app/work --output-dir /app/output 
 ```
 
 For case-specific fields supply grounded values in the top-level `contract_values` mapping. Match the types, language, nesting and filenames in the actual contract. If it requests a structured revision table or the full text, supply that data in the requested form. For bilingual alignment set `bilingual_required: true`. If a Word manuscript is requested set `deliverables: ["docx"]`. External glossary or style instructions still apply when a case uses different field names.
+
+Set `artifact_names` in the manifest if the case gives exact filenames. For example, `{"polished_manuscript":"revised.md","revision_report_md":"changes.md"}` names the actual edit and audit files. Use `polished_docx` for Word, `preview_pdf` for the rendered preview, or `bilingual_md` for the alignment. If only a section needs translation, record other rows with `edit_type: "out_of_scope"` and unchanged wording. Report unresolved language diagnostics only after reading the corresponding passage and noting the reason.
 
 Read `/app/output/result.json`, follow its artifact paths, and inspect the actual editable manuscript, change report, conflicts, QA violations and any requested preview. Use the sentence IDs to repair unsafe changes and rerun with the same source and corrected decisions. Reopen the source/chosen target pair where numerical values, units or groups repeat. Recheck subject–value attachment even when the token checker passes. Open rendered pages for Word output to spot broken tables, clipped symbols or a blank final page. When a reviewed correction is impossible, retain the affected source text and state the precise limitation. Finish by checking every requested output field and artifact against the case. Keep only the final version of each deliverable under `/app/output`.
 

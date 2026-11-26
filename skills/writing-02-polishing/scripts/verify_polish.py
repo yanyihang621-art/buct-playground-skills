@@ -28,8 +28,8 @@ SCOPE_PATTERNS = {
     "exclusive": r"\b(?:only|solely|exclusively)\b|仅(?:仅)?|只(?=[在能有是])",
     "if": r"\b(?:if|provided that|on condition that)\b|如果|若|倘若",
     "unless": r"\bunless\b|除非",
-    "at_least": r"\b(?:at least|no fewer than|no less than|a minimum of)\b|至少|不低于|不少于",
-    "at_most": r"\b(?:at most|no more than|a maximum of)\b|至多|不超过|最多",
+    "at_least": r"\b(?:at least|(?:no|not) (?:fewer|less) than|a minimum of)\b|至少|不低于|不少于",
+    "at_most": r"\b(?:at most|(?:no|not) more than|a maximum of)\b|至多|不超过|最多",
     "approximately": r"\b(?:approx(?:\.|imately)?|about|roughly|nearly|around)\b|大约|约为|约(?=\s*\d)",
     "universal": r"\b(?:all|every|each)\b|所有|每(?:一|个|组|次)",
     "majority": r"\b(?:most|a majority of|the majority of)\b|大多数|大部分",
@@ -50,7 +50,69 @@ CERTAINTY = {key: re.compile(pattern, re.I) for key, pattern in CERTAINTY.items(
 
 def _markers(text: str, patterns: dict) -> dict[str, int]:
     text = re.sub(r"\bas is known to all\b[:,]?", "", text, flags=re.I)
-    return {key: len(matches) for key, pattern in patterns.items() if (matches := pattern.findall(text))}
+    markers = {}
+    if patterns is SCOPE_PATTERNS:
+        # "no" in "no more than" and "most" in "at most" belong to the
+        # bound. A separate "not" outside that bound still negates the claim.
+        for bound in ("at_least", "at_most"):
+            text, count = patterns[bound].subn(" ", text)
+            if count:
+                markers[bound] = count
+    markers.update({key: len(matches) for key, pattern in patterns.items() if (matches := pattern.findall(text))})
+    return markers
+
+
+_CAUSAL_NOMINAL = re.compile(
+    r"\b(?:result(?:s|ed)? in|lead(?:s)? to|led to|caus(?:e[ds]?))\s+"
+    r"(?:an?|the)\s+(increase|decrease|reduction)\s+in\b", re.I)
+_DIRECT_EFFECT = re.compile(r"\b(increas(?:e[sd]?)|decreas(?:e[sd]?)|reduc(?:e[sd]?))\b", re.I)
+
+
+def _causal_frame(text: str) -> str:
+    """Canonicalize only two local grammatical realizations of the same effect.
+
+    Keep actor, object, scope, numbers and other clauses in order. Matching an
+    effect word somewhere in each sentence would accept reversed arguments.
+    """
+    def effect(match):
+        term = match[1].casefold()
+        return "<up>" if term.startswith("incr") else "<down>"
+    text = _CAUSAL_NOMINAL.sub(effect, text)
+    text = _DIRECT_EFFECT.sub(effect, text)
+    return " ".join(text.casefold().split())
+
+
+_LANGUAGE_RULES = (
+    ("plural_agreement", re.compile(
+        r"\b(?:the|these|those|both|our)\s+(?:results|findings|measurements|samples|experiments|"
+        r"observations|estimates|participants|patients|groups|models|methods|values|catalysts)\s+"
+        r"(?:was|is|has|shows|indicates|suggests|demonstrates|exhibits)\b", re.I),
+     "Check the finite verb against the plural subject."),
+    ("count_noun_number", re.compile(
+        r"\b(?:[2-9]|[1-9]\d+|two|three|four|five|six|seven|eight|nine|ten|several|many|multiple)\s+"
+        r"(?:participant|patient|group|replicate|experiment|measurement|sample|dataset|chamber|trial|"
+        r"specimen|condition|cycle)(?=\s*(?:[.,;:!?)]|$))", re.I),
+     "Check whether this count noun needs a plural ending."),
+    ("duplicated_function_word", re.compile(r"\b(the|of|and|with|from|these)\s+\1\b", re.I),
+     "Check whether the repeated function word is a transcription error."),
+)
+_INLINE_LITERAL = re.compile(r"\x60[^\x60]*\x60|\$[^$\n]+\$|\\\(.*?\\\)|\\\[.*?\\\]")
+_PREPOSITION = re.compile(r"\b(?:of|among|between|from|in|on|for|with|as|to|near|across)\s+$", re.I)
+
+
+def language_diagnostics(text: str) -> list[dict]:
+    """Return advisory surface issues with zero-based, end-exclusive character offsets."""
+    # Retain offsets. Expressions and inline code may contain identifiers or
+    # deliberately ungrammatical test strings.
+    prose = _INLINE_LITERAL.sub(lambda m: " " * len(m[0]), text)
+    issues = []
+    for code, pattern, message in _LANGUAGE_RULES:
+        for match in pattern.finditer(prose):
+            if code == "plural_agreement" and _PREPOSITION.search(prose[:match.start()]):
+                continue
+            issues.append({"code": code, "start": match.start(), "end": match.end(),
+                           "excerpt": text[match.start():match.end()], "message": message})
+    return sorted(issues, key=lambda item: item["start"])
 
 
 def _term_pattern(term: str) -> re.Pattern:
@@ -168,6 +230,8 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
                     for e in locked]
     token_total = token_errors = edited = claim_count = claim_failures = 0
     register_failures = term_failures = 0
+    language_rows = []
+    source_flags = target_flags = cleared_flags = 0
     term_first_seen: dict[str, dict] = {}
     defined = set()
     for row in pol_sents:
@@ -214,7 +278,9 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
         if changed:
             old_claim, new_claim = _markers(original, CERTAINTY), _markers(target, CERTAINTY)
             audit_row.update(source_claim_markers=old_claim, target_claim_markers=new_claim)
-            if set(old_claim) != set(new_claim):
+            if (old_claim.keys() ^ new_claim.keys()) == {"causal"} and _causal_frame(original) == _causal_frame(target):
+                warnings.append({**loc, "reason": "review_equivalent_causal_paraphrase"})
+            elif set(old_claim) != set(new_claim):
                 fail(CLAIM, loc, "claim_strength_or_relation_changed", source=old_claim, target=new_claim)
                 claim_failures += 1
             elif old_claim != new_claim:
@@ -241,6 +307,17 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
         out_of_scope = row.get("edit_type") in {"out_of_scope", "outside_scope"} or source.get("in_scope") is False
         if out_of_scope and not changed:
             continue
+        source_issues = language_diagnostics(original)
+        target_issues = language_diagnostics(target) if changed else source_issues
+        if source_issues or target_issues:
+            language_rows.append({**loc, "source": source_issues, "polished": target_issues})
+            source_flags += len(source_issues)
+            target_flags += len(target_issues)
+            original_counts = Counter(item["code"] for item in source_issues)
+            final_counts = Counter(item["code"] for item in target_issues)
+            cleared_flags += sum((original_counts - final_counts).values())
+            for item in target_issues:
+                warnings.append({**loc, **item, "reason": "review_language_in_context"})
         for phrase in phrases:
             if _term_pattern(phrase.casefold()).search(target.casefold()):
                 # A genuine quotation or explicitly retained source claim can
@@ -290,8 +367,10 @@ def verify_polish(polished_doc: dict[str, Any], guarded: dict[str, Any], glossar
             "hedging_causality_conservation": round(1 - claim_failures / claim_count, 4) if claim_count else 1.0,
             "terminology_consistency": float(term_failures == 0),
             "register_cleanliness": float(register_failures == 0),
+            "source_language_flags": source_flags, "remaining_language_flags": target_flags,
+            "cleared_language_flags": cleared_flags,
         },
-        "violations": violations, "warnings": warnings,
+        "violations": violations, "warnings": warnings, "language_diagnostics": language_rows,
         "evidence_by_sentence": evidence, "term_first_occurrence": term_first_seen,
     }
 

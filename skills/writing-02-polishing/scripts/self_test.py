@@ -15,8 +15,9 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from build_polish_result import run_polishing_pipeline
+from segment_and_guard import segment_and_guard_manuscript
 from text_utils import write_json_atomic, write_text_lf
-from verify_polish import verify_polish
+from verify_polish import language_diagnostics, verify_polish
 
 
 def _setup_p1_journal_en(d: Path) -> Path:
@@ -145,6 +146,39 @@ def _run_negative_qa_tests(p1: Dict[str, Any]) -> Dict[str, bool]:
     }
 
 
+def _editorial_regressions():
+    def check(source, target):
+        packet = segment_and_guard_manuscript(source)
+        span = packet["sentences"][0]
+        decision = {**span, "polished_text": target, "edit_type": "copyedit",
+                    "rationale": "Preserve the actor, limit and result when tightening the phrasing."}
+        return verify_polish({"sentences": [decision]}, packet, {"entries": []})
+
+    bound = "There were no more than 10 samples."
+    limit = "There were at most 10 samples."
+    extended = "The treatment resulted in an increase in yield."
+    simple = "The treatment increased yield."
+    rough = "The measurements was taken in two chamber."
+    smooth = "The measurements were taken in two chambers."
+    revised = check(rough, smooth)
+    unresolved = check(rough, rough)
+    return {
+        "equivalent_compound_bounds": check(bound, limit)["passed"]
+            and check("值不低于 5。", "值至少为 5。")["passed"],
+        "bound_reversal_rejected": not check(bound, "There were at least 10 samples.")["passed"],
+        "outside_negation_preserved": not check("It was not at most 10.", "It was at most 10.")["passed"],
+        "causal_nominalization_equivalent": check(extended, simple)["passed"],
+        "swapped_causal_arguments_rejected": not check(extended, "The yield increased treatment.")["passed"],
+        "causal_to_association_rejected": not check(extended, "The treatment was associated with an increase in yield.")["passed"],
+        "language_warnings_advisory": unresolved["passed"] and unresolved["metrics"]["remaining_language_flags"] == 2,
+        "language_repairs_measured": revised["passed"] and revised["metrics"]["cleared_language_flags"] == 2
+            and revised["metrics"]["remaining_language_flags"] == 0,
+        "diagnostic_offsets_match": all(rough[x["start"]:x["end"]] == x["excerpt"] for x in language_diagnostics(rough)),
+        "compound_noun_and_embedded_subject_clean": not language_diagnostics("Each of the samples is stored in two chamber types."),
+        "repetition_in_prose_only": len(language_diagnostics("Check the the method and \x60the the\x60 literal.")) == 1,
+    }
+
+
 def _compare_baseline(p1: Dict[str, Any]) -> Dict[str, Any]:
     # Measure two outputs against identical source spans, terminology and verifier.
     original = copy.deepcopy(p1["polished_doc"])
@@ -185,13 +219,15 @@ def main() -> int:
     r4 = run_polishing_pipeline(root / "p4" / "input", root / "p4" / "work", root / "p4" / "output", case_path=c4, demo_rules=True)
     p4_ok = r4["result"]["status"] == "partial" and len(r4["result"]["uncertainties"]) >= 1
 
+    editorial = _editorial_regressions()
     summary: Dict[str, Any] = {
-        "all_passed": bool(p1_ok and p2_ok and p3_ok and p4_ok),
+        "all_passed": bool(p1_ok and p2_ok and p3_ok and p4_ok and all(editorial.values())),
         "suites": {
             "p1_journal_article_en": {"passed": p1_ok, "metrics": r1["qa_report"]["metrics"], "negative_qa_tests": neg},
             "p2_latex_fragment_protection": {"passed": p2_ok, "status": r2["result"]["status"]},
             "p3_bilingual_zh_grant_proposal": {"passed": p3_ok, "metrics": r3["qa_report"]["metrics"]},
             "p4_conflicting_glossary_partial": {"passed": p4_ok, "status": r4["result"]["status"], "uncertainties": len(r4["result"]["uncertainties"])},
+            "editorial_regressions": editorial,
         },
     }
     if args.compare_baseline:

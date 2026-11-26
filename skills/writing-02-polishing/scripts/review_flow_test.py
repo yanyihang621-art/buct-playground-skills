@@ -33,6 +33,24 @@ def run(root):
     checks["full_edit_and_translations"] = (result["status"] == "completed" and result["polished_text"] == expected
                                            and len(result["bilingual_alignment"]) == 2 and len(result["change_records"]) == 1)
     checks["inline_provenance"] = result["change_records"][0]["source_location"]["source"] == "case.json#/draft_text"
+    spans = result["change_records"][0]["changed_spans"]
+    checks["change_spans_exact"] = len(spans) == 1 and (spans[0]["original"], spans[0]["replacement"]) == ("was", "were")
+    named = copy.deepcopy(edits)
+    named["artifact_names"] = {"polished_manuscript": "editorial/final draft.txt", "revision_report_md": "changes.md"}
+    result = build("named", inline, named)
+    checks["named_artifacts_match_contents"] = (result["status"] == "completed"
+        and Path(result["artifacts"]["polished_manuscript"]).name == "final draft.txt"
+        and Path(result["artifacts"]["polished_manuscript"]).read_text(encoding="utf-8") == expected
+        and "| Changed wording |" in (root / "named/output/changes.md").read_text(encoding="utf-8"))
+    named["artifact_names"]["revision_report_md"] = "../changes.md"
+    result = build("unsafe_alias", inline, named)
+    checks["invalid_artifact_name_rejected"] = (result["status"] == "partial"
+        and not (root / "unsafe_alias/changes.md").exists())
+    scoped = copy.deepcopy(edits)
+    scoped["sentences"][1].update(edit_type="out_of_scope", rationale="Only the first sentence was requested.")
+    scoped["sentences"][1].pop("translation")
+    result = build("scope", inline, scoped)
+    checks["bilingual_scope_preserved"] = (result["status"] == "completed" and len(result["bilingual_alignment"]) == 1)
     sparse = copy.deepcopy(edits)
     sparse["sentences"].pop()
     partial = build("missing", inline, sparse)
@@ -59,6 +77,16 @@ def run(root):
     result = build("closed", closed, custom)
     saved = json.loads((root / "closed/output/result.json").read_text(encoding="utf-8"))
     checks["exact_nested_contract"] = result["status"] == "completed" and set(saved) == set(closed["output_contract"]["properties"])
+    closed_rows = dict(inline, output_contract={"additionalProperties": False, "properties": {
+        "sources": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+            "required": ["sentenceId"], "properties": {"sentenceId": {"type": "string"}}}},
+        "change_records": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+            "required": ["before", "after"], "properties": {"before": "string", "after": "string"}}}}})
+    result = build("closed_rows", closed_rows, edits)
+    saved = json.loads((root / "closed_rows/output/result.json").read_text(encoding="utf-8"))
+    checks["nested_contract_uses_verified_source_and_edit"] = (result["status"] == "completed"
+        and set(saved) == {"case_id", "sources", "change_records"} and saved["sources"][0] == {"sentenceId": "sent_0001"}
+        and saved["change_records"][0] == {"before": edits["sentences"][0]["source_text"], "after": edits["sentences"][0]["polished_text"]})
     custom["contract_values"]["review_decision"] = {"language": 4}
     checks["wrong_nested_type_detected"] = build("bad_contract", closed, custom)["status"] == "partial"
 

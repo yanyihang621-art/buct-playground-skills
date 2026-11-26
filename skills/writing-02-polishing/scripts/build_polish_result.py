@@ -6,15 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
+import shutil
+from pathlib import Path, PureWindowsPath
 
 from extract_manuscript_terms import extract_manuscript_glossary
 from ingest_manuscript import load_materials
-from output_contract import contract_fields, fill_contract, normalized_key
+from output_contract import contract_fields, contract_view, fill_contract, normalized_key
 from polish_sentences import polish_guarded_sentences, render_revision_report
 from segment_and_guard import segment_and_guard_manuscript
 from text_utils import write_json_atomic, write_text_lf
-from verify_polish import verify_polish, verify_translation
+from verify_polish import language_diagnostics, verify_polish, verify_translation
 
 
 def read_json(path):
@@ -31,7 +32,7 @@ def edit_rows(payload):
             {**(v if isinstance(v, dict) else {"polished_text": v}), "sent_id": k}
             for k, v in raw.items()
             if k not in {"contract_values", "uncertainties", "bilingual_required", "deliverables", "register",
-                         "case_id", "source_sha256", "reviewed_unchanged"}
+                         "case_id", "source_sha256", "reviewed_unchanged", "artifact_names"}
         ]
     raise ValueError("edits must be a list of sentence records or a map keyed by sent_id")
 
@@ -72,6 +73,8 @@ def checked_edits(payload, guarded):
             issues.append({"code": "empty_edit", "sent_id": sid})
         elif src["role"] in ("structural", "verbatim_block") and row["polished_text"] != src["source_text"]:
             issues.append({"code": "protected_structure_edit", "sent_id": sid})
+        elif row.get("edit_type") in ("out_of_scope", "outside_scope") and row["polished_text"] != src["source_text"]:
+            issues.append({"code": "out_of_scope_edit", "sent_id": sid})
         elif row["polished_text"] != src["source_text"] and (
             not str(row.get("edit_type") or "").strip() or not str(row.get("rationale") or "").strip()
         ):
@@ -87,11 +90,50 @@ def checked_edits(payload, guarded):
 def render_alignment(rows):
     def cell(value):
         return str(value).replace("|", r"\|").replace("\n", "<br>")
-    lines = ["# Bilingual alignment", "", "| Sentence | Original | Polished | Translation |",
-             "|---|---|---|---|"]
+    lines = ["# Bilingual alignment", "", "| Sentence | Source location | Original | Polished | Translation |",
+             "|---|---|---|---|---|"]
     for row in rows:
-        lines.append("| " + " | ".join(cell(row[k]) for k in ("sent_id", "source_text", "polished_text", "translation")) + " |")
+        loc = row["source_location"]
+        values = (row["sent_id"], " · ".join(str(loc[k]) for k in ("source", "location") if k in loc),
+                  row["source_text"], row["polished_text"], row["translation"])
+        lines.append("| " + " | ".join(map(cell, values)) + " |")
     return "\n".join(lines) + "\n"
+
+
+def apply_artifact_names(artifacts, names, output_dir, pending=()):
+    """Publish an explicitly requested alias for an actual generated file."""
+    issues = []
+    root = output_dir.resolve()
+    reserved = {Path(p).resolve() for p in artifacts.values()} | {root / "result.json", root / "polish_audit.json"}
+    if not isinstance(names, dict):
+        return [{"code": "invalid_artifact_names", "blocking": True}]
+    for role, filename in names.items():
+        original = artifacts.get(role)
+        try:
+            if not original:
+                raise ValueError("No generated file for this artifact role.")
+            if not isinstance(filename, str) or not filename.strip():
+                raise ValueError("Expected a relative filename.")
+            path = Path(filename)
+            destination = (root / path).resolve()
+            if path.is_absolute() or PureWindowsPath(filename).drive or ".." in PureWindowsPath(filename).parts \
+                    or not destination.is_relative_to(root):
+                raise ValueError("Filename must stay inside the output folder.")
+            source = Path(original)
+            if destination == source:
+                continue
+            equivalent = {source.suffix.lower(), path.suffix.lower()} <= {".md", ".txt"}
+            if destination in reserved or (path.suffix.lower() != source.suffix.lower() and not equivalent):
+                raise ValueError("Filename collides with another artifact or changes its format.")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if role not in pending:
+                shutil.copyfile(source, destination)
+            artifacts[role] = str(destination)
+            reserved.add(destination)
+        except (OSError, ValueError) as exc:
+            issues.append({"code": "artifact_name_unavailable", "artifact": role, "filename": filename,
+                           "message": str(exc), "blocking": True})
+    return issues
 
 
 def empty_result(case_id, register):
@@ -118,9 +160,9 @@ def publish(result, out_dir, contract):
         audit_path = out_dir / "polish_audit.json"
         result["artifacts"]["audit_json"] = str(audit_path.resolve())
         write_json_atomic(audit_path, result)
-        saved = {k: v for k, v in result.items() if k in keys}
+        saved = {k: v for k, v in contract_view(result, contract).items() if k in keys}
     else:
-        saved = result
+        saved = contract_view(result, contract)
     write_json_atomic(out_dir / "result.json", saved)
 
 
@@ -162,22 +204,28 @@ def run_polishing_pipeline(
     glossary = extract_manuscript_glossary(text, custom_glossary=materials["glossary"],
                                           glossary_conflicts_check=materials["glossary_overrides"])
     guarded = segment_and_guard_manuscript(text, is_latex=materials["is_latex"])
+    language_notes = []
     for s in guarded["sentences"]:
         s["source_location"] = materials["line_map"][s["line"] - 1]
+        if s["role"] == "prose":
+            language_notes.extend({"sent_id": s["sent_id"], "source_location": s["source_location"], **note}
+                                  for note in language_diagnostics(s["source_text"]))
     packet = "".join(json.dumps([s["sent_id"], s["role"], s["source_location"], s["source_text"]],
                                 ensure_ascii=False, separators=(",", ":")) + "\n" for s in guarded["sentences"])
     brief = json.dumps([reg, case, materials["context"], glossary], ensure_ascii=False, sort_keys=True)
     guarded["source_sha256"] = hashlib.sha256((brief + "\n" + packet).encode("utf-8")).hexdigest()
     write_text_lf(work_p / "review_packet.jsonl", packet)
     work_files = {name: str(work_p / name) for name in [
-        "materials.json", "glossary.json", "guarded_sentences.json", "manuscript.txt", "review_packet.jsonl"]}
+        "materials.json", "glossary.json", "guarded_sentences.json", "manuscript.txt", "review_packet.jsonl", "language_review.json"]}
+    write_json_atomic(work_p / "language_review.json", language_notes)
     write_json_atomic(work_p / "materials.json", materials)
     write_json_atomic(work_p / "glossary.json", glossary)
     write_json_atomic(work_p / "guarded_sentences.json", guarded)
     write_text_lf(work_p / "manuscript.txt", text)
     if prepare_only:
         return {"prepared": work_files, "case_id": result["case_id"], "source_sha256": guarded["source_sha256"], "sentence_count": guarded["sentence_count"],
-                "register": reg, "contract_fields": list(contract_fields(contract)), "warnings": warnings}
+                "register": reg, "contract_fields": list(contract_fields(contract)), "warnings": warnings,
+                "language_diagnostic_count": len(language_notes)}
 
     try:
         manifest = read_json(edits_json) if edits_json else {}
@@ -249,7 +297,8 @@ def run_polishing_pipeline(
         "sent_id": row["sent_id"], "source_location": row["source_location"], "source_text": row["source_text"],
         "protected_tokens": row["protected_tokens"],
     } for row in doc["sentences"]]
-    changes = [{k: row[k] for k in ("sent_id", "line", "source_location", "source_text", "polished_text", "edit_type", "rationale")}
+    changes = [{k: row[k] for k in ("sent_id", "line", "source_location", "source_text", "polished_text",
+                                   "edit_type", "rationale", "changed_spans")}
                for row in doc["sentences"] if row["source_text"] != row["polished_text"]]
 
     fields = set(normalized_key(f) for f in contract_fields(contract))
@@ -261,7 +310,7 @@ def run_polishing_pipeline(
         if isinstance(translation, str) and translation.strip():
             aligned.append({k: row[k] for k in ("sent_id", "source_location", "source_text", "polished_text")}
                            | {"translation": translation.strip()})
-        elif bilingual and row["role"] == "prose":
+        elif bilingual and row["role"] == "prose" and row["edit_type"] not in {"out_of_scope", "outside_scope"}:
             uncertainties.append({"code": "missing_translation", "sent_id": row["sent_id"]})
     if aligned or bilingual:
         translation_issues = [issue for row in aligned for issue in verify_translation(row, glossary)]
@@ -280,7 +329,8 @@ def run_polishing_pipeline(
         artifacts["bilingual_json"] = str((out_p / "bilingual_alignment.json").resolve())
         artifacts["bilingual_md"] = str((out_p / "bilingual_alignment.md").resolve())
 
-    formats = [meta.get("deliverables", []), case.get("output_format", ""), case.get("deliverables", []), contract]
+    artifact_names = meta.get("artifact_names", case.get("artifact_names", {}))
+    formats = [meta.get("deliverables", []), case.get("output_format", ""), case.get("deliverables", []), contract, artifact_names]
     if materials["format"] == "docx" or ".docx" in [Path(str(s)).suffix.lower() for s in materials["sources"]] or "docx" in json.dumps(formats, ensure_ascii=False).lower():
         try:
             from export_docx import export_docx
@@ -296,6 +346,9 @@ def run_polishing_pipeline(
     for k, obj in (("source_map_json", source_map), ("guarded_sentences_json", guarded),
                    ("glossary_json", glossary), ("qa_report_json", qa)):
         write_json_atomic(paths[k], obj)
+    # These two reports contain the final status and are written below.
+    uncertainties.extend(apply_artifact_names(artifacts, artifact_names, out_p,
+                       pending={"revision_report_md", "polished_doc_json"}))
     failed_checks = [k for k, passed in qa["checks"].items() if not passed]
     result.update({
         "status": doc["status"], "metrics": dict(qa["metrics"]), "artifacts": artifacts, "change_records": changes,
@@ -329,8 +382,8 @@ def run_polishing_pipeline(
     result["verification"]["contract_issues"] = issues
     result["verification"]["passed"] = not blocking
     doc["uncertainties"] = uncertainties
-    write_json_atomic(paths["polished_doc_json"], doc)
-    write_text_lf(paths["revision_report_md"], render_revision_report(doc))
+    write_json_atomic(Path(artifacts["polished_doc_json"]), doc)
+    write_text_lf(Path(artifacts["revision_report_md"]), render_revision_report(doc))
     publish(result, out_p, contract)
     return {"result": result, "polished_doc": doc, "guarded": guarded, "glossary": glossary, "qa_report": qa}
 

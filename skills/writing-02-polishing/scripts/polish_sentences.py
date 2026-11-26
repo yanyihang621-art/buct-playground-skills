@@ -56,17 +56,37 @@ def _patch(source, target):
 def _cell(value):
     return str(value).replace("|", "\\|").replace("\n", "<br>")
 
+def changed_spans(source, revised):
+    """Locate changed words and punctuation in both versions of a sentence."""
+    pattern = re.compile(r"[\u3400-\u9fff]|[^\W\d_]+|[\d.]+|\s+|[^\w\s]|_", re.UNICODE)
+    old, new = (list(pattern.finditer(text)) for text in (source, revised))
+    matcher = difflib.SequenceMatcher(None, [m.group() for m in old], [m.group() for m in new], autojunk=False)
+    changes = []
+    for operation, a, b, c, d in matcher.get_opcodes():
+        if operation == "equal":
+            continue
+        start = old[a].start() if a < len(old) else len(source)
+        end = old[b-1].end() if b > a else start
+        new_start = new[c].start() if c < len(new) else len(revised)
+        new_end = new[d-1].end() if d > c else new_start
+        changes.append({"operation": operation, "original": source[start:end], "replacement": revised[new_start:new_end],
+                        "source_span": [start, end], "revision_span": [new_start, new_end]})
+    return changes
+
+
 def render_revision_report(doc):
     lines = [f"# Revision record · {doc['register']}", "",
              f"Status: {doc['status']} · {doc['edited_count']} of {doc['sentence_count']} spans changed.", "",
-             "| ID | Source location | Original | Revision | Type | Reason |",
-             "|---|---|---|---|---|---|"]
+             "| ID | Source location | Original | Revision | Changed wording | Type | Reason |",
+             "|---|---|---|---|---|---|---|"]
     for row in doc["sentences"]:
         loc = row.get("source_location") or {}
         if isinstance(loc, dict):
             loc = " ".join(str(loc.get(k, "")) for k in ("source", "location")).strip()
         label = loc or f"line {row['line']}"
-        vals = [row["sent_id"], label, row["source_text"], row["polished_text"], row["edit_type"], row["rationale"]]
+        edits = ["“" + e["original"] + "” → “" + e["replacement"] + "”" for e in row.get("changed_spans", [])]
+        vals = [row["sent_id"], label, row["source_text"], row["polished_text"], " / ".join(edits),
+                row["edit_type"], row["rationale"]]
         lines.append("| " + " | ".join(_cell(x) for x in vals) + " |")
     return "\n".join(lines) + "\n"
 
@@ -125,6 +145,8 @@ def polish_guarded_sentences(guarded, glossary, *, register="journal_article", e
                 category, reason, uncertain = "unreviewed", "No editor decision received for this sentence.", True
                 gaps.append({"code": "unreviewed_sentence", "sent_id": sid})
         row.update(polished_text=polished, edit_type=category, rationale=reason, uncertain=uncertain)
+        if polished != src:
+            row["changed_spans"] = changed_spans(src, polished)
         rows.append(row)
 
     source = guarded.get("source_text")
