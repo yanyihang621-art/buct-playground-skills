@@ -28,6 +28,8 @@ python3 "$K/scripts/verify_manuscript.py" --input-dir "$K/examples/project" --st
 - `build_latex_result.py` 读入当前稿件、原稿、契约和作者报告并打包。项目根、入口、引擎、报告路径均可显式传入。`evidence/build_comparison.json` 保留同一次验收中原稿与修订稿各自的实际引擎、轮次、退出码、PDF 指纹及日志。`verify_manuscript.py` 在实际来源、稿件和渲染文本中定位报告列出的短引；对示意图、数学语义和表格的视觉对应须另行检查。
 - `self_test.py --out-dir <单独的测试目录> --compare-baseline` 可重现含文献、源码错误、Unicode 引擎和缺失文类的测试。比较结果仅描述本机确定性流程，正式平台对照由组织方运行。
 
+当入口在 `paper/main.tex`、其引用以工程根为基准时，可用 `--main-tex paper/main.tex --build-cwd .`。省略构建目录时，工具会检查入口目录和项目根的实际依赖。编译清单和复现命令记录选中的目录。运行预算紧张时，`build_latex_result.py --draft` 会先保存可编辑稿件与当前构建证据，再由原命令完成正式核验。
+
 处理用户自己的稿件时，按实际任务填写 `report.json`，给关键数据、公式和引文添加来源。发现新模板问题时，以最小源码、首个独立报错、使用的发行版和期望输出复现，再运行自测与干净目录重编。
 
 

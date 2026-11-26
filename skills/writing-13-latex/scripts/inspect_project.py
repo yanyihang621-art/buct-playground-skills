@@ -24,7 +24,8 @@ def _text(path):
     return raw, cleaned
 
 
-def inspect_latex_project(project_dir: Path, main_tex_hint: str | None = None) -> dict:
+def inspect_latex_project(project_dir: Path, main_tex_hint: str | None = None, *,
+                          build_cwd_hint: str | Path | None = None, probe_tools: bool = True) -> dict:
     root = project_dir.resolve()
     named_roots = {"main", "paper", "manuscript", "article", "thesis"}
     ancillary = {"template", "templates", "example", "examples", "sample", "samples", "docs"}
@@ -50,7 +51,30 @@ def inspect_latex_project(project_dir: Path, main_tex_hint: str | None = None) -
         result["missing_assets"].append({"type": "main_tex", "ref": str(main_tex_hint or "documentclass"), "from": "."})
         return result
 
-    work = main.parent
+    if build_cwd_hint is not None:
+        work = (root / build_cwd_hint).resolve()
+        if not work.is_relative_to(root) or not work.is_dir():
+            raise ValueError("Build directory must be an existing directory inside the project.")
+        directories = [work]
+    else:
+        directories = list(dict.fromkeys((main.parent, root)))
+    # Prefer the entrypoint directory on ties, preserving existing callers. A nested main
+    # can instead use the project root as cwd, depending on how its literal assets are named.
+    inspected = [_scan_from(root, main, work) for work in directories]
+    winner = min(inspected, key=lambda scan: (
+        len(scan["missing_assets"]),
+        -sum(len(scan[k]) for k in ("tex_files", "bib_files", "graphic_files", "local_template_files")),
+    ))
+    result.update(winner)
+    if probe_tools:
+        result["toolchain"] = {tool: probe_tool_version(tool) for tool in
+                               (result["recommended_engine"], result["bib_tool"]) if tool}
+    return result
+
+
+def _scan_from(root, main, work):
+    result = {"missing_assets": [], "tex_files": [], "bib_files": [], "graphic_files": [],
+              "local_template_files": [], "packages": [], "fonts_requested": [], "dynamic_paths": []}
     raw, main_text = _text(main)
     magic = ENGINE_RE.search(raw)
     doc_class = DOC_CLASS_RE.search(main_text)
@@ -137,8 +161,7 @@ def inspect_latex_project(project_dir: Path, main_tex_hint: str | None = None) -
     walk(main, work, "tex_files")
     engine = magic[1].lower() if magic else "lualatex" if lua_needed else "xelatex" if unicode_needed else "pdflatex"
     bib_tool = (biblatex_backend or "bibtex") if bibliography_declared else None
-    result.update(recommended_engine=engine, bib_tool=bib_tool,
-                  toolchain={tool: probe_tool_version(tool) for tool in [engine, bib_tool] if tool})
+    result.update(recommended_engine=engine, bib_tool=bib_tool, build_cwd=work.relative_to(root).as_posix())
     return result
 
 
@@ -146,11 +169,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--main-tex")
+    parser.add_argument("--build-cwd", help="Existing project-relative build directory")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    res = inspect_latex_project(Path(args.project_dir), args.main_tex)
+    res = inspect_latex_project(Path(args.project_dir), args.main_tex, build_cwd_hint=args.build_cwd)
     write_json_atomic(Path(args.out), res)
-    print(json.dumps({k: res.get(k) for k in ("found", "main_tex", "recommended_engine", "bib_tool", "missing_assets")}, ensure_ascii=False))
+    print(json.dumps({k: res.get(k) for k in ("found", "main_tex", "build_cwd", "recommended_engine", "bib_tool", "missing_assets")}, ensure_ascii=False))
     return 0 if res["found"] else 1
 
 

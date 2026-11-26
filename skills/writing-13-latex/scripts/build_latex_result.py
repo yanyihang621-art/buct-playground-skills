@@ -71,8 +71,10 @@ def copy_build_logs(build, root, pmap, evidence, name):
     build["manifest"]["build_logs"] = paths
 
 
-def build_measurements(build, found):
+def build_measurements(build, found, *, skipped=False):
     """Report observed builds of the two source revisions on this toolchain."""
+    if skipped:
+        return {"attempted": False, "reason": "Original build deferred during the draft pass."}
     if not found:
         return {"attempted": False, "reason": "No matching TeX entrypoint in this revision."}
     manifest, diag = build["manifest"], build["diagnostics"]
@@ -103,8 +105,8 @@ def review_data(report):
         raise ValueError("report.contract_values must be an object")
 
 
-def copy_unbuilt_project(source, dest, hint):
-    pmap = inspect_latex_project(source, main_tex_hint=safe_main_hint(source, hint))
+def copy_unbuilt_project(source, dest, hint, build_cwd):
+    pmap = inspect_latex_project(source, main_tex_hint=safe_main_hint(source, hint), build_cwd_hint=build_cwd)
     omit = []
     if pmap.get("found"):
         main = Path(pmap["main_tex"])
@@ -116,7 +118,8 @@ def copy_unbuilt_project(source, dest, hint):
 
 def run_latex_pipeline(input_dir, work_dir, output_dir, *, case_path=None, auto_fix=None,
                        render_previews=None, project_dir=None, report_path=None,
-                       main_tex=None, engine=None, stage=None, material_dir=None):
+                       main_tex=None, engine=None, stage=None, material_dir=None,
+                       draft=False, build_cwd=None):
     input_root, work, output = (Path(p).resolve() for p in (input_dir, work_dir, output_dir))
     edited = Path(project_dir).resolve() if project_dir else input_root
     for source in (input_root, edited):
@@ -134,7 +137,8 @@ def run_latex_pipeline(input_dir, work_dir, output_dir, *, case_path=None, auto_
         transfer = Path(temp)
         run = _build(input_root, edited, work, transfer, case_path=case_path, auto_fix=auto_fix,
                      render_previews=render_previews, report_path=report_path,
-                     main_tex=main_tex, engine=engine, stage=stage, material_dir=material_dir)
+                     main_tex=main_tex, engine=engine, stage=stage, material_dir=material_dir,
+                     draft=draft, build_cwd=build_cwd)
         publish(transfer, output)
     return run
 
@@ -204,7 +208,7 @@ def publish(stage, output):
 
 
 def _build(input_root, edited, work, output, *, case_path, auto_fix, render_previews,
-           report_path, main_tex, engine, stage, material_dir):
+           report_path, main_tex, engine, stage, material_dir, draft, build_cwd):
     case_file = Path(case_path) if case_path else input_root / "case.json"
     case = read_object(case_file) if case_file.is_file() else {}
     report = read_object(Path(report_path)) if report_path else {}
@@ -213,6 +217,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     do_prev = case.get("render_previews", True) if render_previews is None else render_previews
     entry = main_tex or case.get("main_tex")
     engine_hint = engine or case.get("engine")
+    cwd_hint = build_cwd if build_cwd is not None else case.get("build_cwd")
     evidence, previews, delivery = (output / name for name in ("evidence", "previews", "latex_project"))
     for directory in (evidence, previews, delivery):
         directory.mkdir()
@@ -222,16 +227,12 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
         original = scratch / "original"
         final = scratch / "final"
         # Keep one pristine snapshot for the diff. Both TeX invocations run on copies.
-        original_map = copy_unbuilt_project(input_root, original, case.get("main_tex") or entry)
-        pmap = copy_unbuilt_project(edited, final, entry)
+        original_map = copy_unbuilt_project(input_root, original, case.get("main_tex") or entry, case.get("build_cwd"))
+        pmap = copy_unbuilt_project(edited, final, entry, cwd_hint)
         init = empty_build()
-        if original_map.get("found"):
-            baseline = scratch / "baseline"
-            shutil.copytree(original, baseline)
-            init = compile_latex_project(
-                baseline, original_map["main_tex"], engine=select_engine(original_map, engine_hint),
-                bib_tool=original_map.get("bib_tool"))
-            copy_build_logs(init, baseline, original_map, evidence, "initial")
+        if draft:
+            init["diagnostics"].update(error_count=0, root_causes=[], attempted=False,
+                                       reason="Original build deferred during the draft pass.")
         lint = {"changes_applied": [], "static_issues": []}
         built = empty_build()
         if pmap.get("found"):
@@ -240,15 +241,21 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
                 # A preamble repair can move all subsequent source-line anchors.
                 lint["static_issues"] = lint_and_fix_project(
                     final, pmap["main_tex"], apply_fixes=False)["static_issues"]
-            pmap = inspect_latex_project(final, main_tex_hint=pmap["main_tex"])
+            pmap = inspect_latex_project(final, main_tex_hint=pmap["main_tex"], build_cwd_hint=cwd_hint)
         # Capture sources before the first TeX command can write any auxiliary files.
         shutil.copytree(final, delivery, dirs_exist_ok=True)
         file_changes, source_index = source_diff(original, delivery, evidence)
         if pmap.get("found"):
             built = compile_latex_project(
                 final, pmap["main_tex"], engine=select_engine(pmap, engine_hint),
-                bib_tool=pmap.get("bib_tool"), previews_dir=previews if do_prev else None)
+                bib_tool=pmap.get("bib_tool"), previews_dir=previews if do_prev else None,
+                timeout_s=25 if draft else 60, build_cwd_hint=cwd_hint)
             copy_build_logs(built, final, pmap, evidence, "final")
+        if original_map.get("found") and not draft:
+            init = compile_latex_project(
+                original, original_map["main_tex"], engine=select_engine(original_map, engine_hint),
+                bib_tool=original_map.get("bib_tool"), build_cwd_hint=case.get("build_cwd"))
+            copy_build_logs(init, original, original_map, evidence, "initial")
         manifest, diagnostics = built["manifest"], built["diagnostics"]
         if manifest.get("output_pdf"):
             pdf = Path(manifest["output_pdf"])
@@ -276,7 +283,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     write_json_atomic(evidence / "file_changes.json", file_changes)
     write_json_atomic(evidence / "build_comparison.json", {
         "scope": "Observed original and revised source builds in the current environment.",
-        "original": build_measurements(init, original_map.get("found")),
+        "original": build_measurements(init, original_map.get("found"), skipped=draft),
         "revised": build_measurements(built, pmap.get("found")),
         "changed_source_files": [item["file"] for item in file_changes],
     })
@@ -285,6 +292,9 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     checks = report.get("task_checks", [])
     unresolved = manifest.get("rendered_unresolved_markers") or []
     uncertainties = list(report.get("uncertainties", []))
+    if draft:
+        uncertainties.append({"code": "draft_review_pending",
+                              "detail": "The editable draft was saved. Final case review and original build are pending."})
     layout = manifest.get("layout_audit", {})
     layout_pages = sorted({item["page"] for item in layout.get("findings", [])})
     if layout_pages:
@@ -316,7 +326,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
     previews_ok = not do_prev or bool(manifest["previews"])
     if pdf_ok and not previews_ok:
         uncertainties.append({"code": "preview_unavailable"})
-    passed = (manifest["status"] == "completed" and pdf_ok and previews_ok and
+    passed = (not draft and manifest["status"] == "completed" and pdf_ok and previews_ok and
               not diagnostics["error_count"] and not unresolved and not blockers and not open_percents and
               not diagnostics.get("has_undefined_refs") and not diagnostics.get("has_undefined_cites"))
     status = "completed" if passed else "failed" if manifest["status"] == "failed" else "partial"
@@ -369,7 +379,7 @@ def _build(input_root, edited, work, output, *, case_path, auto_fix, render_prev
             uncertainties.append({"code": "source_evidence_needs_manual_review",
                                   "count": evidence_checks["needs_manual_review"],
                                   "path": "evidence_checks.json"})
-    initial_errors = init["diagnostics"]["error_count"] if original_map.get("found") else None
+    initial_errors = init["diagnostics"]["error_count"] if original_map.get("found") and not draft else None
     result = {
         "schema_version": "writing-13-latex-result/v1",
         "challenge_id": "product-arena-07-865de7e4",
@@ -422,16 +432,19 @@ def main():
     parser.add_argument("--stage", help="Prepared case directory containing materials.json and baseline/")
     parser.add_argument("--material-dir", help="Original materials directory for citation checks (defaults to case.json directory)")
     parser.add_argument("--main-tex", help="Entrypoint relative to revised project root")
+    parser.add_argument("--build-cwd", help="Build directory relative to the revised project root")
     parser.add_argument("--engine", choices=("pdflatex", "xelatex", "lualatex"))
     parser.add_argument("--no-fix", action="store_true")
     parser.add_argument("--no-previews", action="store_true")
+    parser.add_argument("--draft", action="store_true", help="Save reviewed-so-far sources and a bounded build as partial")
     args = parser.parse_args()
     run = run_latex_pipeline(args.input_dir, args.work_dir, args.output_dir, case_path=args.case,
                              auto_fix=False if args.no_fix else None,
                              render_previews=False if args.no_previews else None,
                              project_dir=args.project_dir, report_path=args.report,
                              main_tex=args.main_tex, engine=args.engine,
-                             stage=args.stage, material_dir=args.material_dir)
+                             stage=args.stage, material_dir=args.material_dir, draft=args.draft,
+                             build_cwd=args.build_cwd)
     print(json.dumps({"case_id": run["result"]["case_id"], "status": run["result"]["status"],
                       "metrics": run["result"]["metrics"], "verification": run["result"]["verification"]},
                      ensure_ascii=False))

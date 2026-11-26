@@ -216,6 +216,31 @@ def _check_scientific_delivery(result, output_dir):
     return checks
 
 
+def _check_nested_draft(root):
+    """Exercise the normal build entry in draft and final mode on a nested project."""
+    original = root / "source with spaces"
+    write_text_lf(original / "paper" / "main.tex",
+                  "\\documentclass{article}\n\\begin{document}\n"
+                  "\\input{sections/results}\n\\end{document}\n")
+    write_text_lf(original / "sections" / "results.tex", "The reference temperature was 573 K.\n")
+    case = original / "case.json"
+    write_json_atomic(case, {"case_id": "nested-draft", "main_tex": "paper/main.tex"})
+    output = root / "output"
+    draft = run_latex_pipeline(original, root / "work", output, case_path=case, draft=True)
+    draft_result = draft["result"]
+    source_path = draft_result["artifacts"]["main_tex"]
+    pdf_path = draft_result["artifacts"]["output_pdf"]
+    draft_reviewable = (
+        draft_result["status"] == "partial" and draft_result["metrics"]["initial_error_count"] is None
+        and bool(source_path and (output / source_path).is_file())
+        and bool(pdf_path and "573 K" in pdf_text(output / pdf_path)))
+    final = run_latex_pipeline(original, root / "work", output, case_path=case, build_cwd=".")
+    return {
+        "draft_published_without_claiming_review_complete": draft_reviewable,
+        "nested_entry_builds_with_root_relative_dependencies": final["result"]["status"] == "completed",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run real MiKTeX/TeX compilation self-tests for writing-13-latex.")
     parser.add_argument("--out-dir", required=True)
@@ -264,9 +289,11 @@ def main() -> int:
     neg = _run_negative_diag_tests(root / "neg_diag")
     render_checks = _run_table_checks(root / "rendered_tables")
     contract_checks = _check_scientific_delivery(r1["result"], root / "l1" / "output")
+    nested_checks = _check_nested_draft(root / "nested-draft")
 
     summary: Dict[str, Any] = {
-        "all_passed": all([l1_ok, l2_ok, l3_ok, l4_ok, *neg.values(), *render_checks.values(), *contract_checks.values()]),
+        "all_passed": all([l1_ok, l2_ok, l3_ok, l4_ok, *neg.values(), *render_checks.values(),
+                           *contract_checks.values(), *nested_checks.values()]),
         "suites": {
             "l1_clean_article_with_bibtex": {"passed": l1_ok, "status": r1["result"]["status"], "metrics": r1["result"]["metrics"], "engine_version": r1["manifest"]["engine_version"]},
             "l2_broken_tex_diagnose_and_autofix": {"passed": l2_ok, "unreviewed_status": first["result"]["status"], "status": r2["result"]["status"], "metrics": r2["result"]["metrics"], "restored_measurement_visible": "91.8% at 573 K" in " ".join(final_text.split())},
@@ -276,6 +303,7 @@ def main() -> int:
         "negative_diag_tests": neg,
         "rendered_table_tests": render_checks,
         "output_contract_tests": contract_checks,
+        "nested_build_tests": nested_checks,
     }
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r2)

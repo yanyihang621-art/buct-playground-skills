@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -14,6 +15,7 @@ import time
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
+from inspect_project import inspect_latex_project
 from parse_tex_log import parse_tex_logs
 from pdf_layout import glyph_findings, poppler_findings, preview_pages
 from tex_utils import probe_tool_version, run_cmd, sha256_file, write_json_atomic, write_text_lf
@@ -127,7 +129,8 @@ def _evidence_files(fls, work):
 
 
 def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pdflatex",
-                          bib_tool: str | None = None, previews_dir: Path | None = None, timeout_s: int = 60) -> dict:
+                          bib_tool: str | None = None, previews_dir: Path | None = None, timeout_s: int = 60,
+                          build_cwd_hint: str | Path | None = None) -> dict:
     root = project_dir.resolve()
     source = (root / main_tex).resolve()
     relative = source.relative_to(root) if source.is_relative_to(root) else None
@@ -156,6 +159,15 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
         issue("unsupported_bibliography_tool", f"Unknown bibliography backend {bib_tool!r}.")
         return result
 
+    try:
+        project = inspect_latex_project(root, main_tex, build_cwd_hint=build_cwd_hint, probe_tools=False)
+    except ValueError as exc:
+        issue("invalid_build_directory", str(exc))
+        return result
+    build_dir = root / project["build_cwd"]
+    tex_file = Path(os.path.relpath(source, build_dir)).as_posix()
+    if not tex_file.startswith("../"):
+        tex_file = "./" + tex_file
     stem = source.stem
     passes = manifest["passes_executed"]
     flags = ["-interaction=nonstopmode", "-file-line-error", "-recorder"]
@@ -163,7 +175,7 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
         flags += ["-disable-write18", "-disable-installer"]
     else:
         flags.append("-no-shell-escape")
-    tex_cmd = [engine, *flags, "./" + source.name]
+    tex_cmd = [engine, *flags, tex_file]
     deadline = time.monotonic() + min(240, 4 * max(1, timeout_s))
     # Never read a PDF, log or stale aux from an earlier build as new evidence.
     def ignore(directory, names):
@@ -172,16 +184,16 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
             path = Path(directory) / name
             if path.is_symlink() or name in (".git", "__pycache__") or name.endswith((".aux", ".bcf", ".blg", ".fls", ".fdb_latexmk", ".run.xml", ".synctex.gz")):
                 ignored.append(name)
-            elif path.parent == source.parent and name in {f"{stem}.{ext}" for ext in ("pdf", "log", "out", "toc", "lof", "lot")}:
+            elif path.parent in (source.parent, build_dir) and name in {f"{stem}.{ext}" for ext in ("pdf", "log", "out", "toc", "lof", "lot")}:
                 ignored.append(name)
-            elif bib_tool and path == source.with_suffix(".bbl"):
+            elif bib_tool and path.parent in (source.parent, build_dir) and name == f"{stem}.bbl":
                 ignored.append(name)
         return ignored
 
     with tempfile.TemporaryDirectory(prefix="skill-tex-") as temp:
         tree = Path(temp).resolve() / "src"
         shutil.copytree(root, tree, ignore=ignore)
-        work = tree / relative.parent
+        work = tree / project["build_cwd"]
         log = work / (stem + ".log")
         blg = work / (stem + ".blg")
 
@@ -240,7 +252,9 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
                 if location.is_absolute() and location.is_relative_to(tree):
                     entry["file"] = location.relative_to(tree).as_posix()
                 elif not location.is_absolute() and (work / location).is_file():
-                    entry["file"] = (work / location).resolve().relative_to(tree).as_posix()
+                    logged = (work / location).resolve()
+                    if logged.is_relative_to(tree):
+                        entry["file"] = logged.relative_to(tree).as_posix()
         if missing_bib:
             issue("missing_bibliography_tool", f"Requested backend {bib_tool} is unavailable.")
         for p in passes:
@@ -279,8 +293,12 @@ def compile_latex_project(project_dir: Path, main_tex: str, *, engine: str = "pd
     # Use quoted arguments and change directory relative to the delivered script.
     commands = [shlex.join(p["argv"]) for p in passes]
     repro = source.parent / "build_repro.sh"
-    write_text_lf(repro, '#!/usr/bin/env bash\nset -euo pipefail\ncd -- "$(dirname -- "$0")"\n' + "\n".join(commands) + "\n")
-    manifest.update(repro_command=" && ".join(commands), repro_script=str(repro), build_cwd=relative.parent.as_posix())
+    relative_cwd = Path(os.path.relpath(build_dir, source.parent)).as_posix()
+    move = 'cd -- "$(dirname -- "$0")"\n'
+    if relative_cwd != ".":
+        move += "cd -- " + shlex.quote(relative_cwd) + "\n"
+    write_text_lf(repro, '#!/usr/bin/env bash\nset -euo pipefail\n' + move + "\n".join(commands) + "\n")
+    manifest.update(repro_command=" && ".join(commands), repro_script=str(repro), build_cwd=project["build_cwd"])
     return result
 
 
@@ -288,6 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--main-tex", required=True)
+    parser.add_argument("--build-cwd", help="Existing project-relative build directory")
     parser.add_argument("--engine", choices=ENGINES, default="pdflatex")
     parser.add_argument("--bib-tool", choices=(*BIB_TOOLS, "none"), default="none")
     parser.add_argument("--previews-dir")
@@ -298,7 +317,7 @@ def main():
     res = compile_latex_project(Path(args.project_dir), args.main_tex, engine=args.engine,
                                 bib_tool=None if args.bib_tool == "none" else args.bib_tool,
                                 previews_dir=Path(args.previews_dir) if args.previews_dir else None,
-                                timeout_s=max(1, args.timeout))
+                                timeout_s=max(1, args.timeout), build_cwd_hint=args.build_cwd)
     write_json_atomic(Path(args.out_manifest), res["manifest"])
     write_json_atomic(Path(args.out_diag), res["diagnostics"])
     print(json.dumps({"status": res["manifest"]["status"], "page_count": res["manifest"]["page_count"],
