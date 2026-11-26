@@ -81,10 +81,37 @@ def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
         for k, child in properties.items():
             if k in value:
                 errors.extend(_shape_errors(value[k], child, f"{path}.{k}"))
-    elif isinstance(value, list) and "items" in spec:
-        for i, item in enumerate(value):
-            errors.extend(_shape_errors(item, spec["items"], f"{path}[{i}]"))
+    elif isinstance(value, list):
+        if isinstance(spec.get("minItems"), int) and len(value) < spec["minItems"]:
+            errors.append(f"{path}: needs at least {spec['minItems']} items")
+        if isinstance(spec.get("maxItems"), int) and len(value) > spec["maxItems"]:
+            errors.append(f"{path}: permits at most {spec['maxItems']} items")
+        if "items" in spec:
+            for i, item in enumerate(value):
+                errors.extend(_shape_errors(item, spec["items"], f"{path}[{i}]"))
+    elif isinstance(value, str):
+        if isinstance(spec.get("minLength"), int) and len(value) < spec["minLength"]:
+            errors.append(f"{path}: shorter than {spec['minLength']} characters")
+        if isinstance(spec.get("maxLength"), int) and len(value) > spec["maxLength"]:
+            errors.append(f"{path}: longer than {spec['maxLength']} characters")
     return errors
+
+
+def _project_rows(field: str, rows: Any, spec: Any) -> Any:
+    """Represent verified editorial records in the narrower shape requested by the case."""
+    if not isinstance(rows, list) or not isinstance(spec, dict):
+        return rows
+    item = spec.get("items")
+    if not isinstance(item, dict) or not all(isinstance(row, dict) for row in rows):
+        return rows
+    if item.get("type") == "string":
+        key = {"sources": "path", "contributions": "claim", "research_gaps": "gap_statement",
+               "change_records": "action", "claim_evidence": "claim"}.get(field)
+        if key and all(isinstance(row.get(key), str) for row in rows):
+            return [row[key] for row in rows]
+    if item.get("additionalProperties") is False and isinstance(item.get("properties"), dict):
+        return [{k: v for k, v in row.items() if k in item["properties"]} for row in rows]
+    return rows
 
 
 def resolve_contract(result: dict, contract: Any, products: dict, supplied: dict) -> list[dict]:
@@ -106,6 +133,9 @@ def resolve_contract(result: dict, contract: Any, products: dict, supplied: dict
             result[field] = None
             issues.append({"code": "unresolved_contract_field", "field": field,
                            "message": "Supply an evidence-based value in analysis.contract_fields or document the missing source."})
-        elif errors := _shape_errors(result[field], spec, field):
-            issues.append({"code": "contract_shape_mismatch", "field": field, "details": errors})
+        else:
+            if _shape_errors(result[field], spec, field):
+                result[field] = _project_rows(field, result[field], spec)
+            if errors := _shape_errors(result[field], spec, field):
+                issues.append({"code": "contract_shape_mismatch", "field": field, "details": errors})
     return issues

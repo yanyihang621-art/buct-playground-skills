@@ -20,6 +20,7 @@ TEX_CITATION = re.compile(
     r"\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]+)\}", re.I
 )
 NUMBER_CITATION = re.compile(r"\[(\s*\d+(?:\s*[-–—,;，、]\s*\d+)*\s*)\](?!\()")
+LOCATED_NUMBER = re.compile(r"^\s*(\d+)\s*,\s*(?:(?:pp?|ch|sec|fig|tab)\.?\s*|第)\d+(?:\s*[-–—]\s*\d+)?(?:页|章|节)?\s*$", re.I)
 COMPARISON = re.compile(
     r"\b(?:whereas|unlike|both|compared (?:with|to)|by contrast|in contrast|"
     r"on the other hand|similarly|respectively|trade[- ]off|converge|differ(?:s|ed)?|"
@@ -86,6 +87,12 @@ class Citations:
                     ambiguous.add(match.group(0))
                     continue
                 numeric.update(str(i) for i in range(first, last + 1))
+        # In [2, p. 15; 5, pp. 8–10], only 2 and 5 identify references.
+        for bracket in re.finditer(r"\[([^\]\[\n]+)\](?!\()", passage):
+            entries = re.split(r"[;；]", bracket.group(1))
+            parts = [LOCATED_NUMBER.fullmatch(e) or re.fullmatch(r"\s*(\d+)\s*", e) for e in entries]
+            if all(parts):
+                numeric.update(m.group(1) for m in parts)
         missing_numbers = numeric.difference(self.numbers)
         keys.update(self.numbers[n] for n in numeric if n in self.numbers)
         for pattern, candidates in self.authors:

@@ -292,6 +292,18 @@ def main() -> int:
     r3 = run(c1, "w3", draft_file=draft_file, analysis_file=notes_file)
     r4 = run(_setup_w4_empty_corpus(root / "w4" / "input"), "w4")
     negative = _run_negative_qa_tests(r1, r3)
+    from citation_audit import Citations
+    from output_contract import resolve_contract
+    from publication_citations import PublicationCitations
+    refs = [{"cite_key":"sampleA","title":"Sample A","authors":["P. Reed"],"year":2021},
+            {"cite_key":"sampleB","title":"Sample B","authors":["J. Lin"],"year":2023}]
+    authoring = "Both setups measured drift [@sampleA, p. 15; @sampleB, pp. 8–10]."
+    printed, print_errors = PublicationCitations(authoring, refs, style="numeric").render()
+    body, bibliography = printed.split("## References", 1)
+    resolved, missing, ambiguous = Citations(refs, bibliography).resolve(body)
+    narrow = {"sources":[{"path":"notes.md","role":"literature"}]}
+    contract_errors = resolve_contract(narrow, {"properties":{"sources":{"type":"array","items":{"type":"string"}}},
+                                               "required":["sources"]}, {}, {})
     tests = {
         "w1 English scaffold requires editing": r1["result"]["status"] == "partial" and r1["clusters"]["route_cluster_count"] == 3,
         "w2 Chinese BibTeX scaffold requires editing": r2["result"]["status"] == "partial" and r2["clusters"]["route_cluster_count"] == 2,
@@ -300,6 +312,11 @@ def main() -> int:
         "w4 empty input is explicit": r4["result"]["status"] == "refused" and bool(r4["result"]["uncertainties"]),
         **negative,
         **_interpretation_regressions(r3),
+        "printed references preserve page locators and resolve their sources":
+            not print_errors and not missing and not ambiguous and resolved == {"sampleA","sampleB"}
+            and "[1, p. 15; 2, pp. 8–10]" in body and "@" not in printed,
+        "case source-path array is projected from actual records":
+            not contract_errors and narrow["sources"] == ["notes.md"],
     }
     summary = {"all_passed": all(tests.values()), "suites": tests}
     if args.compare_baseline:

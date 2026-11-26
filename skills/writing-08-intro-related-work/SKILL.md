@@ -1,50 +1,57 @@
 ---
 name: writing-08-intro-related-work
-description: Write or revise a source-grounded academic introduction and related work, organize competing approaches, attach citations to claims, and connect a scoped research gap to the author's actual method and results. Supports Chinese and English, draft revision, citation checks, and missing or conflicting materials.
+description: Write and revise a publication-ready introduction and related work from supplied research materials. Compare methods on a common axis, derive a bounded gap, attach literature and author evidence to claims, and deliver the requested editable files.
 ---
 
 # 引言与相关工作写作
 
-Deliver a manuscript an author can edit, in the case's requested language, length, citation style and format. The executing agent reads the sources, decides what follows from them and writes the prose. The scripts index materials, preserve quotations, build the comparison table and check the deliverables.
+Read the actual case, task instructions and source material. Deliver a manuscript in the requested language, genre, length, citation style and filenames. Use the process below for a new draft or revision. If the task asks for a narrower change, preserve the supplied manuscript and edit only the requested portion.
 
-## 1. Read the case before choosing a structure
-
-Read `/input/case.json`, the supplied `task.md`, and the input tree. Note the audience, journal, language, exact filenames, original `output_contract` keys/types and which artifacts need a preview. Identify which materials describe the **present study** and which describe **prior work**. A domain label, a filename, or an instruction to demonstrate improvement supplies no research result.
+## Open the sources
 
 ```sh
-SKILL_DIR=/skills/weekly-skill
-if [ ! -f "$SKILL_DIR/scripts/ingest_materials.py" ]; then SKILL_DIR=/app/submission; fi
-WORK=/app/work/intro_rw
-mkdir -p "$WORK" /app/output
-python3 "$SKILL_DIR/scripts/ingest_materials.py" --input-dir /input --case /input/case.json --out "$WORK/materials_index.json"
+S=/skills/weekly-skill
+[ -f "$S/scripts/manuscript_workbench.py" ] || S=/app/submission
+W=/app/work/intro_packet
+O=/app/output
+python3 "$S/scripts/manuscript_workbench.py" prepare --input-dir /input --work-dir "$W" --output-dir "$O"
 ```
 
-The index contains `papers`, `study_facts` and `passages`. Each passage has a stable `source_id`, relative `path`, `locator` and `text`. Read relevant passages in context. For a long index, use Python to select file/locator and a few adjacent passages at a time. Open original tables, figure captions, PDF pages and DOCX tables when reading order, signs, superscripts or units are uncertain. For scans, use available page rendering/OCR and inspect the image. If a number remains unreadable, leave it out and identify the page in the uncertainty record. Bibliography-only records establish metadata; look for the supporting abstract, full text or supplied notes before asserting a result.
+Read the case's `output_contract` and the brief produced by `prepare`. Check the complete case and `task.md` for audience, output language, citation style, format, and requested revision. Separate prior literature from the authors' own records. The reading packet attaches an `E…` ID, source file and native location to each short excerpt. For long inputs use `read --find TERM --limit 6` or `read --source RELATIVE_PATH --offset N` with the same `--work-dir`. Read neighbouring units to interpret an excerpt. For ambiguous PDF tables, mathematical signs or an image-only page, inspect the original page. Preserve material shortfalls and conflicting evidence.
 
-## 2. Build the argument from the materials
+## Compose the actual manuscript once
 
-Work in `$WORK/analysis.json`. The field shapes and a worked comparison are in `examples/editorial_notes.md`. Keep evidence rows short. An anchor of the form `{"source_id":"…","quote":"…"}` must quote a contiguous passage from the index. Use the source's own language in the quote and the requested language in the manuscript.
+Write `$W/draft.md`. Use the requested headings or continuous paragraphs. Write the paper yourself. Read the draft aloud as if its evidence ledger were unavailable.
 
-1. **Background.** Name a specific decision or phenomenon, the observable that would resolve it, and a documented constraint that makes existing evidence insufficient. Open on that constraint. Tie each external fact, number, and term whose definition matters to its source.
-2. **Related work.** Choose a comparison axis relevant to the target problem (e.g. measurement scale, supervision, acquisition setting). For each representative approach record the setting, outcome measured, finding and scope. Write a synthesis sentence answering a concrete question across studies, followed by the condition under which the comparison changes. Do not rank methods across different datasets, endpoints or units without a supplied common comparator. With one source describe its tested boundary. With conflicting findings give the respective conditions and leave any unexplained conflict open.
-3. **Gap.** Write the smallest unanswered question justified by the reviewed studies. Identify the boundary of each supporting source and how their combined coverage leaves a specific decision unresolved. Distinguish a study's explicit limitation from your inference about what its design tested. Qualify claims to the supplied literature. Missing text or an absent DOI is a material gap, never evidence of scientific novelty.
-4. **Contribution.** Connect each contribution to a particular gap and to an author-owned method section, table, figure or result. Preserve the population, comparator, units, uncertainty and regime. Name the outcome in the gap sentence, so the reader can recognize the same outcome in the contribution. If only a protocol is supplied, describe what it tests. If there is no author evidence, deliver the literature-supported sections and flag the missing contribution evidence. Do not promote proposed work to a demonstrated finding.
+- **Background.** Start with the scientific decision, observable or operating constraint. Bind externally testable statements and numbers to the relevant supplied work.
+- **Related work.** Compare representative approaches under a named dimension such as population, measurement, supervision or evaluation protocol. Tell the reader what each design could establish, and what it held fixed. Explain incompatible metrics or endpoints before comparing values. Describe conflicting findings under their respective conditions. Cite each source next to its claim.
+- **Gap.** Specify the missing comparison or condition that the cited designs leave unresolved. Explain how the limitations of two approaches fit together when there are two relevant works. Scope the inference to the reviewed sources. An unavailable full text is a material limitation.
+- **Contribution.** Name the author's actual design, comparator, figure/table, result or protocol answering the gap. Retain units, sample and regime. State essential interpretation limits beside the result, especially for observational comparisons, proxy outcomes or single settings. When only a protocol is supplied, limit the contribution to study design.
 
-Use `paper_annotations` for raw sources or refined reading notes, reusing existing `cite_key` where possible. Write `research_gaps`, `contributions`, and sentence-level `claim_evidence` for the substantive assertions. Capture both sides of a comparison and keep prior work separate from the author's evidence. Preserve actual metadata; identify missing metadata explicitly.
+End a supported sentence or short paragraph with an evidence comment. Copy the **actual IDs** from the current reading packet. The comment applies to the prose since the preceding comment or blank line. It is removed from the delivered manuscript. Schematic syntax (ellipses below stand for actual excerpt IDs):
 
-## 3. Write the manuscript, then audit it
+```text
+<background sentence and citation><!--ev background E…-->
+<comparable findings with citations><!--ev comparison E… E…-->
+<bounded question grounded in both studies><!--ev gap:G1 E… E…-->
+<author's contribution and empirical setting><!--ev contribution:G1 E…-->
+<essential boundary visible to the reader><!--ev limit E…-->
+```
 
-Write `$WORK/agent_draft.md` yourself. Remove working IDs, QA commentary and ledger prose from publishable paragraphs. Connect background, comparison, gap and contribution with transitions. Follow the case if it requires continuous paragraphs, a combined Introduction, numbered citations, author–year citations or bilingual text. For unconventional headings use `section_spans` in the analysis to point to exact sentences in the manuscript. Place citations immediately after the clauses they support. Verify that every in-text citation resolves to the correct work and references agree on author, year, title and venue. Keep a concise record of what was revised and which uncertainties the author must resolve.
+Use as many evidence links as the claims require. Include both sides of a comparison. A single-paper case may support a narrower design boundary. Support author contributions from the author's own evidence. Preserve supplied bibliography metadata. Reuse a packet citation key such as `[@key]` or the requested display style, and ensure the bibliography resolves each in-text citation. Keep exact source quotations in their original language.
 
-Read the manuscript once without the sidecars. For the most important comparison, say what each design held fixed or varied and why neither result answers the remaining question. For each main finding, ask what a reader might mistakenly infer from the numbers alone. If grouping cannot establish cause, a surrogate cannot establish the target outcome, or a single setting cannot establish transfer, include the relevant limit **beside the claim in the manuscript**, in natural prose. Select only limits that change the interpretation. Record each essential scope sentence as an `interpretation_limits` entry with `kind`, exact `manuscript_span`, `reason` and optionally `evidence`. When revising, record the actual change, its reason and supporting `source_ids` in `change_records`. For new writing, document the main editorial decisions in those records.
+If the packet identifies a source but cannot extract reliable bibliographic fields or route labels, add `paper_annotations` in `$W/notes.json`. Each card can use `units` with actual E IDs, plus `cite_key`, verified title, authors, year, venue, method route, evaluation setting, finding and limitation. Distinguish actual limitations from your synthesis. Include concise `change_records` for meaningful revisions and `contract_fields` for case-specific fields not produced automatically. Use `artifact_names` for named deliverables. Optional detailed card syntax is in `examples/editorial_notes.md`.
 
-Save useful partial work early. Fill case-specific output fields in `contract_fields` with real contents or actual artifact names, respecting their requested types. For required named manuscript outputs, set `artifact_names` and pass requested format flags. Package using the actual authored draft:
+## Deliver and verify
+
+To reuse an already-written passage in a case field, set e.g. `"contract_bindings":{"study_limit":"limit"}` in the notes when the case requires `study_limit`. The selector can also name a gap such as `gap:G1`. Use `contract_fields` for values that need a separate structure. The complete reading packet summary is saved to `$W/reading.md`.
 
 ```sh
-python3 "$SKILL_DIR/scripts/build_intro_rw_result.py" \
-  --input-dir /input --case /input/case.json --work-dir /app/work --output-dir /app/output \
-  --materials-file "$WORK/materials_index.json" --analysis "$WORK/analysis.json" \
-  --draft-file "$WORK/agent_draft.md"
+python3 "$S/scripts/manuscript_workbench.py" finish --draft "$W/draft.md" --work-dir "$W" --output-dir "$O"
+# When using notes, append: --notes "$W/notes.json"
+# Explicit exports, if required: --format docx --format pdf --format png
 ```
 
-Inspect `/app/output/result.json`, the manuscript, comparison matrix, evidence and QA artifacts. Read the cited passage for each flagged sentence and amend prose or evidence, then rerun. A matching quotation locates the source; **check entailment in context**, including negation and scope. Reopen requested editable files and inspect real rendered previews. Compare every original contract field and artifact path against the files on disk. For unmet requirements keep useful work, record why and return an honest partial result. The command without an authored draft is a diagnostic scaffold for local development.
+Read `result.json` and the actual manuscript, reference list and requested artifacts in `/app/output`. Review whether each quote entails the sentence in context, whether comparisons share an endpoint and whether each contribution reaches only as far as the supporting experiment. Open editable documents and inspect actual rendered previews when requested. Resolve reported errors and run `finish` again in the same work directory. If the task is genuinely partial, keep the useful manuscript and identify the exact missing file, passage or tool. The case-specific contract determines the final fields and deliverables.
+
+If the workbench or an optional tool cannot run, continue with the available materials and the shell or Python standard library. Save the authored manuscript under the requested filename, write the original case ID and case-specific fields to `/app/output/result.json`, and record actual sources, revisions and remaining limits. Existing external workflows can still use `scripts/build_intro_rw_result.py --draft-file … --analysis …`.

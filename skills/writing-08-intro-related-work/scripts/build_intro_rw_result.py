@@ -15,6 +15,7 @@ from draft_intro_related_work import render_intro_and_related_work
 from export_manuscript import case_exports, export_manuscript
 from ingest_materials import ingest_materials
 from output_contract import contract_specs, required_contract_fields, resolve_contract
+from publication_citations import PublicationCitations, case_citation_style
 from rw_utils import write_json_atomic, write_text_lf
 from verify_intro_rw import verify_intro_and_related_work
 
@@ -24,6 +25,38 @@ def _read_object(path: str | Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"{Path(path).name} must contain a JSON object")
     return data
+
+
+def _publication_text(draft: str, papers: list, case: dict, materials: dict,
+                      analysis: dict, gc_map: dict) -> tuple[str, list]:
+    formatter = PublicationCitations(draft, papers, case_citation_style(case))
+    finished, issues = formatter.render()
+    if finished == draft:
+        return draft, issues
+    for key, field in (("research_gaps", "gap_statement"), ("contributions", "claim"),
+                       ("claim_evidence", "claim")):
+        for row in gc_map.get(key, []):
+            if isinstance(row, dict) and isinstance(row.get(field), str):
+                row[field] = formatter.fragment(row[field])
+    for limit in materials.get("interpretation_limits", []):
+        if isinstance(limit, dict) and isinstance(limit.get("manuscript_span"), str):
+            limit["manuscript_span"] = formatter.fragment(limit["manuscript_span"])
+    spans = materials.get("section_spans", {})
+    for key in spans:
+        spans[key] = formatter.fragment(spans[key])
+    # Contract-specific prose may quote the draft. Keep source quotations and IDs verbatim.
+    def render_field(value):
+        if isinstance(value, list):
+            return [render_field(v) for v in value]
+        if isinstance(value, dict):
+            return {k: v if k in {"quote","source_quote","source_id","source_ids","cite_key","cite_keys","evidence"}
+                    else render_field(v) for k,v in value.items()}
+        if isinstance(value, str):
+            return finished if value == draft else formatter.fragment(value)
+        return value
+    if isinstance(analysis.get("contract_fields"), dict):
+        analysis["contract_fields"] = render_field(analysis["contract_fields"])
+    return finished, issues
 
 
 def _sections(draft: str) -> dict:
@@ -144,6 +177,9 @@ def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_di
         delivery_issues.append({"code": "awaiting_agent_draft",
                                 "message": "Working outline generated. Review the evidence and write the final prose."})
 
+    if mode == "agent_manuscript":
+        draft, citation_issues = _publication_text(draft, papers, case, materials, analysis, gc_map)
+        delivery_issues.extend(citation_issues)
     qa = verify_intro_and_related_work(draft, materials, clusters, gc_map, language=lang)
     uncertainties = [*materials.get("material_gaps", []), *analysis.get("uncertainties", [])]
     if any(_blocking_uncertainty(item) for item in uncertainties):
@@ -209,7 +245,17 @@ def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_di
                          f"{len(research_gaps)} proposed gaps, {len(contributions)} contribution entries, "
                          f"{len(cards)} claim-evidence links.")
     products = _contract_products(result, _sections(draft), matrix, papers, research_gaps, contributions)
-    contract_issues = resolve_contract(result, case.get("output_contract"), products, analysis.get("contract_fields", {}))
+    # Preserve full audit records while presenting the case's requested wire format.
+    contract = case.get("output_contract")
+    wire = dict(result)
+    supplied_fields = analysis.get("contract_fields", {})
+    if not isinstance(supplied_fields, dict):
+        delivery_issues.append({"code": "invalid_contract_fields", "message": "contract_fields must be an object."})
+        supplied_fields = {}
+    contract_issues = resolve_contract(wire, contract, products, supplied_fields)
+    reshaped = {key for key in wire.keys() & result.keys() if wire[key] != result[key]}
+    for key in wire.keys() - result.keys():
+        result[key] = wire[key]
     all_issues = [*delivery_issues, *contract_issues]
     if all_issues:
         result["uncertainties"].extend(all_issues)
@@ -217,14 +263,13 @@ def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_di
         result["verification"]["failed_checks"].extend(dict.fromkeys(row.get("code", "delivery_issue") for row in all_issues))
         if has_material:
             result["status"] = "partial"
-    contract = case.get("output_contract")
+    payload = {key: wire[key] if key in reshaped else value for key, value in result.items()}
     if isinstance(contract, dict) and contract.get("additionalProperties") is False:
         allowed = set(contract_specs(contract)) | {"case_id"}
-        # Retain independent audit information even when only case fields are allowed in result.json.
+        payload = {k: v for k, v in payload.items() if k in allowed}
+    if reshaped or payload.keys() != result.keys():
         write_json_atomic(out / "editorial_report.json", result)
-        write_json_atomic(out / "result.json", {k: v for k, v in result.items() if k in allowed})
-    else:
-        write_json_atomic(out / "result.json", result)
+    write_json_atomic(out / "result.json", payload)
     return {"result": result, "materials": materials, "clusters": clusters, "gc_map": gc_map,
             "draft_md": draft, "qa_report": qa}
 

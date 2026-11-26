@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -161,6 +162,55 @@ def _convert(source: Path, dest: Path, work: Path, language: str) -> None:
     _run([*args, str(source), "-o", str(dest)], work)
 
 
+def _office_pdf(stage: Path) -> None:
+    """Render the actual generated Word file with an installed Office renderer."""
+    source = stage / "manuscript.docx"
+    if not source.is_file():
+        raise ValueError("No DOCX available for preview")
+    try:
+        office = _tool("soffice", "libreoffice")
+    except ValueError:
+        if os.name != "nt":
+            raise
+        # An isolated Word instance renders only the document created by this export.
+        script = """
+import sys
+from win32com.client import DispatchEx
+word = DispatchEx("Word.Application")
+document = None
+try:
+    word.Visible = False
+    word.DisplayAlerts = 0
+    word.AutomationSecurity = 3
+    document = word.Documents.Open(sys.argv[1], ReadOnly=True, AddToRecentFiles=False, Visible=False)
+    document.ExportAsFixedFormat(sys.argv[2], 17)
+finally:
+    if document is not None:
+        document.Close(False)
+    word.Quit(False)
+"""
+        _run([sys.executable, "-c", script, str(source), str(stage / "manuscript.pdf")], stage)
+        return
+    _run([office, "-env:UserInstallation=" + (stage / "profile").as_uri(), "--headless",
+          "--convert-to", "pdf", "--outdir", str(stage), str(source)], stage)
+
+
+def _preview_png(stage: Path) -> None:
+    # Preview page one of the delivered PDF, preserving its rendered glyphs and layout.
+    if shutil.which("pdftoppm"):
+        _run([_tool("pdftoppm"), "-f", "1", "-l", "1", "-singlefile", "-r", "120",
+              "-png", str(stage / "manuscript.pdf"), str(stage / "manuscript")], stage)
+        return
+    try:
+        import fitz
+    except ImportError as exc:
+        raise ValueError("PNG preview needs pdftoppm or PyMuPDF") from exc
+    with fitz.open(stage / "manuscript.pdf") as pdf:
+        if not len(pdf):
+            raise ValueError("Empty PDF cannot provide a preview")
+        pdf[0].get_pixmap(dpi=120, alpha=False).save(stage / "manuscript.png")
+
+
 def export_manuscript(text: str, output_dir: Path, formats: list[str], names: dict,
                       language: str) -> tuple[dict, list]:
     requested = {str(f).lower().lstrip(".") for f in [*formats, *names]}
@@ -189,13 +239,9 @@ def export_manuscript(text: str, output_dir: Path, formats: list[str], names: di
                 target = _target(output_dir, names, ext)
                 intermediate = stage / ("manuscript." + ext)
                 if ext == "pdf" and "docx" in requested:
-                    office = _tool("soffice", "libreoffice")
-                    _run([office, "-env:UserInstallation=" + (stage / "profile").as_uri(),
-                          "--headless", "--convert-to", "pdf", "--outdir", str(stage),
-                          str(stage / "manuscript.docx")], stage)
+                    _office_pdf(stage)
                 elif ext == "png":
-                    _run([_tool("pdftoppm"), "-f", "1", "-l", "1", "-singlefile", "-r", "120",
-                          "-png", str(stage / "manuscript.pdf"), str(stage / "manuscript")], stage)
+                    _preview_png(stage)
                 else:
                     _convert(md, intermediate, stage, language)
                 if not intermediate.is_file() or not intermediate.stat().st_size:
