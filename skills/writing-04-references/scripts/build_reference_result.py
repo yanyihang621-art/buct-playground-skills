@@ -12,11 +12,13 @@ import shutil
 
 from dedup_references import deduplicate_library
 from editable_manuscript import export_docx
+from format_references import format_library
 from ingest_materials import ingest_materials
 from io_utils import write_json_atomic, write_text_lf
 from result_contract import apply_contract
 from contract_delivery import artifact_manifest, publish_named_outputs, publish_result
 from claim_coverage import analyze_claim_coverage
+from final_claim_audit import final_claim_audit
 from tex_project import prepare_tex_project, export_tex_project, readable_tex
 from word_citations import prepare_word, embedded_word_records
 from parse_bib_sources import make_raw_library
@@ -45,7 +47,7 @@ def declared_numbers(canonical):
 
 
 def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, style=None,
-                           verify_doi_online=False, review=None, want_docx=False):
+                           verify_doi_online=False, review=None, want_docx=False, draft_only=False):
     root, work, output = Path(input_dir), Path(work_dir) / "references", Path(output_dir)
     work.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -138,28 +140,50 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
         write_text_lf(bib, sync["formatted_bibliography"])
         if project:
             # Anchor semantic decisions in the chapter, figure caption or appendix where the citation lives.
-            tex_files, tex_issues = export_tex_project(project, sync, output)
+            tex_files, tex_issues = export_tex_project(project, sync, output, compile_pdf=not draft_only)
             artifacts.update(tex_files)
             problems.extend(tex_issues)
         visible_ms = readable_tex(project, sync["synced_manuscript"]) if project else sync["synced_manuscript"]
         coverage = analyze_claim_coverage(visible_ms, canonical, cmap, evidence_passages=materials["evidence_passages"],
                                           manuscript_source=source)
         save_json("claim_coverage", coverage)
+        delivered_ms = visible_ms
+        if target == "apa7" and ext == ".md" and sync["cited_records"] and not cmap["unresolved_keys"]:
+            plain_bib = sync["formatted_bibliography"]
+            if plain_bib.strip() and visible_ms.endswith(plain_bib):
+                styled_bib = format_library(sync["cited_records"], "apa7-markdown")
+                delivered_ms = visible_ms[:-len(plain_bib)] + styled_bib
+                write_text_lf(draft, delivered_ms)
+                formatted = output / "bibliography_apa7.md"
+                write_text_lf(formatted, styled_bib)
+                artifacts["bibliography_styled"] = str(formatted)
         qa = verify_citations(draft.read_text(encoding="utf-8"), cmap, canonical, dedup, raw,
                               verify_doi_online=verify_doi_online, semantic_reviews=review.get("semantic_reviews"),
                               evidence_root=root, formatted_bibliography=bib.read_text(encoding="utf-8"))
+        audit = final_claim_audit(coverage, qa, resolutions=review.get("claim_resolutions", []), evidence_root=root)
+        save_json("final_claim_audit", audit)
+        if audit["blocking"]:
+            problems.append({"code": "claim_audit_open", "items": audit["blocking"]})
         save_json("citation_map", cmap)
+        retained = cmap["retained_original_occurrences"]
+        if retained:
+            known = {rec["cite_key"]: rec for rec in canonical["records"]}
+            save_json("retained_citations", [{**row, "sources": [
+                {field: known[key].get(field) for field in ("cite_key", "title", "doi", "source_provenance")}
+                for key in row["cite_keys"]]} for row in retained])
         save_json("change_log", sync["change_log"])
         save_json("qa_report", qa)
         save_json("claim_evidence", qa["claim_evidence"])
         patch = evidence_dir / "manuscript.diff"
         original = readable_tex(project, ms) if project else ms
-        write_text_lf(patch, "".join(difflib.unified_diff(original.splitlines(True), visible_ms.splitlines(True),
+        write_text_lf(patch, "".join(difflib.unified_diff(original.splitlines(True), delivered_ms.splitlines(True),
                                                           fromfile=str(source), tofile=draft.name)))
         artifacts.update(synced_manuscript=artifacts.get("tex_project_entry", str(draft)),
                          bibliography_formatted=artifacts.get("tex_project_bibliography", str(bib)), manuscript_diff=str(patch))
-        if docx_source or want_docx or review.get("docx") is True:
-            files, notes = export_docx(docx_source, ms, visible_ms, sync["formatted_bibliography"], output, word_context=word)
+        if not draft_only and (docx_source or want_docx or review.get("docx") is True):
+            apa_records = sync["cited_records"] if target == "apa7" and not cmap["unresolved_keys"] else None
+            files, notes = export_docx(docx_source, ms, visible_ms, sync["formatted_bibliography"], output,
+                                       word_context=word, apa_records=apa_records)
             artifacts.update(files)
             problems.extend(notes)
         problems.extend(qa["uncertainties"])
@@ -170,18 +194,22 @@ def run_reference_pipeline(input_dir, work_dir, output_dir, *, case_path=None, s
             problems.append({"code": "claims_await_review", "pairs": pending})
         if not cmap["cited_count"]:
             problems.append({"code": "no_resolved_citations", "action": "review original markers and unsupported claims"})
+        if draft_only:
+            problems.append({"code": "draft_pending_final_export"})
         if not problems and qa["passed"]:
             result["status"] = "completed"
         result.update(summary=f"{raw['record_count']} input records, {canonical['record_count']} distinct records, "
                       f"{len(cmap['in_text_occurrences'])} citation sites, {pending} claim/source pairs awaiting review.",
-                      metrics=qa["metrics"], sources=[{"manuscript": source}, *[
+                      metrics={**qa["metrics"], "retained_original_sites": len(retained)}, sources=[{"manuscript": source}, *[
                           {k: rec.get(k) for k in ("ref_id", "cite_key", "title", "doi", "source_provenance")}
                           for rec in sync["cited_records"]]], change_records=sync["change_log"],
-                      verification={"passed": qa["passed"], "check_count": len(qa["checks"]),
-                                    "failed_checks": [k for k, v in qa["checks"].items() if not v],
+                      verification={"passed": qa["passed"] and audit["passed"], "check_count": len(qa["checks"]) + 1,
+                                    "failed_checks": [k for k, v in qa["checks"].items() if not v]
+                                    + ([] if audit["passed"] else ["claim_coverage_and_factual_consistency"]),
                                     "doi_verification_mode": qa["doi_verification_mode"],
                                     "pending_claim_source_pairs": pending})
-        produced.update(manuscript=visible_ms, revised_manuscript=visible_ms, claim_coverage=coverage,
+        produced.update(manuscript=delivered_ms, revised_manuscript=delivered_ms, claim_coverage=coverage,
+                        final_claim_audit=audit,
                         bibliography=sync["formatted_bibliography"], references=sync["cited_records"],
                         citation_map=cmap, claim_evidence=qa["claim_evidence"], dedup_report=dedup,
                         qa_report=qa, evidence=qa["claim_evidence"], change_log=sync["change_log"])
@@ -205,11 +233,13 @@ def main():
     parser.add_argument("--style")
     parser.add_argument("--review", type=Path, help="Reviewed anchors, source quotations and task-specific contract fields")
     parser.add_argument("--docx", action="store_true")
+    parser.add_argument("--draft", action="store_true", help="Produce review materials before rendering or compiling")
     parser.add_argument("--verify-doi-online", action="store_true")
     args = parser.parse_args()
     review = json.loads(args.review.read_text(encoding="utf-8-sig")) if args.review else {}
     res = run_reference_pipeline(args.input_dir, args.work_dir, args.output_dir, case_path=args.case, style=args.style,
-                                 review=review, want_docx=args.docx, verify_doi_online=args.verify_doi_online)["result"]
+                                 review=review, want_docx=args.docx, verify_doi_online=args.verify_doi_online,
+                                 draft_only=args.draft)["result"]
     print(json.dumps({"case_id": res["case_id"], "status": res["status"], "summary": res["summary"],
                       "uncertainty_count": len(res["uncertainties"])}, ensure_ascii=False))
     return 1 if res["status"] == "refused" else 0

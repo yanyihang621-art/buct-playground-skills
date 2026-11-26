@@ -58,6 +58,39 @@ class CitationDelivery(unittest.TestCase):
             self.assertTrue(Path(result["artifacts"]["manifest"]).is_file())
             self.assertTrue((root / "output/evidence/contract_audit.json").is_file())
 
+    def test_unresolved_number_preserves_other_source_matches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            library = [dict(record("Blue", "May Lin"), original_number=1, doi="10.1002/example.2024")]
+            manuscript = ("The calibration used three samples [1].\nMissing citation [99].\n\nReferences\n"
+                          "[1] Vale, I., & Lin, M. (2024). Study of Blue. DOI:10.1002/example.2024.\n\n"
+                          "Appendix\nA second use [1].\n")
+            result = run(root, manuscript, library,
+                         review={"insert_claims": [{"target_phrase": "The calibration", "cite_keys": ["Blue"]}]})
+            draft = Path(result["artifacts"]["synced_manuscript"]).read_text(encoding="utf-8")
+            audit = json.loads(Path(result["artifacts"]["retained_citations_json"]).read_text(encoding="utf-8"))
+            self.assertEqual(draft, manuscript)
+            self.assertEqual(result["status"], "partial")
+            self.assertEqual(result["metrics"]["retained_original_sites"], 2)
+            self.assertEqual([site["line"] for site in audit], [1, 8])
+            self.assertTrue(all(site["original_tag"] == "[1]" and site["sources"][0]["cite_key"] == "Blue"
+                                for site in audit))
+
+    def test_located_source_conflict_blocks_completed_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = "Catalyst stability increased by 4%."
+            record_with_abstract = dict(record("Blue", "May Lin"), abstract=source)
+            claim = "Catalyst stability decreased by 40%"
+            semantics = [{"line": 1, "occurrence_index": 1, "cite_key": "Blue", "verdict": "supported",
+                          "claim_quote": claim, "source_field": "abstract", "source_quote": source,
+                          "reason": "Reviewed against the supplied paper."}]
+            result = run(root, claim + " [@Blue].", [record_with_abstract],
+                         review={"semantic_reviews": semantics})
+            self.assertEqual(result["status"], "partial")
+            self.assertFalse(result["verification"]["passed"])
+            self.assertIn("claim_coverage_and_factual_consistency", result["verification"]["failed_checks"])
+
 
 if __name__ == "__main__":
     unittest.main()

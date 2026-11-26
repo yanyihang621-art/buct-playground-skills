@@ -233,7 +233,7 @@ def _first_page(pdf, stage):
 
 
 def export_docx(source: Path | None, original_text: str, synced_text: str, formatted_bibliography: str,
-                output_dir: Path, *, render: bool = True, word_context=None) -> tuple[dict, list]:
+                output_dir: Path, *, render: bool = True, word_context=None, apa_records=None) -> tuple[dict, list]:
     """Return existing artifact paths and localized limitations; leave the input untouched."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -266,6 +266,13 @@ def export_docx(source: Path | None, original_text: str, synced_text: str, forma
                     _clean_docx(synced_text, docx)
         else:
             _clean_docx(synced_text, docx)
+        if apa_records and not any(issue["code"] == "word_original_retained" for issue in issues):
+            if source is None or original_text.strip() != synced_text.strip():
+                try:
+                    from apa_delivery import style_apa_docx
+                    style_apa_docx(docx, apa_records)
+                except (ImportError, ValueError, KeyError, OSError, SyntaxError, zipfile.BadZipFile) as exc:
+                    issues.append({"code": "apa_typography_incomplete", "detail": str(exc)})
         generated = {"editable_docx": docx}
         if render:
             try:

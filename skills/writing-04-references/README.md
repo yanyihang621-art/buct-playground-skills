@@ -9,11 +9,11 @@
 ```sh
 mkdir -p demo/input
 cp examples/example_case.json demo/input/case.json
-python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo/work --output-dir demo/output
+python3 scripts/build_reference_result.py --draft --input-dir demo/input --work-dir demo/work --output-dir demo/work/draft
 python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo/work --output-dir demo/output --review examples/example_review.json
 ```
 
-旧编号 `[7]` 在改稿中成为首引 `[1]`。打开 `demo/output/evidence/claim_evidence.json` 可核对审阅前后的区别：第一遍只定位，第二遍将论断与教学摘要中的原句配对，记录理由并填入案例要求的 `editor_note`。输出节选见 `examples/example_result.json`。在 PowerShell 中可用 `New-Item` 创建目录、`Copy-Item` 复制文件，解释器命令可用 `python`。
+旧编号 `[7]` 在改稿中成为首引 `[1]`。对照 `demo/work/draft/evidence/claim_evidence.json` 与最终目录中的同名文件。第一遍定位引文，第二遍将论断与教学摘要中的原句配对，记录理由并填入 `editor_note`。`--draft` 跳过 Word 渲染和 TeX 编译，最终运行再生成正式成品。输出节选见 `examples/example_result.json`。PowerShell 可用 `New-Item` 建目录、`Copy-Item` 复制文件和 `python` 运行。
 
 ## 输入与依赖
 
@@ -30,6 +30,7 @@ python3 scripts/build_reference_result.py --input-dir demo/input --work-dir demo
 | `evidence/material_inventory.json`、`raw_library.json`、`canonical_library.json` | 核查材料角色、记录来源、旧号与规范键 |
 | `evidence/dedup_report.json`、`citation_map.json` | 查合并依据、别名、被拒绝的歧义匹配、每处原标记及改后标记 |
 | `evidence/claim_evidence.json`、`qa_report.json` | 按行号和引用点检查论断、原句、文献身份、证据级别和待确认项 |
+| `evidence/final_claim_audit.json`、`retained_citations.json` | 处理已经定位的原文矛盾、外部定量结论漏引和保留旧稿时仍可核验的引文 |
 | `evidence/manuscript.diff`、`change_log.json` | 逐项复查变更；同输入和同一份审阅表可以重跑 |
 | `result.json` | 案例 ID、状态、指标、产物路径、来源、变更和原始输出契约中的字段 |
 
@@ -46,6 +47,7 @@ python3 scripts/self_test.py --out-dir /tmp/writing04-self --compare-baseline
 python3 scripts/regression_cases.py --help
 python3 scripts/test_author_date_delivery.py
 python3 scripts/test_claim_coverage.py
+python3 scripts/test_final_claim_audit.py
 python3 scripts/tex_project_test.py
 python3 scripts/word_cases.py --out-dir /tmp/writing04-word
 ```

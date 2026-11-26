@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from format_references import apa_year_labels, format_library
+from format_references import apa_author_family, apa_year_labels, format_library
 from author_date import NARRATIVE, PAREN, parse_marker, source_suffixes
 from io_utils import normalize_title, write_json_atomic, write_text_lf
 
@@ -103,8 +103,12 @@ def apply_edits(text, edits, log, issues):
 
 
 def author_label(rec, labels):
-    names = [(a.split(",", 1)[0] if "," in a else a.split()[-1]) for a in rec["authors"] if a.strip()]
-    name = "Anonymous" if not names else names[0]
+    names = [apa_author_family(a) for a in rec["authors"] if a.strip()]
+    if not names:
+        title = " ".join((rec.get("title") or "Untitled").split()[:6])
+        name = f"“{title}”"
+    else:
+        name = names[0]
     if len(names) == 2:
         name = " & ".join(names)
     if len(names) > 2:
@@ -148,6 +152,7 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
     body = apply_edits(body, insert_claims or [], changes, issues)
     order = {}
     replacements = []
+    retained = []
     unsafe_number = False
     protected = {(r.get("line"), r.get("marker"), r.get("context")) for r in (non_citations or []) if r.get("reason")}
     for marker in MARKER.finditer(body):
@@ -171,6 +176,10 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
         if not keys or any(len(aliases.get(k, [])) != 1 for k in keys):
             if marker["number"] or marker["attached"] or marker["super"]:
                 unsafe_number = True
+            if keys and any(len(aliases.get(k, [])) == 1 for k in keys):
+                resolved = list(dict.fromkeys(aliases[k][0] for k in keys if len(aliases.get(k, [])) == 1))
+                retained.append({"line": line, "original_tag": marker[0], "context_sentence": context,
+                                 "cite_keys": resolved, "resolution": "some_keys_resolved"})
             issues.append({"line": line, "original_tag": marker[0], "reason": "unmapped_or_ambiguous",
                            "raw_keys": keys, "context": context})
             continue
@@ -242,6 +251,23 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
         # Original numbering cannot safely coexist with newly assigned numbers.
         edited = manuscript_text
         changes = [{"action": "review_required", "reason": "original bibliography and body retained together"}]
+        if text_edits or insert_claims:
+            # Edits were rolled back. Audit what the preserved manuscript actually contains.
+            original = sync_manuscript(manuscript_text, canonical_library, style=style,
+                                       original_number_map=original_number_map, non_citations=non_citations)
+            original_map = original["citation_map"]
+            retained = original_map["retained_original_occurrences"] or [
+                {**{k: item[k] for k in ("line", "original_tag", "context_sentence", "cite_keys")},
+                 "resolution": "matched_source"} for item in original_map["in_text_occurrences"]]
+        else:
+            retained.extend({**{k: item[k] for k in ("line", "original_tag", "context_sentence", "cite_keys")},
+                             "resolution": "matched_source"} for item in occurrences)
+            if old_section:
+                split_line = manuscript_text[:manuscript_text.index(old_section)].count("\n") + 1
+                skipped_lines = old_section.count("\n")
+                for item in retained:
+                    if item["line"] >= split_line:
+                        item["line"] += skipped_lines
         occurrences, cited, order, bibliography = [], [], {}, old_section
     elif not is_latex and cited:
         title = "## 参考文献" if re.search(r"[\u3400-\u9fff]", edited) else "## References"
@@ -259,7 +285,8 @@ def sync_manuscript(manuscript_text, canonical_library, *, style="gbt7714", is_l
     citation_map = {"schema_version": "writing-04-citation-map/v2", "style": style, "is_latex": is_latex,
                     "cited_count": len(cited), "original_number_map": old_map,
                     "cited_order": [{"number": n, "cite_key": k, "ref_id": by_key[k]["ref_id"]} for k, n in order.items()],
-                    "in_text_occurrences": occurrences, "unresolved_keys": issues}
+                    "in_text_occurrences": occurrences, "unresolved_keys": issues,
+                    "retained_original_occurrences": sorted(retained, key=lambda item: item["line"])}
     return {"synced_manuscript": edited, "formatted_bibliography": bibliography, "citation_map": citation_map,
             "change_log": changes, "cited_records": cited}
 

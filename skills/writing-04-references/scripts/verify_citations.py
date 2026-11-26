@@ -249,9 +249,12 @@ def verify_citations(
     if cited_records:
         fmt = "bibtex" if citation_map.get("is_latex") else citation_map.get("style", "gbt7714")
         expected_bib = format_library(cited_records, fmt).strip()
-        if formatted_bibliography is not None and formatted_bibliography.strip() != expected_bib:
+        expected_forms = [expected_bib]
+        if fmt == "apa7":
+            expected_forms.append(format_library(cited_records, "apa7-markdown").strip())
+        if formatted_bibliography is not None and formatted_bibliography.strip() not in expected_forms:
             inconsistent.append({"reason": "formatted_bibliography_differs_from_mapped_records"})
-        if not citation_map.get("is_latex") and expected_bib not in synced_manuscript:
+        if not citation_map.get("is_latex") and not any(form in synced_manuscript for form in expected_forms):
             inconsistent.append({"reason": "manuscript_bibliography_differs_from_mapped_records"})
     sync_ok = not (unresolved or missing_from_bib or missing_from_lib or orphan_bib or inconsistent
                    or len(bib_keys) != len(cited_order))
