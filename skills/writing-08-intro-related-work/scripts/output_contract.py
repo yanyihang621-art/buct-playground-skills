@@ -30,11 +30,34 @@ def contract_specs(contract: Any) -> dict:
     return {k: v for k, v in contract.items() if k not in ("$schema", "$id", "description", "title", "additionalProperties")}
 
 
+def required_contract_fields(contract: Any) -> set[str]:
+    specs = contract_specs(contract)
+    explicit = set()
+    if isinstance(contract, dict):
+        explicit.update(_field_map(contract.get("required")))
+        explicit.update(_field_map(contract.get("required_fields")))
+    if isinstance(contract, dict) and isinstance(contract.get("properties"), dict):
+        return explicit
+    return explicit | {name for name, spec in specs.items() if not isinstance(spec, dict)
+                       or (spec.get("required") is not False and spec.get("optional") is not True)}
+
+
 def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
+    if spec is False:
+        return [f"{path}: schema disallows this value"]
     if isinstance(spec, str):
         spec = {"type": spec}
     if not isinstance(spec, dict):
         return []
+    if value is None and spec.get("nullable") is True:
+        return []
+    for label in ("oneOf", "anyOf", "allOf"):
+        branches = spec.get(label)
+        if isinstance(branches, list):
+            matches = sum(not _shape_errors(value, branch, path) for branch in branches)
+            if ((label == "oneOf" and matches != 1) or (label == "anyOf" and not matches)
+                    or (label == "allOf" and matches != len(branches))):
+                return [f"{path}: does not meet {label}"]
     names = spec.get("type", [])
     names = [names] if isinstance(names, str) else names
     types = {"string": str, "object": dict, "array": list, "number": (float, int),
@@ -45,12 +68,17 @@ def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
         return [f"{path}: expected {' or '.join(allowed)}"]
     if "enum" in spec and value not in spec["enum"]:
         return [f"{path}: outside declared enum"]
+    if "const" in spec and value != spec["const"]:
+        return [f"{path}: differs from declared constant"]
     errors = []
     if isinstance(value, dict):
-        for k in spec.get("required", []):
+        for k in _field_map(spec.get("required")):
             if k not in value:
                 errors.append(f"{path}.{k}: missing")
-        for k, child in spec.get("properties", {}).items():
+        properties = spec.get("properties", {})
+        if spec.get("additionalProperties") is False and isinstance(properties, dict) and "patternProperties" not in spec:
+            errors.extend(f"{path}.{k}: undeclared field" for k in value.keys() - properties.keys())
+        for k, child in properties.items():
             if k in value:
                 errors.extend(_shape_errors(value[k], child, f"{path}.{k}"))
     elif isinstance(value, list) and "items" in spec:
@@ -60,8 +88,9 @@ def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
 
 
 def resolve_contract(result: dict, contract: Any, products: dict, supplied: dict) -> list[dict]:
-    """Fill named original fields at the top level. Never count null placeholders as completed work."""
+    """Resolve required and supplied fields; preserve genuinely nullable values, omit absent optionals."""
     specs = contract_specs(contract)
+    required = required_contract_fields(contract)
     issues = []
     fixed = {"case_id", "status", "metrics", "verification", "artifacts", "uncertainties",
              "schema_version", "challenge_id", "manuscript", "claim_evidence", "research_gaps",
@@ -69,9 +98,12 @@ def resolve_contract(result: dict, contract: Any, products: dict, supplied: dict
     for field, spec in specs.items():
         if field in supplied and field not in fixed:
             result[field] = supplied[field]
-        elif field not in result:
-            result[field] = products.get(field)
-        if result[field] is None:
+        elif field not in result and field in products:
+            result[field] = products[field]
+        if field not in result:
+            if field not in required:
+                continue
+            result[field] = None
             issues.append({"code": "unresolved_contract_field", "field": field,
                            "message": "Supply an evidence-based value in analysis.contract_fields or document the missing source."})
         elif errors := _shape_errors(result[field], spec, field):

@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from citation_audit import Citations, COMPARISON, REFERENCES, normalized
+from interpretation_audit import audit_interpretation
 from rw_utils import load_writing_rules, write_json_atomic
 
 
@@ -317,6 +318,10 @@ def verify_intro_and_related_work(draft_md, materials, clusters, gc_map, *, lang
     elif material_gaps:
         warnings.append({"reason": "review_declared_material_limits", "material_gaps": material_gaps})
 
+    limits = text_rows(materials.get("interpretation_limits") or gc_map.get("interpretation_limits"))
+    limit_issues, wording_alerts, limit_metrics = audit_interpretation(body, limits, passages, contributions, ABSOLUTE)
+    violations.extend(limit_issues)
+    warnings.extend(wording_alerts)
     checks = {name: not any(v["check"] == name for v in violations)
               for name in (struct, synthesis, gap_check, contribution_check, coverage, honesty)}
     return {
@@ -330,6 +335,7 @@ def verify_intro_and_related_work(draft_md, materials, clusters, gc_map, *, lang
             "grounded_contribution_ratio": round(grounded_contribs / len(contributions), 4) if contributions else 0.0,
             "cited_in_manuscript": covered, "uncited_supplied_keys": sorted(set(citations.papers).difference(covered)),
             "cross_work_comparisons": comparative, "claim_evidence_rows": len(claim_rows),
+            **limit_metrics,
         },
     }
 

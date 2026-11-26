@@ -14,7 +14,7 @@ from derive_gaps_and_contributions import build_gap_and_contribution_map
 from draft_intro_related_work import render_intro_and_related_work
 from export_manuscript import case_exports, export_manuscript
 from ingest_materials import ingest_materials
-from output_contract import contract_specs, resolve_contract
+from output_contract import contract_specs, required_contract_fields, resolve_contract
 from rw_utils import write_json_atomic, write_text_lf
 from verify_intro_rw import verify_intro_and_related_work
 
@@ -80,6 +80,28 @@ def _blocking_uncertainty(item: Any) -> bool:
                                 "missing_source_evidence", "unresolved_contract_field"}
 
 
+def _change_source_audit(changes: list, passages: list) -> tuple[list, list]:
+    by_id = {p["source_id"]: p for p in passages}
+    locations, issues = [], []
+    for index, change in enumerate(changes):
+        if not isinstance(change, dict) or "source_ids" not in change:
+            continue
+        ids = change["source_ids"]
+        if not isinstance(ids, list):
+            issues.append({"code": "invalid_change_source_ids", "record_index": index,
+                           "message": "change_records[].source_ids must be an array of passage IDs."})
+            continue
+        for source_id in ids:
+            passage = by_id.get(source_id) if isinstance(source_id, str) else None
+            if not passage or not passage.get("path") or not passage.get("locator"):
+                issues.append({"code": "unresolved_change_source", "record_index": index, "source_id": source_id,
+                               "message": "No indexed passage resolves this revision's source ID to a path and locator."})
+            else:
+                locations.append({"record_index": index, "source_id": source_id,
+                                  "path": passage["path"], "locator": passage["locator"]})
+    return locations, issues
+
+
 def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_dir: str | Path, *,
                           case_path: str | Path | None = None, draft_file: str | Path | None = None,
                           language: str | None = None, analysis_file: str | Path | None = None,
@@ -136,10 +158,16 @@ def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_di
                                     "message": "Attach manuscript claims to quotations from the indexed source materials."})
     if qa["violations"]:
         uncertainties.append({"code": "manuscript_qa", "items": qa["violations"]})
+    changes = analysis.get("change_records", [])
+    change_sources, change_issues = _change_source_audit(changes, materials.get("passages", []))
+    delivery_issues.extend(change_issues)
 
     artifacts = {}
     if draft:
-        case_formats, names = case_exports(case)
+        contract = case.get("output_contract")
+        export_contract = dict(contract) if isinstance(contract, dict) else {}
+        export_contract.update(properties=contract_specs(contract), required=sorted(required_contract_fields(contract)))
+        case_formats, names = case_exports({**case, "output_contract": export_contract})
         requested_names = analysis.get("artifact_names", {})
         if isinstance(requested_names, dict):
             names.update(requested_names)
@@ -166,10 +194,11 @@ def run_intro_rw_pipeline(input_dir: str | Path, work_dir: str | Path, output_di
         "case_id": case.get("case_id", "local_intro_rw_case"), "status": "completed", "language": lang,
         "summary": "", "draft_mode": mode, "manuscript": draft, "metrics": qa["metrics"], "artifacts": artifacts,
         "sources": source_manifest, "claim_evidence": cards, "research_gaps": research_gaps, "contributions": contributions,
-        "change_records": [*analysis.get("change_records", []),
-                           {"action": "checked_manuscript", "draft_mode": mode, "checks": list(qa["checks"])}],
+        "change_records": changes,
         "uncertainties": uncertainties,
         "verification": {"passed": bool(qa["passed"]), "check_count": len(qa["checks"]),
+                         "action": "checked_manuscript", "checks": qa["checks"], "draft_mode": mode,
+                         "change_sources": change_sources,
                          "failed_checks": [k for k, passed in qa["checks"].items() if not passed]},
     }
     if not has_material:

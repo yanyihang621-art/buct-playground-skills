@@ -11,6 +11,124 @@ from zipfile import ZipFile
 WORD = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 MATH = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 
+REF_HEADING = re.compile(r"(?im)^\s*(?:#{1,6}\s*)?(?:references|bibliography|参考文献|文献目录)\s*[:：]?\s*$")
+YEAR = r"(?:18|19|20)\d{2}"
+GB_VOLUME = r"\d+(?:\s*[（(][\w-]+[)）])?\s*[:：,，]\s*\d+(?:\s*[-–—]\s*\d+)?"
+CN_ENTRY = re.compile(
+    rf"^(?P<authors>[\u3400-\u9fff、，,；;·\s]{{2,65}}?)[.。]\s*"
+    rf"(?P<title>[^.。]{{2,180}}?)(?:\s*\[[Jj]\])?\s*[.。]\s*"
+    rf"(?P<venue>[^.。,，；;:]{{2,85}}?)\s*[,，]\s*(?P<year>{YEAR})\s*[,，]\s*{GB_VOLUME}[.。]?$")
+APA_ENTRY = re.compile(
+    rf"^(?P<authors>.{{3,180}}?)\s*\((?P<year>{YEAR})\)\.\s+"
+    r"(?P<title>[^.]{3,200})\.\s+(?P<venue>[^.,]{3,100}?)(?:,\s*\d.*)?\.$")
+APA_AUTHOR = re.compile(r"[^\W\d_][\w'’\- ]{0,60},\s*(?:[A-Z]\.\s*){1,4}")
+LABELS = {"author": "authors", "authors": "authors", "作者": "authors", "title": "title", "题名": "title",
+          "标题": "title", "year": "year", "publication year": "year", "年份": "year", "出版年": "year",
+          "journal": "venue", "venue": "venue", "期刊": "venue", "刊名": "venue"}
+
+
+def _authors(text):
+    cn = re.split(r"\s*[,，、;；]\s*", text.strip())
+    if all(re.fullmatch(r"[\u3400-\u9fff]{2,5}", name) for name in cn):
+        if any(name in {"作者不详", "佚名", "无署名", "匿名", "未知"} for name in cn):
+            return []
+        return cn
+    matches = list(APA_AUTHOR.finditer(text))
+    if matches:
+        # Require initials and ensure every remaining token separates two authors.
+        sep = APA_AUTHOR.sub("|", text)
+        if re.fullmatch(r"\s*\|(?:\s*(?:,\s*(?:&\s*)?|&|and)\s*\|)*\s*", sep):
+            return [m.group().strip() for m in matches]
+    return []
+
+
+def _citation_header(line):
+    # Allow an unnumbered source label. Numbered entries normally belong to a reference list.
+    line = re.sub(r"^\s*[\[【](?!\s*\d+\s*[\]】])[^\]】]{1,60}[\]】]\s*", "", line).strip()
+    for pattern in (CN_ENTRY, APA_ENTRY):
+        match = pattern.fullmatch(line)
+        if match:
+            values = {k: v.strip() for k, v in match.groupdict().items()}
+            values["authors"] = _authors(values["authors"])
+            if values["authors"]:
+                return values
+    return None
+
+
+def document_sections(locator, text):
+    """Keep a reference list on the same PDF page out of the paper's owned body passages."""
+    m = REF_HEADING.search(text)
+    if m and text[:m.start()].strip():
+        yield locator + ", before references", text[:m.start()]
+        yield locator + ", reference list", text[m.start():]
+    else:
+        yield locator, text
+
+
+def single_paper_header(passages):
+    """Identify one self-describing source; ambiguous lists stay available for manual annotation."""
+    if not passages:
+        return None
+    header_lines = []
+    seen_entries = 0
+    body_end = len(passages)
+    for pos, passage in enumerate(passages):
+        text = passage["text"]
+        heading = REF_HEADING.search(text)
+        if heading:
+            text = text[:heading.start()]
+            body_end = pos if not text.strip() else pos + 1
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if len(header_lines) < 10:
+                header_lines.append(line)
+            if len(line) < 512 and _citation_header(line):
+                seen_entries += 1
+                if seen_entries > 1:
+                    return None
+            elif len(header_lines) > 1 and (re.match(r"^\[\d{1,3}\]\s*\S", line) or
+                                            re.match(r"^.{2,100}\((?:18|19|20)\d{2}[a-z]?\)\.\s+\S", line)):
+                return None
+        if heading:
+            break
+    if len(header_lines) < 2:
+        return None
+    data = _citation_header(header_lines[0])
+    if not data and not seen_entries:
+        # PDF text extraction can wrap a single header across adjacent lines.
+        for width in range(2, min(len(header_lines), 4)):
+            joined = " ".join(header_lines[:width])
+            joined = re.sub(r"(?<=[\u3400-\u9fff]) (?=[\u3400-\u9fff])", "", joined)
+            data = _citation_header(joined)
+            if data:
+                break
+    if not data:
+        # A labeled four-field header can span PDF lines or separate Word paragraphs.
+        fields = {}
+        for line in header_lines:
+            m = re.fullmatch(r"([^:：]{1,18})[:：]\s*(.{1,240})", line)
+            key = LABELS.get(m[1].strip().casefold()) if m else None
+            if not key:
+                break
+            if key in fields:
+                return None
+            fields[key] = m[2].strip()
+        if set(fields) != {"authors", "title", "venue", "year"} or not re.fullmatch(YEAR, fields["year"]):
+            return None
+        author_text = fields["authors"]
+        fields["authors"] = _authors(author_text)
+        if not fields["authors"]:
+            names = re.split(r"\s*(?:;|\s+and\s+|&)\s*", author_text)
+            if all(re.fullmatch(r"[A-Z][^\W\d_]+(?:[-’'][^\W\d_]+)*(?: [A-Z][^\W\d_]+(?:[-’'][^\W\d_]+)*){1,3}", n)
+                   for n in names):
+                fields["authors"] = names
+        if not fields["authors"] or len(header_lines) <= 4:
+            return None
+        data = fields
+    return data, body_end
+
 
 def read_text(path):
     data = path.read_bytes()

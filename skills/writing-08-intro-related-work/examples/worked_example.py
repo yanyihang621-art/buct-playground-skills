@@ -19,6 +19,7 @@ BACKGROUND = "Placement and exposure define which sources of sensor drift a cali
 COMPARE = "Both evaluations used indoor settings, but only the second varied sensor placement"
 GAP = "How does calibration drift change when a sensor moves outdoors?"
 CONTRIB = "We therefore record mobile sensors along an outdoor route, extending the sampled setting to outdoor movement."
+LIMIT = "The field protocol establishes the sampling design. An estimate of drift under that design requires the measurements."
 DRAFT = f"""## Research Background
 
 {BACKGROUND} These design choices delimit what can be inferred from the two available evaluations [@fixed; @mobile].
@@ -33,7 +34,7 @@ DRAFT = f"""## Research Background
 
 ## Contributions
 
-{CONTRIB} The field protocol establishes the sampling design. An estimate of drift under that design requires the measurements.
+{CONTRIB} {LIMIT}
 
 ## References
 
@@ -87,7 +88,10 @@ def run(root, mixed=False):
          "limitation":"Outdoor movement was excluded","evidence":[evidence("Lin, J. (2023). Indoor mobility. Instrument Reports."),b]}],
         "research_gaps":[question],"contributions":[contribution],"claim_evidence":cards,
         "contract_fields":{"bounded_question":GAP,"study_evidence":["Field protocol, Table 1"]},
-        "change_records":[{"action":"scoped_gap","reason":"Both evaluations used indoor protocols."}]}
+        "interpretation_limits":[{"kind":"design_only","manuscript_span":LIMIT,
+                                  "reason":"The protocol supplies an acquisition design.", "evidence":[own]}],
+        "change_records":[{"action":"scoped_gap","reason":"Both evaluations used indoor protocols.",
+                           "source_ids":[a["source_id"],b["source_id"]]}]}
     draft_path, notes_path = root / "authored.md", root / "notes.json"
     write_text_lf(draft_path, DRAFT)
     write_json_atomic(notes_path, analysis)

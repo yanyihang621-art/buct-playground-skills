@@ -210,6 +210,36 @@ def _run_negative_qa_tests(outline: Dict[str, Any], edited: Dict[str, Any]) -> D
     }
 
 
+def _interpretation_regressions(edited: Dict[str, Any]) -> Dict[str, bool]:
+    draft, materials, clusters, links = (edited[k] for k in ("draft_md", "materials", "clusters", "gc_map"))
+    scope = "These group differences cannot establish a causal effect of assignment."
+    design = {"source_id": "design_fixture", "path": "study.txt", "locator": "line 1",
+              "role": "study", "text": "This observational comparison used groups defined by previous choices."}
+    limits = [{"kind": "causal_identification", "manuscript_span": scope,
+               "reason": "The groups were formed by previous choices."}]
+    declared = {**materials, "passages": [*materials["passages"], design], "interpretation_limits": limits}
+    hidden = verify_intro_and_related_work(f"<!-- {scope} -->\n" + draft + scope, declared, clusters, links)
+    visible = verify_intro_and_related_work(scope + "\n\n" + draft, declared, clusters, links)
+    stronger = verify_intro_and_related_work(scope + "\n\nGroup assignment causes the improvement.\n\n" + draft,
+                                            declared, clusters, links)
+    revised = {**declared, "passages": [*declared["passages"],
+               {**design, "source_id": "trial_fixture", "text": "Participants were randomly allocated to the conditions."}]}
+    mixed = verify_intro_and_related_work("Group assignment causes the improvement.\n" + scope + "\n" + draft,
+                                          revised, clusters, links)
+    code = "review_claim_strength_for_observational_design"
+    return {
+        "limit in comment and references only requires revision":
+            any(v["reason"] == "interpretation_limit_absent_from_manuscript" for v in hidden["violations"]),
+        "visible noncausal qualification passes":
+            visible["passed"] and not any(w["reason"] == code and w["line"] == 1 for w in visible["warnings"]),
+        "causal wording receives a located review without a hard failure":
+            stronger["passed"] and any(w["reason"] == code and w["line"] == 3 and
+                                       "design_fixture" in w["source_ids"] for w in stronger["warnings"]),
+        "mixed designs do not imply observational-only evidence":
+            mixed["passed"] and not any(w["reason"] == code for w in mixed["warnings"]),
+    }
+
+
 def _compare_baseline(edited: Dict[str, Any]) -> Dict[str, Any]:
     """Actually evaluate two fixture drafts with the same source package and verifier."""
     materials, clusters, evidence = (edited[k] for k in ("materials", "clusters", "gc_map"))
@@ -269,6 +299,7 @@ def main() -> int:
             and r3["qa_report"]["metrics"]["claim_evidence_rows"] == 4 and bool(r3["qa_report"]["metrics"]["cross_work_comparisons"]),
         "w4 empty input is explicit": r4["result"]["status"] == "refused" and bool(r4["result"]["uncertainties"]),
         **negative,
+        **_interpretation_regressions(r3),
     }
     summary = {"all_passed": all(tests.values()), "suites": tests}
     if args.compare_baseline:

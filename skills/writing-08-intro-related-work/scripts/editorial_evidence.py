@@ -90,6 +90,29 @@ def apply_editorial_evidence(materials, analysis):
     passages = {p["source_id"]: p for p in _rows(materials.get("passages")) if _present(p.get("source_id"))}
     papers = {p["cite_key"]: p for p in _rows(enriched.get("papers")) if _present(p.get("cite_key"))}
     cards = read_rows("paper_annotations")
+    # A previous pass may have selected editorial keys before text headers were indexed.
+    # Only rename provisional file-derived keys for an unambiguous bibliographic identity.
+    for _, card in cards:
+        key = card.get("cite_key")
+        if not _present(key) or not re.fullmatch(r"[\w:.+/-]+", key) or key in papers:
+            continue
+        matches = []
+        for old_key, paper in papers.items():
+            if paper.get("key_origin") not in {"file_stem", "generated"}:
+                continue
+            doi, card_doi = _doi(paper.get("doi") or ""), _doi(card.get("doi") or "")
+            if doi and card_doi:
+                same = doi == card_doi
+            else:
+                same = bool(card.get("title") and _fold(card["title"]) == _fold(paper.get("title", "")))
+                if card.get("year") and paper.get("year"):
+                    same = same and str(card["year"]) == str(paper["year"])
+            if same:
+                matches.append(old_key)
+        if len(matches) == 1:
+            paper = papers.pop(matches[0])
+            paper.update(cite_key=key, key_origin="editorial", index_key=matches[0])
+            papers[key] = paper
     direct, document = _owners(passages, papers, [card for _, card in cards])
 
     def owners(ref):
@@ -299,4 +322,11 @@ def apply_editorial_evidence(materials, analysis):
     enriched["claim_evidence"] = notes.get("claim_evidence", [])
     if isinstance(notes.get("section_spans"), dict):
         enriched["section_spans"] = notes["section_spans"]
+    if "interpretation_limits" in notes:
+        limits = []
+        for i, limit in read_rows("interpretation_limits"):
+            if limit.get("evidence"):
+                limit["evidence"] = verified_refs(limit, f"interpretation_limits[{i}]")
+            limits.append(limit)
+        enriched["interpretation_limits"] = limits
     return enriched, notes, issues

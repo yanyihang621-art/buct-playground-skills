@@ -9,8 +9,8 @@ from itertools import islice
 from pathlib import Path
 
 from rw_utils import write_json_atomic
-from source_readers import (bib_entries, docx_passages, line_passages, pdf_passages,
-                            read_text, ris_entries, sheet_passages)
+from source_readers import (bib_entries, document_sections, docx_passages, line_passages, pdf_passages,
+                            read_text, ris_entries, sheet_passages, single_paper_header)
 
 TEXT_FORMATS = {".md", ".markdown", ".txt", ".tex", ".csv", ".tsv", ".ris", ".yaml", ".yml", ".log"}
 LITERATURE_KEYS = {"papers", "references", "bibliography", "literature", "literature_corpus",
@@ -43,7 +43,7 @@ def file_role(path):
     if name in {"task", "instructions", "requirements", "readme", "任务说明"}:
         return "instruction"
     if (re.search(r"manuscript|study[_-]?facts|experiment|手稿|实验|本文", name)
-            or parts & {"study", "manuscript", "experiments", "author", "results"}):
+            or parts & {"study", "manuscript", "draft", "drafts", "experiments", "author", "results", "手稿", "草稿"}):
         return "study"
     if (path.suffix.lower() in {".bib", ".ris"} or re.search(r"^papers?$|references|literature|bibliograph|文献", name)
             or parts & {"papers", "references", "literature", "bibliography", "文献"}):
@@ -130,10 +130,10 @@ class MaterialIndex:
                                   "locator": loc, "role": role, "text": text[offset:stop]})
             offset = stop
 
-    def add_paper(self, paper, path, start):
+    def add_paper(self, paper, path, start, end=None):
         if not paper:
             return
-        ids = [p["source_id"] for p in self.passages[start:]]
+        ids = [p["source_id"] for p in self.passages[start:end]]
         doi = stringify(paper["doi"]).lower().removeprefix("https://doi.org/")
         title = " ".join(paper["title"].casefold().split())
         for other in self.papers:
@@ -142,6 +142,16 @@ class MaterialIndex:
             contradictory = any(other.get(k) and paper.get(k) and other[k] != paper[k] for k in ("year", "authors"))
             same_work = (doi == other_doi) if doi and other_doi else same_title and not contradictory
             if same_work:
+                if (other.get("key_origin") in {"generated", "file_stem"} and paper.get("cite_key")
+                        and not paper.get("key_origin") and paper["cite_key"] != other["cite_key"]
+                        and all(p["cite_key"] != paper["cite_key"] for p in self.papers)):
+                    other.setdefault("aliases", []).append(other["cite_key"])
+                    other.update(cite_key=paper["cite_key"], key_origin="supplied")
+                elif paper.get("key_origin") in {"generated", "file_stem"}:
+                    if paper.get("cite_key") and paper["cite_key"] != other["cite_key"]:
+                        other.setdefault("aliases", []).append(paper["cite_key"])
+                    paper.pop("cite_key", None)
+                    paper.pop("key_origin", None)
                 for key, value in paper.items():
                     if not other.get(key):
                         other[key] = value
@@ -149,6 +159,8 @@ class MaterialIndex:
                         self.review_notes.append({"path": path, "message": f"Verify alternate {key} for {other['cite_key']}: {value}"})
                 other["source_ids"].extend(ids)
                 return
+        if not paper["cite_key"]:
+            paper["key_origin"] = "generated"
         key = paper["cite_key"] or f"paper_{len(self.papers) + 1}"
         used = {other["cite_key"] for other in self.papers}
         if key in used:
@@ -197,6 +209,7 @@ class MaterialIndex:
 
     def read_file(self, path, rel, role, case_data):
         suffix = path.suffix.lower()
+        first = len(self.passages)
         if suffix == ".json":
             obj = case_data if rel == "case.json" and case_data is not None else json.loads(read_text(path))
             if role == "study" and isinstance(obj, dict):
@@ -235,15 +248,30 @@ class MaterialIndex:
                 self.add_paper(paper_record(fields, "literature"), rel, start)
         elif suffix in TEXT_FORMATS:
             for loc, passage in line_passages(read_text(path)):
-                self.add(rel, loc, role, passage)
+                segments = document_sections(loc, passage) if suffix in {".txt", ".md", ".markdown"} else [(loc, passage)]
+                for pos, section in segments:
+                    self.add(rel, pos, role, section)
         elif suffix in (".docx", ".pdf", ".xlsx"):
             reader = {".docx": docx_passages, ".pdf": pdf_passages, ".xlsx": sheet_passages}[suffix]
             for loc, passage in reader(path):
                 if suffix == ".pdf" and not passage.strip():
                     self.review_notes.append({"path": rel, "locator": loc, "message": "No PDF text layer. Inspect rendering or OCR this page."})
-                self.add(rel, loc, role, passage)
+                for pos, section in document_sections(loc, passage):
+                    self.add(rel, pos, role, section)
         else:
             self.review_notes.append({"path": rel, "message": "Inspect original file with a format-specific reader."})
+        if (suffix in {".txt", ".md", ".markdown", ".pdf", ".docx"} and role in {"literature", "material"}
+                and not re.search(r"draft|manuscript|protocol|bibliograph|references?|^refs?$|"
+                                  r"草稿|手稿|题记|文献目录|参考文献列表|会议纪要", path.stem, re.I)):
+            found = single_paper_header(self.passages[first:])
+            if found:
+                fields, count = found
+                record = paper_record(fields, "literature")
+                if re.fullmatch(r"[\w.+-]+", path.stem):
+                    record.update(cite_key=path.stem, key_origin="file_stem")
+                self.add_paper(record, rel, first, first + count)
+                for unit in self.passages[first:first + count]:
+                    unit["role"] = "literature"
 
 
 def ingest_materials(input_dir: Path, case_data: dict | None = None, *, exclude=()) -> dict:
@@ -281,7 +309,9 @@ def ingest_materials(input_dir: Path, case_data: dict | None = None, *, exclude=
             index.material_gaps.append({"code": "extraction_failed", "path": rel,
                                         "message": f"{type(exc).__name__}: {exc}"})
         index.sources.append({"path": rel, "format": path.suffix.lower().lstrip("."),
-                              "role": role, "passage_count": len(index.passages) - start})
+                              "role": "literature" if role == "material" and len(index.passages) > start and
+                              all(p["role"] == "literature" for p in index.passages[start:]) else role,
+                              "passage_count": len(index.passages) - start})
     roles = {p["role"] for p in index.passages}
     if not index.papers and not roles.intersection({"literature", "material"}):
         index.material_gaps.append({"code": "empty_or_missing_literature_corpus", "message": "No literature source discovered."})
