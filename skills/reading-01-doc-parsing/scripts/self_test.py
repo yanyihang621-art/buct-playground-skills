@@ -14,10 +14,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from build_result import build_result
+from build_result import build_result, publish_result
+from parse_case import finalize, parse_case
 from parse_pdf import run_parse_pipeline
 from pdf_utils import write_json_atomic
-from query_parsed import query_parsed
+from query_parsed import query_cells, query_parsed, readback_cells
 from validate_output import validate_output
 
 try:
@@ -248,6 +249,96 @@ def _build_t3a_encrypted_pdf(path: Path) -> None:
     doc.close()
 
 
+def _build_page_break_tables(path: Path, start_y: float, second_header: str) -> None:
+    """Two uncaptioned, identically aligned lattices on consecutive pages."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with fitz.open() as doc:
+        for top, header, label, val in ((start_y, "Power (mW)", "Alpha", "17.3"),
+                                        (70, second_header, "Beta", "92.7")):
+            page = doc.new_page(width=600, height=800)
+            for x in (50, 175, 300):
+                page.draw_line((x, top), (x, top + 66))
+            for y in (top, top + 22, top + 44, top + 66):
+                page.draw_line((50, y), (300, y))
+            for index, (left, right) in enumerate((("Sample", header), (label, val), ("Control", "11.0"))):
+                y = top + 15 + 22 * index
+                page.insert_text((60, y), left)
+                page.insert_text((185, y), right)
+        doc.save(path)
+
+
+def _test_page_boundaries_and_sources(out_dir: Path, fixtures: Path) -> Dict[str, Any]:
+    input_root = fixtures / "boundary_cases"
+    genuine = input_root / "main" / "paper.pdf"
+    separate = input_root / "supplement" / "paper.pdf"
+    changed_unit = input_root / "different_unit.pdf"
+    _build_page_break_tables(genuine, 690, "Power (mW)")
+    _build_page_break_tables(separate, 110, "Rate (Hz)")
+    _build_page_break_tables(changed_unit, 690, "Power (MW)")
+    case_path = input_root / "case.json"
+    case = {"case_id": "source-boundary-self-test",
+            "output_contract": ["case_id", "status", "tables", "sources", "answer"]}
+    write_json_atomic(case_path, case)
+    out = out_dir / "case_output"
+    pdf_inputs = [genuine.relative_to(input_root), separate.relative_to(input_root)]
+    result = parse_case(case_path, pdf_inputs, out, budget=120, ocr_mode="off")
+    documents = result["documents"]
+    assert len({doc["parsed_path"] for doc in documents}) == 2
+    assert all((out / doc["parsed_path"]).is_file() for doc in documents)
+    assert {src["source_id"] for src in result["sources"]} == {"main/paper.pdf", "supplement/paper.pdf"}
+    primary_tables = [table for table in result["tables"] if table["source_id"] == "main/paper.pdf"]
+    secondary_tables = [table for table in result["tables"] if table["source_id"] == "supplement/paper.pdf"]
+    assert len(primary_tables) == 1 and primary_tables[0]["pages"] == [1, 2], primary_tables
+    assert [table["pages"] for table in secondary_tables] == [[1], [2]], secondary_tables
+    cell = next(c for c in primary_tables[0]["cells"] if c["text"] == "92.7")
+    assert cell["page"] == 2
+    with fitz.open(genuine) as pdf:
+        area_text = pdf[cell["page"] - 1].get_text(clip=fitz.Rect(cell["bbox"])).strip()
+    assert area_text == "92.7", (cell, area_text)
+    changed = run_parse_pipeline(changed_unit, out_dir / "changed_unit", ocr_mode="off")
+    assert [table["pages"] for table in changed["tables"]] == [[1], [2]]
+    assert result["status"] == "partial" and result["answer"] is None
+    finalized = finalize(case, result, {"answer": {"value": "92.7", "source_id": "main/paper.pdf",
+                                                   "page": 2, "bbox": cell["bbox"]}})
+    assert finalized["case_id"] == case["case_id"] and finalized["answer"]["source_id"] == "main/paper.pdf"
+    schema_case = {"case_id": case["case_id"], "output_contract": {
+        "properties": {"answer": {"type": "object"}, "optional_annotation": {"type": ["string", "null"]}},
+        "required": ["answer"]}}
+    optional = dict(finalized, optional_annotation=None)
+    assert finalize(schema_case, optional)["status"] == "success"
+    table_doc = json.loads((out / documents[0]["parsed_path"]).read_text(encoding="utf-8"))
+    hit = readback_cells(query_cells(table_doc, page=2, column="Power (mW)", value="92.7"))
+    assert hit["total_matches"] == 1 and hit["hits"][0]["original_text"] == "92.7"
+    assert hit["hits"][0]["matches_original"] and hit["hits"][0]["pdf_page"] == 2
+    assert query_cells(table_doc, column="Power (MW)", value="92.7")["total_matches"] == 0
+    assert query_cells(table_doc, page=1, value="92.7")["total_matches"] == 0
+    strict_case = {"case_id": case["case_id"], "output_contract": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"case_id": {"type": "string"}, "status": {"type": "string"},
+                       "answer": {"type": "array", "minItems": 1, "items": {
+                           "type": "object", "properties": {"value": {"type": "number"}},
+                           "required": ["value", "source_id"]}}}, "required": ["case_id", "status", "answer"]}}
+    malformed = finalize(strict_case, dict(finalized), {"answer": [{"value": "92.7"}]})
+    issues = [item["message"] for item in malformed["uncertainties"]]
+    assert malformed["status"] == "partial" and any("answer[0].value" in msg for msg in issues)
+    assert any("answer[0].source_id" in msg for msg in issues)
+    corrected = finalize(strict_case, malformed, {"answer": [{"value": 92.7, "source_id": documents[0]["source_id"]}]})
+    assert corrected["status"] == "success"
+    delivery = out_dir / "closed_contract" / "result.json"
+    publish_result(delivery, strict_case, corrected)
+    assert set(json.loads(delivery.read_text(encoding="utf-8"))) == {"case_id", "status", "answer"}
+    assert json.loads(delivery.with_name("parse_manifest.json").read_text(encoding="utf-8"))["documents"] == documents
+    preview = parse_case(case_path, pdf_inputs, out_dir / "preview_only", budget=0, ocr_mode="off")
+    assert preview["status"] == "partial" and len(preview["documents"]) == 2
+    assert all(doc["parsed_path"].endswith("preview.json") for doc in preview["documents"])
+    assert all(source["pdf_page"] == 1 for source in preview["sources"]) and preview["sources"]
+    return {"pass": True, "true_continuation_tables": 1, "independent_tables": 2,
+            "unit_mismatch_tables": 2, "page_2_cell_readback": area_text,
+            "distinct_document_sources": len(documents), "zero_budget_status": preview["status"],
+            "wrong_page_hits": 0, "wrong_unit_hits": 0, "closed_schema_fields": sorted(strict_case["output_contract"]["required"]),
+            "malformed_answer_diagnostics": issues, "corrected_answer_status": corrected["status"]}
+
+
 def _build_t3b_scanned_pdf(path: Path) -> None:
     doc = fitz.open()
     p = doc.new_page(width=595, height=842)
@@ -444,6 +535,8 @@ def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, An
 
     if compare_baseline:
         results["baseline_comparison"] = _run_baseline_comparison(t1_pdf, t2_pdf, t1_doc, t2_doc)
+
+    results["tests"]["t4_table_boundaries_and_sources"] = _test_page_boundaries_and_sources(out_dir, fixtures_dir)
 
     write_json_atomic(out_dir / "self_test_report.json", results)
     return results

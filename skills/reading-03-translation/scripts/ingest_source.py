@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Multi-paper & multi-format (PDF / Markdown / TXT) ingestion into unified document.json."""
+"""Multi-paper PDF, DOCX, JSON, Markdown and text ingestion into unified document.json."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html as html_lib
 import json
 import re
@@ -15,10 +16,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from xml.etree.ElementTree import ParseError
+from zipfile import BadZipFile
+
+from material_sources import docx_units, json_paragraphs, read_case, select_material
 from parse_pdf import run_parse_pipeline
 from pdf_utils import write_json_atomic
 
-IGNORE_INPUT_NAMES = {"case.json", "task.md", "resources.yaml", "readme.md", "challenge.json", "config.json"}
 MD_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$")
 NUM_HEADING_RE = re.compile(r"^(\d+(?:\.\d+){0,2})\.?\s+([A-Z\u4e00-\u9fff].{1,90})$")
 MD_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
@@ -68,6 +72,7 @@ def _parse_markdown_table(lines: Sequence[str], start_line: int, table_idx: int)
         "markdown": "\n".join(lines),
         "html": "".join(html_parts),
         "records": records,
+        "data_rows": data_rows,
         "extraction_method": "markdown_table",
         "confidence": 0.96,
         "is_cross_page_merged": False,
@@ -79,9 +84,9 @@ def _parse_markdown_table(lines: Sequence[str], start_line: int, table_idx: int)
     }
 
 
-def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
+def parse_markdown_or_text(path: Path, raw: Optional[str] = None) -> Dict[str, Any]:
     """Parse a Markdown or plain text paper into the unified document.json schema."""
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_text(encoding="utf-8-sig") if raw is None else raw
     lines = raw.splitlines()
 
     title: Optional[str] = None
@@ -432,7 +437,7 @@ def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
         "diagnostics": {
             "source_file": str(path),
             "file_exists": True,
-            "file_size_bytes": path.stat().st_size,
+            "file_size_bytes": len(raw.encode("utf-8")),
             "encrypted": False,
             "corrupt": False,
             "page_count": 1,
@@ -469,32 +474,27 @@ def parse_markdown_or_text(path: Path) -> Dict[str, Any]:
     }
 
 
-def _discover_inputs(input_path: Path, explicit_files: Optional[Sequence[str]] = None) -> List[Path]:
-    if explicit_files:
-        resolved: List[Path] = []
-        base_dir = input_path if input_path.is_dir() else input_path.parent
-        for item in explicit_files:
-            p = Path(item)
-            if not p.is_absolute():
-                p = base_dir / p
-            if p.exists():
-                resolved.append(p)
-        return resolved
-
-    if input_path.is_file():
-        return [input_path]
-
-    if input_path.is_dir():
-        pdfs = sorted(input_path.glob("*.pdf"))
-        if pdfs:
-            return pdfs
-        others = [
-            p
-            for p in sorted(list(input_path.glob("*.md")) + list(input_path.glob("*.txt")))
-            if p.name.lower() not in IGNORE_INPUT_NAMES
-        ]
-        return others
-    return []
+def _parse_pdf_cached(path, folder, ocr_mode, save_crops, max_pages):
+    """Reuse the parsing pass across the prepare and render phases for identical bytes and options."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    key = {"version": 2, "sha256": digest.hexdigest(), "ocr": ocr_mode, "crops": save_crops, "max_pages": max_pages}
+    cached = folder / "document.json"
+    if cached.is_file():
+        try:
+            doc = json.loads(cached.read_text(encoding="utf-8"))
+            if doc.get("parse_cache") == key and doc.get("status") in {"success", "completed"}:
+                clips = [x.get("crop_path") for x in doc.get("tables", []) +
+                         doc.get("formulas", {}).get("display_equations", []) + doc.get("uncertainties", [])]
+                if all(Path(p).is_file() for p in clips if p):
+                    return doc
+        except (ValueError, OSError):
+            pass
+    doc = run_parse_pipeline(path, folder, ocr_mode=ocr_mode, save_crops=save_crops, max_pages=max_pages)
+    doc["parse_cache"] = key
+    return doc
 
 
 def ingest_input(
@@ -504,61 +504,69 @@ def ingest_input(
     ocr_mode: str = "auto",
     save_crops: bool = False,
     max_pages: Optional[int] = None,
+    excluded_dirs: Sequence[Path] = (),
 ) -> Dict[str, Any]:
-    """Ingest one or more PDF/Markdown/TXT files and produce unified document.json artifacts."""
+    """Discover requested papers and record the original locator of every input block."""
     in_p = Path(input_path)
     out_p = Path(out_dir)
     out_p.mkdir(parents=True, exist_ok=True)
-
-    explicit_files: Optional[List[str]] = None
-    if case_path and Path(case_path).exists():
-        try:
-            case_data = json.loads(Path(case_path).read_text(encoding="utf-8"))
-            if isinstance(case_data.get("input_files"), list) and case_data["input_files"]:
-                explicit_files = [str(x) for x in case_data["input_files"]]
-            elif case_data.get("pdf_path"):
-                explicit_files = [str(case_data["pdf_path"])]
-        except Exception:
-            explicit_files = None
-
-    files = _discover_inputs(in_p, explicit_files)
-    manifest: List[Dict[str, Any]] = []
-
-    for idx, fpath in enumerate(files, start=1):
+    case = read_case(in_p, case_path)
+    sources, auxiliary, issues = select_material(in_p, case, out_p, excluded_dirs)
+    papers = []
+    for idx, (label, path, inline) in enumerate(sources, start=1):
         paper_id = f"paper_{idx}"
-        p_out = out_p / "papers" / paper_id
-        p_out.mkdir(parents=True, exist_ok=True)
+        folder = out_p / "papers" / paper_id
+        folder.mkdir(parents=True, exist_ok=True)
+        locations = {}
+        try:
+            kind = path.suffix.lower() if path else ".json"
+            if kind == ".pdf":
+                doc = _parse_pdf_cached(path, folder, ocr_mode, save_crops, max_pages)
+            elif kind in {".docx", ".json"}:
+                if kind == ".docx":
+                    units = docx_units(path)
+                elif inline is not None:
+                    units = inline
+                else:
+                    units = json_paragraphs(json.loads(path.read_text(encoding="utf-8-sig")))
+                lines = []
+                for text, locator in units:
+                    for line in text.strip().splitlines():
+                        locations[len(lines) + 1] = locator
+                        lines.append(line)
+                    lines.append("")
+                doc = parse_markdown_or_text(path or Path("inline.txt"), "\n".join(lines))
+            else:
+                doc = parse_markdown_or_text(path)
+        except (OSError, ValueError, RuntimeError, BadZipFile, KeyError, ParseError) as exc:
+            issues.append({"code": "source_unreadable", "source": label, "detail": str(exc)})
+            continue
+        doc["source_file"] = label
+        if not doc["blocks"] and not doc.get("tables") and doc.get("status") != "refused":
+            issues.append({"code": "no_source_text", "source": label})
+        for item in doc["blocks"] + doc.get("tables", []):
+            bbox = item.get("bbox") or [0, 1, 0, 1]
+            where = {"source": label}
+            if kind == ".pdf":
+                where.update(pdf_page=item.get("page") or (item.get("pages") or [None])[0], bbox=bbox)
+            elif locations:
+                where.update(locations.get(int(bbox[1]), {}))
+            else:
+                where.update(line_start=int(bbox[1]), line_end=max(int(bbox[1]), int(bbox[3])))
+            item["source_locator"] = where
+        write_json_atomic(folder / "document.json", doc)
+        papers.append({"paper_id": paper_id, "source_file": label, "format": kind[1:],
+                       "title": doc.get("metadata", {}).get("title"), "status": doc.get("status"),
+                       "page_count": doc.get("diagnostics", {}).get("page_count", 0) if kind == ".pdf" else None,
+                       "document_json": str(folder / "document.json")})
 
-        if fpath.suffix.lower() == ".pdf":
-            doc = run_parse_pipeline(
-                fpath,
-                p_out,
-                ocr_mode=ocr_mode,
-                save_crops=save_crops,
-                max_pages=max_pages,
-            )
-        else:
-            doc = parse_markdown_or_text(fpath)
-            write_json_atomic(p_out / "document.json", doc)
-
-        manifest.append(
-            {
-                "paper_id": paper_id,
-                "source_file": str(fpath),
-                "title": doc.get("metadata", {}).get("title") or fpath.stem,
-                "status": doc.get("status", "partial"),
-                "page_count": doc.get("diagnostics", {}).get("page_count", 0),
-                "document_json": str(p_out / "document.json"),
-            }
-        )
-
-    out_manifest = {"paper_count": len(manifest), "papers": manifest}
-    write_json_atomic(out_p / "ingest_manifest.json", out_manifest)
-    return out_manifest
+    result = {"paper_count": len(papers), "papers": papers, "auxiliary_files": auxiliary, "issues": issues}
+    write_json_atomic(out_p / "ingest_manifest.json", result)
+    return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ingest single or multiple PDF/MD/TXT papers.")
+    parser = argparse.ArgumentParser(description="Ingest requested papers from files or inline case text.")
     parser.add_argument("--input", required=True, help="Input file or directory (e.g. /input).")
     parser.add_argument("--out", required=True, help="Output directory for parsed documents.")
     parser.add_argument("--case", default=None, help="Optional case.json to resolve input_files.")

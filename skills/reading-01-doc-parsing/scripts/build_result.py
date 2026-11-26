@@ -13,32 +13,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from output_contract import contract_fields, output_field_type, record_unresolved_fields, strict_fields
 from pdf_utils import write_json_atomic
 
 
 def _extract_contract_keys(case_data: Dict[str, Any]) -> List[str]:
-    contract = case_data.get("output_contract")
-    if not contract:
-        return []
-    if isinstance(contract, list):
-        return [str(k) for k in contract]
-    if isinstance(contract, dict):
-        # JSON-schema style {properties, required}
-        if "properties" in contract and isinstance(contract["properties"], dict):
-            keys = list(contract["properties"].keys())
-            for req in contract.get("required", []) or []:
-                if req not in keys:
-                    keys.append(str(req))
-            return keys
-        if "required" in contract and isinstance(contract["required"], list):
-            return [str(k) for k in contract["required"]]
-        return [str(k) for k in contract.keys()]
-    return []
+    return contract_fields(case_data)
 
 
-def _collect_sources(doc: Dict[str, Any], max_items: int = 250) -> List[Dict[str, Any]]:
+def _collect_sources(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     sources: List[Dict[str, Any]] = []
-    for blk in doc.get("blocks", [])[:max_items]:
+    for blk in doc.get("blocks", []):
         sources.append(
             {
                 "element_id": blk["block_id"],
@@ -47,6 +32,7 @@ def _collect_sources(doc: Dict[str, Any], max_items: int = 250) -> List[Dict[str
                 "printed_page": blk.get("printed_page"),
                 "bbox": blk["bbox"],
                 "section_id": blk.get("section_id"),
+                "excerpt": blk.get("text", "")[:200],
             }
         )
     for tab in doc.get("tables", []):
@@ -57,6 +43,8 @@ def _collect_sources(doc: Dict[str, Any], max_items: int = 250) -> List[Dict[str
                 "pdf_page": tab["pages"][0] if tab.get("pages") else 1,
                 "pages": tab.get("pages", []),
                 "bbox": tab["bbox"],
+                "bboxes_by_page": tab.get("bboxes_by_page", {}),
+                "excerpt": (tab.get("caption") or "")[:200],
                 "section_id": tab.get("section_id"),
             }
         )
@@ -69,8 +57,14 @@ def _collect_sources(doc: Dict[str, Any], max_items: int = 250) -> List[Dict[str
                 "printed_page": eq.get("printed_page"),
                 "bbox": eq["bbox"],
                 "section_id": eq.get("section_id"),
+                "excerpt": (eq.get("structured_text") or "")[:200],
             }
         )
+    for fig in doc.get("figures", []):
+        if fig.get("caption_bbox"):
+            sources.append({"element_id": fig["figure_id"], "kind": "figure_caption",
+                            "pdf_page": fig["page"], "printed_page": fig.get("printed_page"),
+                            "bbox": fig["caption_bbox"], "excerpt": fig.get("caption", "")[:200]})
     return sources
 
 
@@ -172,26 +166,30 @@ def build_result(
 
     # Populate all requested contract fields
     for key in contract_keys:
-        if key in field_catalog:
+        if key == "formulas" and output_field_type(case_data, key) == "object":
+            result[key] = doc.get("formulas", {})
+        elif key in field_catalog:
             result[key] = field_catalog[key]
-        elif key not in result:
-            # Unknown task-specific field (e.g., domain QA answer): mark explicitly until agent supplies override
-            result[key] = None
-            result["uncertainties"].append(
-                {
-                    "code": "awaiting_task_synthesis",
-                    "severity": "info",
-                    "pages": [],
-                    "message": f"Contract field '{key}' is not directly deterministically mapped and requires agent synthesis or override.",
-                }
-            )
+        else:
+            result.setdefault(key, None)
 
     if override_data:
         for k, v in override_data.items():
             result[k] = v
 
+    record_unresolved_fields(case_data, result, field_catalog, override_data or {})
     result["case_id"] = case_id
     return result
+
+
+def publish_result(path, case, result):
+    """Deliver only declared keys for a closed schema; keep the full source index adjacent."""
+    path = Path(path)
+    allowed = strict_fields(case)
+    if allowed is not None:
+        write_json_atomic(path.with_name("parse_manifest.json"), result)
+        result = {key: value for key, value in result.items() if key in allowed}
+    write_json_atomic(path, result)
 
 
 def main() -> int:
@@ -209,7 +207,7 @@ def main() -> int:
     override = json.loads(Path(args.override_json).read_text(encoding="utf-8")) if args.override_json else None
 
     res = build_result(case_data, doc_data, markdown_text=md_text, override_data=override)
-    write_json_atomic(args.out, res)
+    publish_result(args.out, case_data, res)
     return 0
 
 

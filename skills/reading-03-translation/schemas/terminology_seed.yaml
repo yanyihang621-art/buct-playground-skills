@@ -29,7 +29,7 @@ terms:
   - term_en: "apparent activation energy"
     term_zh: "表观活化能"
     domain: "kinetics"
-    aliases: ["activation energy"]
+    aliases: []
     keep_acronym: false
   - term_en: "rate-determining step"
     term_zh: "决速步骤"
@@ -54,7 +54,7 @@ terms:
   - term_en: "adsorption energy"
     term_zh: "吸附能"
     domain: "computational_chemistry"
-    aliases: ["binding energy"]
+    aliases: []
     keep_acronym: false
   - term_en: "density functional theory"
     term_zh: "密度泛函理论 (DFT)"

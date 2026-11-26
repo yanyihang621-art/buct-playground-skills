@@ -194,6 +194,10 @@ def run_parse_pipeline(
 
     diagnostics = diagnose_pdf(pdf_path, max_pages=max_pages)
     uncertainties: List[Dict[str, Any]] = []
+    if 0 < diagnostics["analyzed_pages"] < diagnostics["page_count"]:
+        first_missing = diagnostics["analyzed_pages"] + 1
+        uncertainties.append({"code": "page_limit", "severity": "high", "pages": [],
+                              "message": f"Pages {first_missing}–{diagnostics['page_count']} were outside this pass."})
 
     if diagnostics.get("encrypted") or diagnostics.get("corrupt") or not diagnostics.get("file_exists"):
         for anom in diagnostics.get("anomalies", []):

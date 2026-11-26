@@ -26,6 +26,54 @@ def _truncate_output(payload: Any, max_chars: int) -> str:
     return text[: max_chars - 64] + "\n... [TRUNCATED to fit --max-chars] ...\n"
 
 
+def query_cells(doc, *, table_id=None, page=None, row=None, column=None, value=None, offset=0, limit=10):
+    """Find data cells using their row label, hierarchical column and own physical page."""
+    hits = []
+    for table in doc.get("tables", []):
+        if table_id and table_id not in {table["table_id"], table.get("label")}:
+            continue
+        cells = table.get("cells", [])
+        row_labels = {c["row"]: c["text"] for c in cells if c["col"] == 0}
+        groups = {}
+        active_group = None
+        for cell in sorted(cells, key=lambda c: (c["row"], c["col"])):
+            if cell.get("role") == "group_label":
+                active_group = cell["text"]
+            groups[cell["row"]] = active_group
+        for cell in cells:
+            r, c = cell["row"], cell["col"]
+            if r < table["header_row_count"] or cell.get("role") == "group_label" or not cell["text"]:
+                continue
+            header, label = table["col_paths"][c], row_labels.get(r, "")
+            if ((page and page != cell["page"]) or (row and row.casefold() not in label.casefold())
+                    or (column and column not in header) or (value is not None and value != cell["text"])):
+                continue
+            hits.append({"table_id": table["table_id"], "table_label": table.get("label"), "row": r, "col": c,
+                         "row_label": label, "column_path": header, "group": groups.get(r),
+                         "value": cell["text"], "pdf_page": cell["page"], "bbox": cell["bbox"]})
+    return {"source_file": doc.get("source_file"), "total_matches": len(hits), "offset": offset,
+            "hits": hits[offset:offset + limit]}
+
+
+def readback_cells(result):
+    """Re-extract original words whose centers lie in each matched cell bbox."""
+    import fitz
+    import unicodedata
+    def normalize(text):
+        return "".join(unicodedata.normalize("NFKC", text).split())
+    with fitz.open(result["source_file"]) as pdf:
+        words = {}
+        for hit in result["hits"]:
+            number = hit["pdf_page"]
+            if number not in words:
+                words[number] = pdf[number - 1].get_text("words", sort=True)
+            box = fitz.Rect(hit["bbox"])
+            located = [w[4] for w in words[number] if
+                       fitz.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2) in box]
+            hit["original_text"] = " ".join(located)
+            hit["matches_original"] = bool(located) and normalize(hit["value"]) == normalize(hit["original_text"])
+    return result
+
 def query_parsed(
     doc: Dict[str, Any],
     mode: str,
@@ -135,7 +183,12 @@ def query_parsed(
         pat = re.compile(query, flags=re.IGNORECASE)
         hits = []
         for b in doc.get("blocks", []):
-            if pat.search(b.get("structured_text", "")) or pat.search(b.get("text", "")):
+            snippet_text = b.get("structured_text", "")
+            match = pat.search(snippet_text)
+            if not match:
+                snippet_text = b.get("text", "")
+                match = pat.search(snippet_text)
+            if match:
                 hits.append(
                     {
                         "kind": "block",
@@ -144,7 +197,7 @@ def query_parsed(
                         "printed_page": b.get("printed_page"),
                         "bbox": b["bbox"],
                         "section_path": b.get("section_path", []),
-                        "snippet": b["structured_text"][:400],
+                        "snippet": snippet_text[max(0, match.start() - 120):match.end() + 240],
                     }
                 )
         for t in doc.get("tables", []):
@@ -169,15 +222,33 @@ def main() -> int:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=("summary", "sections", "section", "page", "tables", "formulas", "figures", "references", "anomalies", "search"),
+        choices=("summary", "sections", "section", "page", "tables", "cells", "formulas", "figures", "references", "anomalies", "search"),
     )
     parser.add_argument("--id", default=None, help="Section or table ID.")
     parser.add_argument("--page", type=int, default=None, help="1-based PDF page number.")
     parser.add_argument("--query", default=None, help="Regex or substring for mode=search.")
+    parser.add_argument("--row", help="Substring of first data column for mode=cells (case-insensitive).")
+    parser.add_argument("--column", help="Substring of hierarchical column path, case-sensitive for SI units.")
+    parser.add_argument("--value", help="Exact textual cell value, preserving signs, units, and precision.")
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--readback", action="store_true", help="Check returned cells against the original PDF text layer.")
     parser.add_argument("--max-chars", type=int, default=6000, help="Max output characters.")
     args = parser.parse_args()
 
     doc = json.loads(Path(args.parsed).read_text(encoding="utf-8"))
+    if args.mode == "cells":
+        if args.offset < 0 or args.limit < 1 or (args.page is not None and args.page < 1):
+            parser.error("offset must be nonnegative; limit and page must be positive")
+        matches = query_cells(doc, table_id=args.id, page=args.page, row=args.row, column=args.column,
+                              value=args.value, offset=args.offset, limit=args.limit)
+        if args.readback:
+            try:
+                readback_cells(matches)
+            except (OSError, RuntimeError, IndexError, ValueError) as exc:
+                matches["readback_error"] = str(exc)
+        print(json.dumps(matches, ensure_ascii=False))
+        return 0
     res = query_parsed(doc, mode=args.mode, target_id=args.id, page=args.page, query=args.query)
     print(_truncate_output(res, args.max_chars))
     return 0

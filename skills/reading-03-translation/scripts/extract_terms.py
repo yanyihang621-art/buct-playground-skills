@@ -101,6 +101,7 @@ def extract_glossary(
 
     entries: List[Dict[str, Any]] = []
     seen_lower: set[str] = set()
+    custom_keys = {k.strip().casefold() for k in (custom_glossary or {})}
     term_idx = 0
 
     def _count_and_first(variants: List[str]) -> Tuple[int, Optional[Dict[str, Any]]]:
@@ -147,7 +148,12 @@ def extract_glossary(
         zh = str(item.get("term_zh", "")).strip()
         if not en or not zh or en.lower() in seen_lower:
             continue
-        aliases = [str(a).strip() for a in item.get("aliases", []) if str(a).strip()]
+        aliases = [str(a).strip() for a in item.get("aliases", [])
+                   if str(a).strip() and str(a).strip().casefold() not in custom_keys]
+        # An acronym alone (e.g. CI) cannot establish the domain or sense of a seed entry.
+        full_hits, _ = _count_and_first([en])
+        if not full_hits:
+            aliases = [alias for alias in aliases if not alias.isupper()]
         cnt, first = _count_and_first([en] + aliases)
         if cnt == 0:
             continue

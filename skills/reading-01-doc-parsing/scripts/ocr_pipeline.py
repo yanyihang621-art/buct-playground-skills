@@ -252,7 +252,7 @@ def run_ocr_on_image(
     try:
         if pytesseract is not None:
             tsv_text = pytesseract.image_to_data(
-                pre_img, lang=lang, config=f"--psm {psm}"
+                pre_img, lang=lang, config=f"--psm {psm}", timeout=60
             )
         else:
             # CLI fallback using temporary image

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import argparse
 import json
 import re
@@ -14,14 +15,41 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from apply_translation import VERBATIM_ROLES
+from apply_translation import VERBATIM_ROLES, align_sentences, copied_prose, verbatim_allowed
 from extract_terms import load_seed_glossary
 from pdf_utils import write_json_atomic
+from segment_and_protect import sentence_spans
 
 LEFTOVER_TOKEN_RE = re.compile(r"__(?:EQ|CIT|REF|NUM)_\d{3}__")
 PLACEHOLDER_RE = re.compile(r"\b(?:TODO|TBD|FIXME|PLACEHOLDER)\b|\[UNTRANSLATED\]", re.I)
-LONG_EN_PROSE_RE = re.compile(r"(?:\b[A-Za-z]{3,}\b(?:\s+|$)){15,}")
-CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
+# Include attached subscripts and digits within formulae, and accept equivalent minus glyphs.
+NUMBER_RE = re.compile(r"[+\-−]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+\-−]?\d+)?")
+EN_CLAUSE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z])|,\s*(?:but|whereas|while)\s+", re.I)
+ZH_CLAUSE = re.compile(r"[。！？；]|[，,]\s*(?:而|但(?:是)?|却)")
+MODAL_RULE = {
+    "en_patterns": [r"\b(?:may|might|possibly)\b"],
+    "zh_markers": ["可能", "也许", "或许", "或能", "可望", "或可", "有望", "可以", "可"],
+}
+
+
+def numbers(text: str) -> Counter:
+    # Citation / DOI / equation numbers are included on both sides.
+    return Counter(n.replace("−", "-") for n in NUMBER_RE.findall(text))
+
+
+def scope_preserved(source: str, target: str, rule: Dict[str, Any]) -> bool:
+    def matches(clause: str) -> bool:
+        return any(re.search(p, clause, re.I) for p in rule["en_patterns"])
+
+    markers = rule["zh_markers"]
+    if not any(m in target for m in markers):
+        return False
+    left = [part.strip() for part in EN_CLAUSE.split(source) if part.strip()]
+    right = [part.strip() for part in ZH_CLAUSE.split(target) if part.strip()]
+    if len(left) == len(right) and len(left) > 1:
+        return all(not matches(en) or any(m in zh for m in markers) for en, zh in zip(left, right))
+    return True
+
 
 
 def verify_bilingual_translation(
@@ -39,6 +67,7 @@ def verify_bilingual_translation(
         }
     ]
 
+    negation_pairs = [*negation_pairs, MODAL_RULE]
     src_segs = segments_data.get("segments", [])
     bi_segs = bilingual_doc.get("segments", [])
     doc_status = bilingual_doc.get("status", "completed")
@@ -84,14 +113,25 @@ def verify_bilingual_translation(
     # 2. Alignment completeness (1-to-1 ordered IDs, non-empty target)
     src_ids = [s["segment_id"] for s in src_segs]
     bi_ids = [s["segment_id"] for s in bi_segs]
+    source_by_id = {seg["segment_id"]: seg for seg in src_segs}
+    wrong_sources = [
+        seg["segment_id"] for seg in bi_segs if seg["segment_id"] in source_by_id
+        and any(seg.get(k) != source_by_id[seg["segment_id"]].get(k)
+                for k in ("source_text", "page", "block_id", "role"))
+    ]
     empty_targets = [s["segment_id"] for s in bi_segs if not str(s.get("target_text", "")).strip()]
-    align_ok = (src_ids == bi_ids) and (len(set(bi_ids)) == len(bi_ids)) and (len(empty_targets) == 0)
+    align_ok = (src_ids == bi_ids) and (len(set(bi_ids)) == len(bi_ids)) and (len(empty_targets) == 0) and not wrong_sources
+    for issue in uncertainties:
+        if issue.get("code") in ("duplicate_translation_id", "unknown_translation_id", "conflicting_sentence_targets"):
+            align_ok = False
+            violations.append({"check": "alignment_completeness", **issue})
     if not align_ok:
         violations.append(
             {
                 "check": "alignment_completeness",
                 "missing_or_extra": list(set(src_ids) ^ set(bi_ids)),
                 "empty_targets": empty_targets,
+                "wrong_source_anchors": wrong_sources,
             }
         )
 
@@ -99,9 +139,10 @@ def verify_bilingual_translation(
     total_tokens = 0
     preserved_tokens = 0
     for seg in bi_segs:
-        tokens = seg.get("protected_tokens") or {}
+        original = source_by_id.get(seg["segment_id"], {})
+        tokens = original.get("protected_tokens") or {}
         tgt = str(seg.get("target_text", ""))
-        src = str(seg.get("source_text", ""))
+        src = str(original.get("source_text", ""))
         for _, val in tokens.items():
             total_tokens += 1
             expected_count = src.count(val)
@@ -120,6 +161,51 @@ def verify_bilingual_translation(
                 )
     token_fidelity = 1.0 if total_tokens == 0 else round(preserved_tokens / total_tokens, 4)
     tokens_ok = (preserved_tokens == total_tokens)
+
+    quantities_ok = True
+    for seg in bi_segs:
+        original = source_by_id.get(seg["segment_id"], {})
+        expected = numbers(original.get("source_text", ""))
+        actual = numbers(seg.get("target_text", ""))
+        if expected != actual:
+            quantities_ok = False
+            violations.append({"check": "numeric_fidelity", "segment_id": seg["segment_id"],
+                               "missing": list((expected - actual).elements()), "added": list((actual - expected).elements())})
+
+    sentence_ok = True
+    paired_sentences = 0
+    for seg in bi_segs:
+        original = source_by_id.get(seg["segment_id"])
+        if (not original or seg.get("role") not in {"body", "abstract", "caption", "footnote", "table_cell", "table_note"}
+                or seg.get("status") not in {"translated", "uncertain"}):
+            continue
+        src, tgt = original["source_text"], seg["target_text"]
+        spans = sentence_spans(src)
+        pairs = seg["sentence_alignment"] if "sentence_alignment" in seg else align_sentences(original, tgt)
+        if (len(pairs) != len(spans)
+                or "".join(str(p.get("target_text", "")).strip() for p in pairs).replace(" ", "")
+                != tgt.strip().replace(" ", "")):
+            sentence_ok = False
+            violations.append({"check": "sentence_alignment", "segment_id": seg["segment_id"],
+                               "source_sentence_count": len(spans), "message":
+                               "Reconcile possible omission against source sentences or supply sentence_targets."})
+            continue
+        for pair, (a, b) in zip(pairs, spans):
+            target = str(pair.get("target_text", ""))
+            reason = ""
+            if (pair.get("source_start"), pair.get("source_end"), pair.get("source_text")) != (a, b, src[a:b]) or not target.strip():
+                reason = "Missing translation or incorrect source offset."
+            elif len(spans) > 1 and numbers(src[a:b]) != numbers(target):
+                reason = "Quantity or identifier is missing, changed or attached to a different sentence."
+            elif len(spans) > 1 and any(any(re.search(p, src[a:b], re.I) for p in rule["en_patterns"])
+                                        and not scope_preserved(src[a:b], target, rule) for rule in negation_pairs):
+                reason = "Check which sentence contains this negation or qualifier."
+            if reason:
+                sentence_ok = False
+                violations.append({"check": "sentence_alignment", "segment_id": seg["segment_id"],
+                                   "sentence_id": pair.get("sentence_id"), "source_text": src[a:b], "message": reason})
+            else:
+                paired_sentences += 1
 
     # 4. Terminology consistency across all translatable segments
     locked_entries = [e for e in glossary_data.get("entries", []) if e.get("status") in ("locked", "keep_verbatim")]
@@ -168,7 +254,12 @@ def verify_bilingual_translation(
             if not has_en_neg:
                 continue
             neg_checks += 1
-            has_zh_neg = any(m in tgt for m in pair.get("zh_markers", []))
+            # Work on masked sentences to avoid splitting inside citations or figure labels.
+            masked_src = seg.get("masked_text", src)
+            masked_tgt = tgt
+            for key, value in seg.get("protected_tokens", {}).items():
+                masked_tgt = masked_tgt.replace(value, key)
+            has_zh_neg = scope_preserved(masked_src, masked_tgt, pair)
             if has_zh_neg:
                 neg_hits += 1
             else:
@@ -195,18 +286,19 @@ def verify_bilingual_translation(
                     "message": "Unresolved placeholder token or TODO marker remained in target_text.",
                 }
             )
-        if seg.get("role") not in VERBATIM_ROLES and seg.get("role") != "title":
-            # Strip equations/citations/glossary English acronyms before checking English prose leakage
-            cleaned = re.sub(r"\$[^$]+\$", "", tgt)
-            if LONG_EN_PROSE_RE.search(cleaned) and not CHINESE_CHAR_RE.search(cleaned):
-                leak_ok = False
-                violations.append(
-                    {
-                        "check": "placeholder_and_leakage_check",
-                        "segment_id": seg["segment_id"],
-                        "message": "Untranslated long English prose segment detected without Chinese characters.",
-                    }
-                )
+        original = source_by_id.get(seg["segment_id"], {})
+        if original and (seg.get("status") == "untranslatable" or copied_prose(original, tgt, locked_entries)):
+            leak_ok = False
+            violations.append({"check": "placeholder_and_leakage_check", "segment_id": seg["segment_id"],
+                               "message": "Translation missing or source prose copied."})
+        if seg.get("status") == "verbatim" and original and not verbatim_allowed(original, locked_entries):
+            status_ok = False
+            violations.append({"check": "status_honesty", "segment_id": seg["segment_id"],
+                               "message": "Prose marked verbatim needs a translation."})
+        if doc_status == "completed" and seg.get("status") in ("uncertain", "untranslatable"):
+            status_ok = False
+            violations.append({"check": "status_honesty", "segment_id": seg["segment_id"],
+                               "message": "Pending segments prevent a completed result."})
 
     for t in bilingual_doc.get("tables_bilingual", []):
         if t.get("is_image_table") or t.get("status") not in ("extracted", "ok"):
@@ -224,6 +316,8 @@ def verify_bilingual_translation(
         "status_honesty": status_ok,
         "alignment_completeness": align_ok,
         "protected_token_fidelity": tokens_ok,
+        "numeric_fidelity": quantities_ok,
+        "sentence_alignment": sentence_ok,
         "terminology_consistency": terms_ok,
         "negation_and_scope_preservation": neg_ok,
         "placeholder_and_leakage_check": leak_ok,
@@ -236,7 +330,10 @@ def verify_bilingual_translation(
         "doc_status": doc_status,
         "metrics": {
             "segment_count": len(bi_segs),
-            "translated_count": sum(1 for s in bi_segs if s.get("status") != "untranslatable"),
+            "translated_count": sum(1 for s in bi_segs if s.get("status") == "translated"),
+            "verbatim_count": sum(1 for s in bi_segs if s.get("status") == "verbatim"),
+            "verified_sentence_pairs": paired_sentences,
+            "pending_count": sum(1 for s in bi_segs if s.get("status") in ("uncertain", "untranslatable")),
             "alignment_completeness": 1.0 if align_ok else 0.0,
             "protected_token_fidelity": token_fidelity,
             "terminology_consistency": term_consistency,

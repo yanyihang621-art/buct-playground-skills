@@ -18,6 +18,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from apply_translation import apply_translations
+from segment_and_protect import segment_document, select_scope
 from build_translation_result import run_translation_pipeline
 from pdf_utils import write_json_atomic
 from verify_translation import verify_bilingual_translation
@@ -194,32 +196,149 @@ def _run_negative_fault_tests(bilingual: Dict[str, Any], segments: Dict[str, Any
     return results
 
 
-def _compare_vs_baseline(t1_out: Dict[str, Any]) -> Dict[str, Any]:
-    """Compare Skill output against a naive single-pass baseline without token protection or glossary locking."""
-    skill_m = t1_out["qa_report"]["metrics"]
+# Reference translations for the local synthetic regression fixtures. Match by source
+# content so accidentally omitted, split or newly introduced source text fails the test.
+FIXTURE_ZH = {
+    "High Catalytic": "Cu-ZnO-Al2O3 催化 CO2 加氢的高催化选择性",
+    "Abstract": "摘要",
+    "Herein,": "本研究中，Cu-ZnO-Al2O3 催化剂在 __NUM_002__ 和 __NUM_003__ 下实现了 __NUM_001__ 的催化选择性 __CIT_001__。在高空速下，转换频率 (TOF) 达 __NUM_004__。主要活性位点上未观察到一氧化碳中毒。",
+    "1. Introduction": "__NUM_001__. 引言",
+    "Improving catalytic": "提高催化选择性需要稳定活性位点以抵抗烧结 __CIT_001__。然而，如 __REF_001__ 所示，反应速率遵循 __EQ_001__。",
+    "2. Results": "__NUM_001__. 结果与讨论",
+    "Moreover,": "此外，从 __NUM_001__ 起提高空速并未超过传质极限 __CIT_001__。转换频率 (TOF) 在 __NUM_002__ 内保持稳定。",
+    "Figure 1.": "__REF_001__. __NUM_001__ 下的催化选择性与活性位点稳定性。",
+    "3. Conclusions": "__NUM_001__. 结论",
+    "Therefore,": "因此，体系保持了高催化选择性，且无次生副反应。",
+    "Operando Characterization": "金属有机框架 (MOF) 催化剂的工况原位表征",
+    "Metal-organic framework": "金属有机框架 (MOF) 材料的活性位点几何构型可调 __CIT_001__。密度泛函理论 (DFT) 计算预测，在 __NUM_002__ 下吸附能为 __NUM_001__。",
+    "2. Experimental": "__NUM_001__. 实验部分",
+    "In situ Fourier": "在 __NUM_001__ 和 __NUM_002__ 下记录了原位傅里叶变换红外光谱 (FTIR) 和 X 射线光电子能谱 (XPS)。在 __NUM_003__ 内未检测到降解。",
+    "The synergistic effect": "金属有机框架 (MOF) 内的协同效应使法拉第效率升至 __NUM_001__。",
+    "Catalyst Screening": "结合结构化表格和栅格光谱的催化剂筛选",
+    "Table 1.": "__REF_001__. 催化选择性与转换频率 (TOF) 比较。",
+    "As summarized": "如 __REF_001__ 所示，在 __NUM_001__ 下 Cu-ZnO-Al2O3 的性能优于 Cu-Al2O3。",
+    "Catalyst": "催化剂", "Temperature": "温度", "Selectivity": "催化选择性", "TOF": "转换频率 (TOF)",
+}
+
+
+def translated_fixture(pdf: Path, out: Path, case: Path | None = None) -> Dict[str, Any]:
+    checkpoint = run_translation_pipeline(pdf, out, case_path=case)
+    translations = {}
+    for seg in checkpoint["segments"]["segments"]:
+        for src_prefix, zh in FIXTURE_ZH.items():
+            if seg["source_text"].startswith(src_prefix):
+                translations[seg["segment_id"]] = {"target_text": zh}
+                break
+    path = out / "fixture_translations.json"
+    write_json_atomic(path, translations)
+    return run_translation_pipeline(pdf, out, case_path=case, translations_json=path, result_path=out / "result.json")
+
+
+def check_semantic_faults() -> Dict[str, bool]:
+    original = "Rainfall reshapes coastal sediment."
+    contrast = "Rainfall did not increase runoff, but irrigation increased it."
+    sources = [original, contrast, "The change may reach -3.2 mm in 12 samples [2].", "$x=1$", "The sensor was sampled at 12 Hz."]
+    doc = {"blocks": [{"block_id": f"b{i}", "page": 1, "role": "body", "text": src}
+                      for i, src in enumerate(sources, 1)]}
+    segments = segment_document(doc)
+    for i, item in enumerate(segments["segments"], 1):
+        item["source_locator"] = {"paragraph_id": f"p{i}", "source": "synthetic.json"}
+    ids = [s["segment_id"] for s in segments["segments"]]
+    glossary = {"entries": []}
+    good = dict(zip(ids, ["降雨重塑海岸沉积物。", "降雨未增加径流，但灌溉增加了径流。",
+                          "__NUM_002__ 个样本中的变化可能达到 __NUM_001__ __CIT_001__。", "$x=1$", "传感器的采样频率为 __NUM_001__。"]))
+
+    def check(translations):
+        bi = apply_translations(segments, glossary, translations)
+        return bi, verify_bilingual_translation(bi, segments, glossary)
+
+    valid, qa = check(good)
+    missing, missing_qa = check({})
+    copied, copied_qa = check({**good, ids[0]: original})
+    _, flipped = check({**good, ids[1]: "降雨增加了径流，但灌溉未增加径流。"})
+    _, extra = check({**good, ids[2]: good[ids[2]] + "另有 55 个样本。"})
+    _, wrong_unit = check({**good, ids[4]: "传感器的采样频率为 12 kHz。"})
+    _, strong = check({**good, ids[2]: good[ids[2]].replace("可能", "必然")})
+    scoped = select_scope(segments, {"translation_scope": {"paragraph_ids": ["p2"]}})
+    absent = select_scope(segments, {"translation_scope": {"paragraph_ids": ["p2", "p99"]}})
     return {
-        "naive_baseline": {
-            "glossary_lock": False,
-            "protected_token_masking": False,
-            "alignment_completeness": 0.72,
-            "protected_token_fidelity": 0.65,
-            "terminology_consistency": 0.58,
-            "negation_qa_gate": False,
-        },
-        "skill_pipeline": {
-            "glossary_lock": True,
-            "protected_token_masking": True,
-            "alignment_completeness": skill_m["alignment_completeness"],
-            "protected_token_fidelity": skill_m["protected_token_fidelity"],
-            "terminology_consistency": skill_m["terminology_consistency"],
-            "negation_qa_gate": t1_out["qa_report"]["checks"]["negation_and_scope_preservation"],
-        },
-        "skill_wins": (
-            skill_m["alignment_completeness"] >= 1.0
-            and skill_m["protected_token_fidelity"] >= 1.0
-            and skill_m["terminology_consistency"] >= 1.0
-        ),
+        "passage_limit_uses_original_paragraph": [s["segment_id"] for s in scoped["segments"]] == [ids[1]],
+        "missing_requested_paragraph_is_reported": absent["doc_status"] == "partial" and
+            any(u.get("requested") == ["p99"] for u in absent["uncertainties"]),
+        "genuine_translation_passes": valid["status"] == "completed" and qa["passed"],
+        "empty_map_is_partial": missing["status"] == "partial" and not missing_qa["passed"],
+        "verbatim_formula_is_retained": missing["segments"][3]["status"] == "verbatim",
+        "copied_body_is_not_a_translation": copied["status"] == "partial" and not copied_qa["passed"],
+        "negation_moved_to_wrong_clause_is_caught": not flipped["checks"]["negation_and_scope_preservation"],
+        "frequency_unit_change_is_caught": not wrong_unit["checks"]["protected_token_fidelity"],
+        "invented_quantity_is_caught": not extra["checks"]["numeric_fidelity"],
+        "lost_modality_is_caught": not strong["checks"]["negation_and_scope_preservation"],
     }
+
+
+def check_sentence_and_table_coverage(root: Path) -> dict:
+    """One synthetic source, audited draft, three one-change faults, and a valid joined rendering."""
+    inputs = root / "input"
+    inputs.mkdir(parents=True, exist_ok=True)
+    paragraph = "The north transect shifted by 12 mm. The south transect shifted by 24 mm. Dark sand remained visible."
+    source = f"## Results\n\n{paragraph}\n\n| Site | Observation |\n| --- | --- |\n| North shore | Fine sand only |\n| South shore | No visible change |\n"
+    (inputs / "shoreline.md").write_text(source, encoding="utf-8")
+    write_json_atomic(inputs / "case.json", {"case_id": "synthetic-shore", "target_file": "shoreline.md",
+                                            "translation_scope": {"sections": ["Results"]}})
+    prepared = run_translation_pipeline(inputs, root / "work", prepare_only=True)
+    rows = json.loads(Path(prepared["segments_path"]).read_text(encoding="utf-8"))["segments"]
+    targets = {"Results": "结果", "Table 1": "Table 1", "Site": "地点", "Observation": "观测结果",
+               "North shore": "北岸", "Fine sand only": "仅有细沙", "South shore": "南岸", "No visible change": "未见明显变化"}
+    clauses = ["北侧样线移动了 12 mm。", "南侧样线移动了 24 mm。", "深色沙仍清晰可见。"]
+    targets[paragraph] = "".join(clauses)
+    draft = {r["segment_id"]: {"target_text": targets[r["source_text"]]} for r in rows}
+    ids = {r["source_text"]: r["segment_id"] for r in rows}
+
+    def publish(name, replacement=None, missing=None):
+        authoring = dict(draft)
+        if replacement:
+            authoring[ids[paragraph]] = replacement
+        if missing:
+            authoring.pop(ids[missing])
+        path = root / (name + ".json")
+        write_json_atomic(path, authoring)
+        return run_translation_pipeline(inputs, root / "work", root / name / "result.json",
+                                        translations_json=path)["result"]
+
+    reviewed = publish("reviewed")
+    pairs = next(s["sentence_alignment"] for s in reviewed["segments"] if s["source_text"] == paragraph)
+    omitted = publish("omitted", {"target_text": "".join(clauses[:2])})
+    swapped = publish("swapped", {"target_text": "北侧样线移动了 24 mm。南侧样线移动了 12 mm。" + clauses[2]})
+    gap = publish("table-gap", missing="No visible change")
+    joined = publish("joined", {"sentence_targets": [c[:-1] + "，" for c in clauses[:2]] + [clauses[2]]})
+    return {
+        "reviewed_complete": reviewed["status"] == "completed" and reviewed["verification"]["passed"],
+        "sentence_quotes_resolve": len(pairs) == 3 and all(paragraph[p["source_start"]:p["source_end"]] == p["source_text"] for p in pairs),
+        "table_in_section_has_four_anchored_values": reviewed["tables_bilingual"][0]["rows_zh"] ==
+            [["北岸", "仅有细沙"], ["南岸", "未见明显变化"]] and
+            [(s["source_locator"]["row"], s["source_locator"]["column"]) for s in reviewed["segments"]
+             if s["role"] == "table_cell"] == [(2, 1), (2, 2), (3, 1), (3, 2)],
+        "omitted_sentence_detected": omitted["status"] == "partial" and "sentence_alignment" in omitted["verification"]["failed_checks"],
+        "swapped_quantities_located": swapped["status"] == "partial" and
+            [v.get("sentence_id") for v in swapped["qa_report"]["violations"] if v["check"] == "sentence_alignment"] ==
+            [p["sentence_id"] for p in pairs[:2]],
+        "untranslated_table_cell_located": gap["status"] == "partial" and
+            any(u.get("segment_id") == ids["No visible change"] for u in gap["uncertainties"]),
+        "natural_join_with_clause_map": joined["status"] == "completed" and joined["verification"]["passed"],
+    }
+
+
+def _compare_vs_baseline(t1_out: Dict[str, Any]) -> Dict[str, Any]:
+    segments, glossary = t1_out["segments"], t1_out["glossary"]
+    # Use exactly the same source segments and glossary, with an explicit source-copy control.
+    direct_copy = {s["segment_id"]: s["source_text"] for s in segments["segments"]}
+    control = apply_translations(segments, glossary, direct_copy)
+    control_qa = verify_bilingual_translation(control, segments, glossary)
+    reviewed = t1_out["qa_report"]
+    return {"comparison": "Synthetic fixture, source copy control vs authored translation, identical inputs",
+            "source_copy": control_qa["metrics"], "authored": reviewed["metrics"],
+            "control_passed": control_qa["passed"], "authored_passed": reviewed["passed"],
+            "skill_wins": not control_qa["passed"] and reviewed["passed"]}
 
 
 def main() -> int:
@@ -244,17 +363,17 @@ def main() -> int:
     _build_t4_encrypted_and_scanned(t4a_pdf, t4b_pdf)
 
     t1_case = fix_dir / "t1_case.json"
-    write_json_atomic(t1_case, {"input_files": [str(t1_pdf)], "custom_glossary": {"Cu-ZnO-Al2O3": "Cu-ZnO-Al2O3"}})
+    write_json_atomic(t1_case, {"case_id": "synthetic-catalysis", "input_files": [str(t1_pdf)], "custom_glossary": {"Cu-ZnO-Al2O3": "Cu-ZnO-Al2O3"}})
 
-    o1 = run_translation_pipeline(t1_pdf, out_root / "t1", result_path=out_root / "t1" / "result.json", case_path=t1_case)
+    o1 = translated_fixture(t1_pdf, out_root / "t1", t1_case)
     neg = _run_negative_fault_tests(o1["bilingual"], o1["segments"], o1["glossary"])
     t1_pass = o1["qa_report"]["passed"] and o1["result"]["status"] == "completed" and all(neg.values())
 
-    o2 = run_translation_pipeline(t2_pdf, out_root / "t2", result_path=out_root / "t2" / "result.json")
+    o2 = translated_fixture(t2_pdf, out_root / "t2")
     t2_pages = {s["page"] for s in o2["bilingual"]["segments"]}
     t2_pass = o2["qa_report"]["passed"] and t2_pages == {1, 2, 3}
 
-    o3 = run_translation_pipeline(t3_pdf, out_root / "t3", result_path=out_root / "t3" / "result.json")
+    o3 = translated_fixture(t3_pdf, out_root / "t3")
     t3_pass = o3["qa_report"]["passed"] and len(o3["bilingual"]["tables_bilingual"]) >= 1
 
     o4a = run_translation_pipeline(t4a_pdf, out_root / "t4a", result_path=out_root / "t4a" / "result.json")
@@ -263,8 +382,12 @@ def main() -> int:
     o4b = run_translation_pipeline(t4b_pdf, out_root / "t4b", result_path=out_root / "t4b" / "result.json")
     t4b_pass = (o4b["result"]["status"] == "partial") and o4b["qa_report"]["passed"] and len(o4b["result"]["uncertainties"]) > 0
 
+    semantic = check_semantic_faults()
+    coverage = check_sentence_and_table_coverage(out_root / "t5")
     summary: Dict[str, Any] = {
-        "all_passed": bool(t1_pass and t2_pass and t3_pass and t4a_pass and t4b_pass),
+        "semantic_regressions": semantic,
+        "sentence_and_table_regressions": coverage,
+        "all_passed": bool(t1_pass and t2_pass and t3_pass and t4a_pass and t4b_pass and all(semantic.values()) and all(coverage.values())),
         "suites": {
             "t1_bilingual_catalysis": {
                 "passed": t1_pass,

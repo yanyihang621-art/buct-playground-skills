@@ -14,6 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from output_contract import contract_fields
 from pdf_utils import write_json_atomic
 
 try:
@@ -31,16 +32,7 @@ VALID_STATUSES = {"success", "partial", "unverifiable", "refused"}
 
 
 def _required_keys_from_case(case_data: Dict[str, Any]) -> List[str]:
-    contract = case_data.get("output_contract")
-    if not contract:
-        return ["case_id", "status"]
-    if isinstance(contract, list):
-        return [str(k) for k in contract]
-    if isinstance(contract, dict):
-        if "required" in contract and isinstance(contract["required"], list):
-            return [str(k) for k in contract["required"]]
-        return [str(k) for k in contract.keys()]
-    return ["case_id", "status"]
+    return contract_fields(case_data, required_only=True) or ["case_id", "status"]
 
 
 def _valid_bbox(b: Any) -> bool:

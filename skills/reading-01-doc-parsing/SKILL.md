@@ -33,92 +33,46 @@ Read `/input/case.json` and `/input/task.md` first to determine:
 - Input PDF path(s) under `/input`
 - Any specific extraction, QA, table, formula, or section focus
 
-### Step 2: Run Deterministic Full-Document Parse
-Run `parse_pdf.py` against each input PDF into `/app/work/parsed`:
+### Step 2: Parse the selected PDFs into separate source directories
+List the actual material paths under `/input`, including nested supplements. Select the primary manuscript from the task, then include each requested supplement in its own `--pdf` argument. Relative PDF paths resolve against the directory of `case.json`. The paths below are illustrative; replace them with the discovered paths.
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/parse_pdf.py" \
-  --pdf /input/<paper.pdf> \
-  --out /app/work/parsed \
-  --ocr auto \
-  --crops
+PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/parse_case.py" \
+  --case /input/case.json --out /app/output --budget 600 \
+  --pdf materials/primary.pdf --pdf supplements/appendix.pdf
 ```
 
-Generated artifacts under `/app/work/parsed/`:
-- `document.json`: Complete structured tree (`metadata`, `sections`, `blocks`, `tables`, `figures`, `formulas`, `references`, `diagnostics`, `uncertainties`, `change_log`).
-- `document_summary.json`: Compact <= 8 KB overview (outline, counts, anomalies, uncertainties).
-- `full_text.md`: Reading-order Markdown with `[p.<page> | <block_id> | col:<col> | bbox:<bbox>]` provenance tags.
-- `tables.json` & `tables.html`: Structured tables with `col_paths`, `cells`, `markdown`, `html` (`rowspan`/`colspan`), and `records`.
-- `formulas.json`: Display equations and inline formula spans.
-- `crops/` (when `--crops` is set): 300 DPI PNGs for image-based tables, complex 2D equations, and scanned pages.
+Use one `--pdf` for a single manuscript. Reserve time for case-specific answers, citations and final inspection inside the total case budget. The command writes first-page text previews and a partial `result.json` before full layout/OCR, then checkpoints after each source. A timed-out or unreadable file keeps its own reason. `documents[].parsed_path` points to that source's actual JSON relative to the output root. `primary_source_id` identifies the article supplying the top-level descriptive metadata. Use the pair `(source_id, element_id)` for citations because each PDF independently numbers its blocks, tables and equations.
 
-### Step 3: Read Compact Summary & Write Early Checkpoint
-Inspect the compact summary first (do not dump the entire `document.json` into context):
+### Step 3: Select evidence for each requested field
+Read each source's `document_summary.json` beside its completed `document.json`. Write down each task.md question, its requested unit or format, the relevant source and what evidence would answer it. A section list alone will not answer a question about a particular measurement. Query the parsed PDF for each item:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/query_parsed.py" \
-  --parsed /app/work/parsed/document.json \
-  --mode summary
+python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed "$PARSED_DOC" --mode tables
+python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed "$PARSED_DOC" --mode search --query "$SEARCH_TERM"
+python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed "$PARSED_DOC" --mode cells \
+  --id "$TABLE_LABEL" --row "$ROW_LABEL" --column "$COLUMN_NAME" --limit 5 --readback
 ```
 
-Immediately write an early valid `/app/output/result.json` checkpoint matching `output_contract`:
+Use physical page and printed page when known. Keep the bbox, element ID and exact text or cell value with the document identifier. For tables, verify header hierarchy, case-sensitive units and continuation captions. Cite each cross-page value at its **own cell's page**. Inspect `bboxes_by_page` and nearby captions when two tables share a template. Compare `structured_text` to surrounding text or the image when a formula has ambiguous subscripts, superscripts or Greek symbols.
+
+The cell query returns the row label, parent/leaf column, group, physical page and rectangle. `--readback` checks the selected cell against the original text layer. Verify the requested row, column and any table notes separately. Multiple matches require a narrower filter or a comparison, depending on the question. For a calculated answer, retain the source cells, operation, units and rounding. For an image cell, inspect its crop and report unresolved digits explicitly.
+
+### Step 4: Resolve extraction limits against the originals
+Review `uncertainties` and the corresponding `document.json`, PDF or crop. For OCR or image tables, visually check required values and units. Qualify unverifiable items with a source and page. When sources conflict, report both locations and keep their values distinct. For a partial preview, use only the content actually present and report the uncovered pages or files.
+
+### Step 5: Complete the task-specific contract
+Read every requested question or field again. Use actual manuscript and supplement evidence to write `/app/work/answers.json`, a JSON object with exactly the requested field names and correctly typed values. Attach source-qualified evidence to the answers in the form the case requires. Where the paper does not report an item, follow the contract's missing-value convention and state why in the answer. Use this command to apply the evidence-backed values while retaining extraction status and source artifacts:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/build_result.py" \
-  --case /input/case.json \
-  --parsed /app/work/parsed/document.json \
-  --markdown /app/work/parsed/full_text.md \
-  --out /app/output/result.json
+python3 "$SKILL_DIR/scripts/parse_case.py" --case /input/case.json --out /app/output \
+  --answers /app/work/answers.json
 ```
 
-### Step 4: Targeted Deep Inspection & Anomaly Handling
-Use `query_parsed.py` to read only the sections, pages, tables, formulas, or search hits needed for `/input/case.json`:
+If the prompt asks questions beyond the enumerated output fields, include `task_answers` with one entry per question, its answer and its cited evidence. Include `uncertainties` for unanswered or conflicting items, with a message, field and sources checked. A closed JSON Schema receives only its fields and `case_id` in `result.json`; `parse_manifest.json` next to it retains the source index, supplementary answers, diagnostics and paths. For such a schema, open this manifest to locate each source after Step 2.
 
-```bash
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode sections
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode section --id sec_1
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode tables
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode formulas
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode search --query "CO2|catalyst"
-python3 "$SKILL_DIR/scripts/query_parsed.py" --parsed /app/work/parsed/document.json --mode anomalies
-```
-
-Apply the exception rules strictly whenever `anomalies` or `uncertainties` are non-empty:
-
-| Anomaly / Condition | Required Action & Honest Reporting |
-|---|---|
-| `encrypted_pdf` / `corrupt_pdf` | Keep `status: "refused"`; report exact page count/error; NEVER fabricate text. |
-| `scanned_no_text` | Check OCR output & `mean_confidence`; if `ocr_unavailable`, keep `status: "unverifiable"` (or `"partial"` if mixed) and attach rendered page PNG paths. |
-| `garbled_font_cid` | Preserve raw text layer warning in `uncertainties`, inspect OCR fallback, and mark unrecoverable spans explicitly. |
-| `image_based_table` | Inspect saved 300 DPI crop (`crop_path`) visually or via OCR; if unverified, keep `status: "partial"` and cite `crop_path`. |
-| `complex_2d_formula` | Inspect saved equation crop (`crop_path`) before writing stacked fractions/matrices into final answers. |
-| `disordered_page_numbers` | Always anchor provenance to physical `pdf_page` while also reporting `printed_page`. |
-
-### Step 5: Synthesize Final Contract Output
-If `/input/case.json` requires task-specific answers, summaries, or custom contract fields beyond the deterministic extraction, prepare `/app/work/override.json` with those evidence-backed fields (citing `pdf_page`, `printed_page`, `bbox`, and `block_id`/`table_id`/`eq_id`), then rebuild `/app/output/result.json`:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/build_result.py" \
-  --case /input/case.json \
-  --parsed /app/work/parsed/document.json \
-  --markdown /app/work/parsed/full_text.md \
-  --override-json /app/work/override.json \
-  --out /app/output/result.json
-```
-
-### Step 6: Deterministic Self-Audit Before Finishing
-Always validate `/app/output/result.json` before ending the run:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 "$SKILL_DIR/scripts/validate_output.py" \
-  --case /input/case.json \
-  --result /app/output/result.json \
-  --parsed /app/work/parsed/document.json \
-  --pdf /input/<paper.pdf> \
-  --out /app/work/validation_report.json
-```
-
-Confirm `"pass": true`, zero errors, `provenance_coverage_ratio >= 0.95`, and honest `status` alignment before finishing.
+### Step 6: Verify the deliverable
+Reopen `/app/output/result.json` and, when present, `parse_manifest.json`. Review every `contract_field_invalid` or `contract_field_unfilled` entry. Correct the named field and reapply `--answers`. Check the answers against the original question list and confirm that each requested table, unit, comparison or exception is addressed. Inspect each source's `validation.json` for extraction checks. For an independent text-recall check on a selected original, use the single-document commands in the README with that PDF's completed `document.json`. Check citations against the correct original file, physical page and rectangle.
 
 ---
 

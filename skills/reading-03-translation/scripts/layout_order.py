@@ -222,6 +222,22 @@ def _extract_raw_blocks_fitz(
                     "scripts": script_ann,
                 }
             )
+            # Widely separated byline runs are lost when PDF text lines are joined.
+            # Keep this geometry on the title page so metadata can distinguish names.
+            if page_num == 1:
+                runs = []
+                for span in sorted(spans, key=lambda item: item["bbox"][0]):
+                    text = span.get("text", "").strip()
+                    if not text:
+                        continue
+                    box = span["bbox"]
+                    if not runs or box[0] - runs[-1]["bbox"][2] >= body_font_size:
+                        runs.append({"text": text, "bbox": list(box)})
+                    else:
+                        runs[-1]["text"] += (" " if box[0] - runs[-1]["bbox"][2] > 1.5 else "") + text
+                        runs[-1]["bbox"] = bbox_union([runs[-1]["bbox"], box])
+                if len(runs) > 1:
+                    line_summaries[-1]["spaced_runs"] = runs
             for sp in spans:
                 st = sp.get("text", "").strip()
                 if not st:

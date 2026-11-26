@@ -39,6 +39,7 @@ TABLE_CAPTION_RE = re.compile(
 )
 CONTINUED_RE = re.compile(r"\b(cont(?:inued)?\.?)\b|续表", flags=re.IGNORECASE)
 TABLE_NOTE_RE = re.compile(r"^\s*(?:Notes?:|注[:：]|[*†‡§]\s*[A-Za-z\u4e00-\u9fff]|[a-d]\s+[A-Za-z])", flags=re.IGNORECASE)
+FIGURE_LABEL_RE = re.compile(r"^\s*(?:fig(?:ure)?\.?|图)\s*[A-Za-z]?\d+(?:\.\d+)*\s*[:.：．]", re.I)
 
 
 def _clean_cell_text(val: Any) -> str:
@@ -257,6 +258,10 @@ def _infer_leaf_columns(
                 phrases.append((cur_x0, cur_x1))
                 cur_x0, cur_x1 = wx0, wx1
         phrases.append((cur_x0, cur_x1))
+        # A centered group label can traverse every gutter (e.g. "Published
+        # systems"). Only rows showing an inter-cell gap establish columns.
+        if len(phrases) == 1:
+            continue
         for px0, px1 in phrases:
             s = max(0, int(px0 - x_min))
             e = min(width, int(px1 - x_min) + 1)
@@ -418,6 +423,22 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
             header_rows = rows[:1]
             data_rows = rows[1:]
 
+        # A rule can separate *tiers* of headers. If the first numeric data
+        # row follows several aligned label rows, retain those tiers as headers.
+        # A centered single-phrase group heading, however, belongs in the body.
+        extra_headers = []
+        for candidate in data_rows:
+            numeric = sum(bool(re.fullmatch(r"[-+−]?\d[\d.,]*(?:%|/\d[\d.]*)?", str(w[4]))) for w in candidate)
+            if numeric >= 2:
+                if extra_headers:
+                    header_rows = header_rows + extra_headers
+                    data_rows = data_rows[len(extra_headers):]
+                break
+            if numeric or len(extra_headers) >= 3 or not any(
+                    w[0] - prev[2] > 5.5 for prev, w in zip(candidate, candidate[1:])):
+                break
+            extra_headers.append(candidate)
+
         if not header_rows or not data_rows:
             continue
 
@@ -430,6 +451,11 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
         n_rows = h_count + len(data_rows)
         grid: List[List[str]] = [[""] * n_cols for _ in range(n_rows)]
         cell_specs: List[Dict[str, Any]] = []
+        centers = [(left + right) / 2 for left, right in leaf_cols]
+
+        def nearest_col(word):
+            mid = (word[0] + word[2]) / 2
+            return min(range(n_cols), key=lambda c: abs(centers[c] - mid))
 
         # Map header rows with colspan detection
         header_occupied = [[False] * n_cols for _ in range(h_count)]
@@ -437,7 +463,8 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
             # Cluster words into header phrases (allow wider intra-phrase gap up to 7pt)
             phrases: List[List[Tuple[Any, ...]]] = []
             for w in h_words:
-                if phrases and float(w[0]) - float(phrases[-1][-1][2]) <= 7.0:
+                prev = phrases[-1][-1] if phrases else None
+                if prev and w[0] - prev[2] <= 7 and (nearest_col(w) == nearest_col(prev) or w[0] - prev[2] <= 3):
                     phrases[-1].append(w)
                 else:
                     phrases.append([w])
@@ -472,6 +499,20 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
                     p_mid = (px0 + px1) / 2.0
                     nearest = min(range(n_cols), key=lambda ci: abs((leaf_cols[ci][0] + leaf_cols[ci][1]) / 2.0 - p_mid))
                     covered_cols = [nearest]
+
+                # A parent label is often centered over its child columns even
+                # without a drawn cmidrule. Require symmetry and keep neighboring
+                # labels outside the span. Otherwise leave the label at its cell.
+                if r_idx < h_count - 1 and (span_x0, span_x1) == (px0, px1):
+                    mid = (px0 + px1) / 2
+                    other_mids = [(group[0][0] + group[-1][2]) / 2
+                                  for group in phrases if group is not ph]
+                    spans = [(a, b) for a in range(n_cols) for b in range(a + 1, n_cols)
+                             if abs((centers[a] + centers[b]) / 2 - mid) <= 3.2
+                             and not any(centers[a] - 3 <= m <= centers[b] + 3 for m in other_mids)]
+                    if spans:
+                        a, b = max(spans, key=lambda pair: pair[1] - pair[0])
+                        covered_cols = list(range(a, b + 1))
 
                 c_start = min(covered_cols)
                 c_end = max(covered_cols)
@@ -529,6 +570,15 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
         # Map data rows into leaf columns
         for d_idx, d_words in enumerate(data_rows):
             r_idx = h_count + d_idx
+            row_box = bbox_union([w[:4] for w in d_words])
+            if (abs((row_box[0] + row_box[2] - tx0 - tx1) / 2) <= 4
+                    and all(w[0] - prev[2] <= 5.5 for prev, w in zip(d_words, d_words[1:]))):
+                label = _clean_cell_text(" ".join(str(w[4]) for w in d_words))
+                grid[r_idx][0] = label
+                cell_specs.append({"row": r_idx, "col": 0, "rowspan": 1, "colspan": n_cols,
+                                   "role": "group_label", "text": label, "page": page_num,
+                                   "bbox": round_bbox(row_box)})
+                continue
             col_words: List[List[Tuple[Any, ...]]] = [[] for _ in range(n_cols)]
             for w in d_words:
                 w_mid = (float(w[0]) + float(w[2])) / 2.0
@@ -592,6 +642,23 @@ def _detect_three_line_tables_fitz(page: Any, page_num: int) -> List[Dict[str, A
     return results
 
 
+def _lattice_grid(tab: Any, page_num: int) -> Tuple[List[List[str]], List[Dict[str, Any]]]:
+    grid: List[List[str]] = []
+    specs: List[Dict[str, Any]] = []
+    rows = tab.rows
+    for raw_index, raw_row in enumerate(tab.extract() or []):
+        values = [_clean_cell_text(value) for value in raw_row]
+        if not any(values):
+            continue
+        boxes = rows[raw_index].cells if raw_index < len(rows) else []
+        for col, value in enumerate(values):
+            box = boxes[col] if col < len(boxes) else None
+            specs.append({"row": len(grid), "col": col, "text": value, "page": page_num,
+                          "bbox": round_bbox(box or tab.bbox)})
+        grid.append(values)
+    return grid, specs
+
+
 def _extract_fitz_tables(page: Any, page_num: int) -> List[Dict[str, Any]]:
     if not hasattr(page, "find_tables"):
         return []
@@ -600,8 +667,7 @@ def _extract_fitz_tables(page: Any, page_num: int) -> List[Dict[str, Any]]:
         with contextlib.redirect_stdout(io.StringIO()):
             finder = page.find_tables()
         for tab in getattr(finder, "tables", []):
-            raw_grid = tab.extract() or []
-            grid = [[_clean_cell_text(c) for c in row] for row in raw_grid if any(_clean_cell_text(c) for c in row)]
+            grid, specs = _lattice_grid(tab, page_num)
             score = _score_table_grid(grid)
             if score < 0.35:
                 continue
@@ -614,7 +680,7 @@ def _extract_fitz_tables(page: Any, page_num: int) -> List[Dict[str, Any]]:
                     "page": page_num,
                     "bbox": tb,
                     "grid": grid,
-                    "cell_specs": None,
+                    "cell_specs": specs,
                     "header_row_count": 1,
                     "col_centers": col_centers,
                     "extraction_method": "pymupdf_find_tables",
@@ -633,8 +699,7 @@ def _extract_pdfplumber_tables(plumber_page: Any, page_num: int) -> List[Dict[st
             table_settings={"vertical_strategy": "lines", "horizontal_strategy": "lines"}
         )
         for tab in tables:
-            raw_grid = tab.extract() or []
-            grid = [[_clean_cell_text(c) for c in row] for row in raw_grid if any(_clean_cell_text(c) for c in row)]
+            grid, specs = _lattice_grid(tab, page_num)
             score = _score_table_grid(grid)
             if score < 0.35:
                 continue
@@ -647,7 +712,7 @@ def _extract_pdfplumber_tables(plumber_page: Any, page_num: int) -> List[Dict[st
                     "page": page_num,
                     "bbox": tb,
                     "grid": grid,
-                    "cell_specs": None,
+                    "cell_specs": specs,
                     "header_row_count": 1,
                     "col_centers": col_centers,
                     "extraction_method": "pdfplumber_lattice",
@@ -755,39 +820,69 @@ def _bind_caption_and_notes(
     return label, table_num, caption_text, notes, caption_bbox or []
 
 
+def _captioned_vector_regions(page, blocks):
+    captions = [b["bbox"] for b in blocks if FIGURE_LABEL_RE.match(b["text"])]
+    if not captions or not hasattr(page, "cluster_drawings"):
+        return []
+    regions = []
+    try:
+        clusters = page.cluster_drawings(x_tolerance=15, y_tolerance=15)
+    except (RuntimeError, TypeError, ValueError):
+        return []
+    for rect in clusters:
+        if rect.width < 40 or rect.height < 25:
+            continue
+        for x0, y0, x1, y1 in captions:
+            overlap = min(rect.x1, x1) - max(rect.x0, x0)
+            gap = max(y0 - rect.y1, rect.y0 - y1)
+            if 0 <= gap <= 45 and overlap >= 0.6 * min(rect.width, x1 - x0):
+                regions.append(rect)
+                break
+    return regions
+
+
 def _can_merge_cross_page(
-    prev_tab: Dict[str, Any], cur_tab: Dict[str, Any], cur_page_h: float
+    prev_tab: Dict[str, Any], cur_tab: Dict[str, Any], cur_page_h: float, prev_page_h: Optional[float] = None
 ) -> bool:
-    if cur_tab["page"] != prev_tab["pages"][-1] + 1:
+    last_page = prev_tab["pages"][-1]
+    if cur_tab["page"] != last_page + 1:
         return False
 
     cur_cap = cur_tab.get("caption") or ""
     prev_num = prev_tab.get("table_num")
     cur_num = cur_tab.get("table_num")
+    if cur_num and (not prev_num or cur_num.casefold() != prev_num.casefold()):
+        return False
+    if not prev_tab.get("grid") or not cur_tab.get("grid"):
+        return False
+    columns = len(prev_tab["grid"][0])
+    if columns < 2 or len(cur_tab["grid"][0]) != columns:
+        return False
+    if cur_num and CONTINUED_RE.search(cur_cap):
+        return True
 
-    # Explicit continued caption match
-    if cur_cap and CONTINUED_RE.search(cur_cap):
-        if prev_num and cur_num and prev_num.lower() == cur_num.lower():
-            return True
-        if cur_num is None:
-            return True
+    # Without a numbered continuation, require a repeated schema across the
+    # page break. Physical column centres alone recur across unrelated tables.
+    last_box = prev_tab.get("bboxes_by_page", {}).get(str(last_page), prev_tab["bbox"])
+    if last_box[3] < 0.70 * (prev_page_h or cur_page_h) or cur_tab["bbox"][1] > 0.30 * cur_page_h:
+        return False
+    old_centres = prev_tab.get("col_centers", [])
+    new_centres = cur_tab.get("col_centers", [])
+    if len(old_centres) == len(new_centres) == columns:
+        # Mirrored margins can translate the entire table; relative column
+        # spacing should still agree when a repeated header has no table ID.
+        for old, new in zip(old_centres, new_centres):
+            if abs((old - old_centres[0]) - (new - new_centres[0])) > 24:
+                return False
+    header_count = prev_tab.get("header_row_count", 1)
+    if header_count < 1 or len(cur_tab["grid"]) <= header_count:
+        return False
+    def headers(grid: List[List[str]]) -> List[List[str]]:
+        # Unit case is significant (mW and MW) and must survive normalization.
+        return [[" ".join(cell.split()) for cell in row] for row in grid[:header_count]]
 
-    # Implicit continuation near top of next page without a different Table M caption
-    if cur_tab["bbox"][1] <= cur_page_h * 0.30 and (cur_num is None or cur_num == prev_num):
-        prev_cols = len(prev_tab["grid"][0]) if prev_tab.get("grid") else 0
-        cur_cols = len(cur_tab["grid"][0]) if cur_tab.get("grid") else 0
-        if prev_cols == cur_cols and prev_cols >= 2:
-            # Either column x-centers align or first row repeats previous header
-            prev_header = [c.lower() for c in prev_tab["grid"][0]]
-            cur_first = [c.lower() for c in cur_tab["grid"][0]]
-            if prev_header == cur_first:
-                return True
-            pc = prev_tab.get("col_centers", [])
-            cc = cur_tab.get("col_centers", [])
-            if len(pc) == len(cc) and all(abs(a - b) <= 24.0 for a, b in zip(pc, cc)):
-                return True
-
-    return False
+    old_headers = headers(prev_tab["grid"])
+    return any(any(row) for row in old_headers) and old_headers == headers(cur_tab["grid"])
 
 
 def _merge_tables_cross_page(prev_tab: Dict[str, Any], cur_tab: Dict[str, Any]) -> None:
@@ -802,13 +897,13 @@ def _merge_tables_cross_page(prev_tab: Dict[str, Any], cur_tab: Dict[str, Any]) 
     if len(cur_grid) > h_count:
         matches = True
         for r in range(h_count):
-            if [c.strip().lower() for c in cur_grid[r]] != [c.strip().lower() for c in prev_grid[r]]:
+            if [c.strip() for c in cur_grid[r]] != [c.strip() for c in prev_grid[r]]:
                 matches = False
                 break
         if matches:
             skip_rows = h_count
     if skip_rows == 0 and len(cur_grid) > 1:
-        if [c.strip().lower() for c in cur_grid[0]] == [c.strip().lower() for c in prev_grid[0]]:
+        if [c.strip() for c in cur_grid[0]] == [c.strip() for c in prev_grid[0]]:
             skip_rows = 1
 
     base_row_offset = len(prev_grid)
@@ -883,12 +978,16 @@ def extract_tables(
 
             deduped = _deduplicate_page_tables(cands)
             all_bboxes = [t["bbox"] for t in deduped]
+            figure_regions = _captioned_vector_regions(page, page_blocks) if deduped else []
             matched_caption_bboxes = set()
 
             for tab in deduped:
                 label, tnum, cap, notes, cap_bbox = _bind_caption_and_notes(
-                    tab["bbox"], page_blocks, all_bboxes
+                    tab["bbox"], [b for b in page_blocks if tuple(b["bbox"]) not in matched_caption_bboxes],
+                    all_bboxes,
                 )
+                if not cap and any(bbox_overlap_ratio(tab["bbox"], rect) >= 0.95 for rect in figure_regions):
+                    continue
                 if cap_bbox:
                     matched_caption_bboxes.add(tuple(cap_bbox))
                 tab["label"] = label
@@ -999,7 +1098,9 @@ def extract_tables(
                 not tab.get("is_image_table")
                 and merged_tables
                 and not merged_tables[-1].get("is_image_table")
-                and _can_merge_cross_page(merged_tables[-1], tab, page_heights.get(tab["page"], 792.0))
+                and _can_merge_cross_page(
+                    merged_tables[-1], tab, page_heights[tab["page"]], page_heights[merged_tables[-1]["pages"][-1]]
+                )
             ):
                 _merge_tables_cross_page(merged_tables[-1], tab)
             else:

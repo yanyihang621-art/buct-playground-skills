@@ -9,67 +9,51 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from extract_terms import load_seed_glossary
 from pdf_utils import write_json_atomic, write_text_lf
+from segment_and_protect import sentence_spans
 
 VERBATIM_ROLES = {"authors", "affiliation", "reference", "equation"}
 
-CONNECTIVE_REWRITES: List[Tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bMoreover,\s*", re.I), "此外，"),
-    (re.compile(r"\bFurthermore,\s*", re.I), "进一步地，"),
-    (re.compile(r"\bHowever,\s*", re.I), "然而，"),
-    (re.compile(r"\bTherefore,\s*", re.I), "因此，"),
-    (re.compile(r"\bConsequently,\s*", re.I), "由此，"),
-    (re.compile(r"\bIn contrast,\s*", re.I), "相比之下，"),
-    (re.compile(r"\bAlthough\b", re.I), "尽管"),
-    (re.compile(r"\bWhereas\b", re.I), "而"),
-    (re.compile(r"\bBecause\b", re.I), "因为"),
-    (re.compile(r"\bIn summary,\s*", re.I), "综上所述，"),
-    (re.compile(r"\bIn this study,\s*", re.I), "在本研究中，"),
-    (re.compile(r"\bHerein,\s*", re.I), "本文中，"),
-    (re.compile(r"\bSpecifically,\s*", re.I), "具体而言，"),
-]
+HAN_RE = re.compile(r"[\u3400-\u9fff]")
+LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+SENTENCE_BREAK = re.compile(r"(?<=[.!?;])\s+|[。！？；]")
 
-COMMON_SCI_PHRASES: List[Tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bcatalyst\b", re.I), "催化剂"),
-    (re.compile(r"\bcatalysts\b", re.I), "催化剂"),
-    (re.compile(r"\bconversion\b", re.I), "转化率"),
-    (re.compile(r"\byield\b", re.I), "产率"),
-    (re.compile(r"\bstability\b", re.I), "稳定性"),
-    (re.compile(r"\bperformance\b", re.I), "性能"),
-    (re.compile(r"\btemperature\b", re.I), "温度"),
-    (re.compile(r"\bpressure\b", re.I), "压力"),
-    (re.compile(r"\bsynthesis\b", re.I), "合成"),
-    (re.compile(r"\bcharacterization\b", re.I), "表征"),
-    (re.compile(r"\bresults\s+(?:indicate|show|demonstrate|reveal)\s+that\b", re.I), "结果表明"),
-    (re.compile(r"\bwas\s+not\s+observed\b", re.I), "未被观测到"),
-    (re.compile(r"\bdid\s+not\s+exceed\b", re.I), "未超过"),
-    (re.compile(r"\bcannot\s+be\b", re.I), "不能被"),
-    (re.compile(r"\bwithout\b", re.I), "在无"),
-    (re.compile(r"\bnever\b", re.I), "从未"),
-    (re.compile(r"\bnot\b", re.I), "不"),
-    (re.compile(r"\bonly\b", re.I), "仅"),
-    (re.compile(r"\bexceeded\b", re.I), "超过了"),
-    (re.compile(r"\bachieved\b", re.I), "达到了"),
-    (re.compile(r"\bincreased\s+to\b", re.I), "提高至"),
-    (re.compile(r"\bdecreased\s+to\b", re.I), "降低至"),
-    (re.compile(r"\battributed\s+to\b", re.I), "归因于"),
-    (re.compile(r"\bassociated\s+with\b", re.I), "与…相关"),
-    (re.compile(r"\binhibited\b", re.I), "抑制了"),
-    (re.compile(r"\bpromoted\b", re.I), "促进了"),
-    (re.compile(r"\bexhibited\b", re.I), "表现出"),
-    (re.compile(r"\bremained\s+stable\b", re.I), "保持稳定"),
-    (re.compile(r"\bat\b", re.I), "在"),
-    (re.compile(r"\band\b", re.I), "与"),
-    (re.compile(r"\bwith\b", re.I), "具有"),
-    (re.compile(r"\bunder\b", re.I), "在…条件下"),
-]
+
+def verbatim_allowed(seg: Dict[str, Any], glossary_entries: List[Dict[str, Any]]) -> bool:
+    """Identify source-only material such as references, bare formulae or locked identifiers."""
+    if seg.get("role") in VERBATIM_ROLES:
+        return True
+    text = seg.get("masked_text", seg.get("source_text", ""))
+    text = re.sub(r"__(?:EQ|CIT|REF|NUM)_\d+__", "", text)
+    for entry in glossary_entries:
+        if entry.get("status") == "keep_verbatim":
+            text = re.sub(rf"(?<![\w-]){re.escape(entry['source_term'])}(?![\w-])", "", text)
+    if any(e.get("status") == "locked" for e in _find_locked_terms_in_source(text, glossary_entries)):
+        return False
+    if not LATIN_WORD_RE.search(text):
+        return True
+    single = text.strip(" .()[]")
+    # A lone acronym, chemical identifier or algebraic variable may remain source-only.
+    return bool(re.fullmatch(r"[A-Z]{1,5}\d*|(?:[A-Z][a-z]?\d*){2,}|(?:[A-Z][a-z]?\d*)+(?:[-/](?:[A-Z][a-z]?\d*)+)+|[a-zA-Z](?:[_^]\w+)?", single))
+
+
+def copied_prose(seg: Dict[str, Any], target: str, glossary_entries: List[Dict[str, Any]]) -> bool:
+    if verbatim_allowed(seg, glossary_entries):
+        return False
+    if not HAN_RE.search(target):
+        return True
+    normalized = " ".join(target.casefold().split())
+    for part in SENTENCE_BREAK.split(seg["source_text"]):
+        sentence = part.strip(" .!?;").casefold()
+        if len(LATIN_WORD_RE.findall(sentence)) >= 4 and " ".join(sentence.split()) in normalized:
+            return True
+    return False
 
 
 def restore_protected_tokens(text: str, protected_tokens: Dict[str, str]) -> str:
@@ -77,6 +61,27 @@ def restore_protected_tokens(text: str, protected_tokens: Dict[str, str]) -> str
     for key, val in protected_tokens.items():
         out = out.replace(key, val)
     return out
+
+
+def align_sentences(seg, target, authored=None):
+    """Align prose with source offsets; an authored clause may span several Chinese sentences."""
+    if seg.get("role") not in {"body", "abstract", "caption", "footnote", "table_cell", "table_note"}:
+        return []
+    src = seg["source_text"]
+    spans = sentence_spans(src)
+    if not spans or not target:
+        return []
+    if authored is not None:
+        parts = authored
+    elif len(spans) == 1:
+        parts = [target]
+    else:
+        parts = [s.strip() for s in re.findall(r"[^。！？]+[。！？]*", target) if s.strip()]
+    if len(parts) != len(spans) or any(not part.strip() for part in parts):
+        return []
+    return [{"sentence_id": f"{seg['segment_id']}.s{i}", "source_start": a, "source_end": b,
+             "source_text": src[a:b], "target_text": zh}
+            for i, ((a, b), zh) in enumerate(zip(spans, parts), 1)]
 
 
 def _find_locked_terms_in_source(source_text: str, glossary_entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -91,92 +96,34 @@ def _find_locked_terms_in_source(source_text: str, glossary_entries: List[Dict[s
     return matched
 
 
-def _deterministic_translate_segment(
-    seg: Dict[str, Any],
-    glossary_entries: List[Dict[str, Any]],
-    heading_map: Dict[str, str],
-) -> Tuple[str, str]:
-    """Deterministic glossary-locked & clause-guided EN->ZH translation for offline checks/drafts."""
-    role = seg.get("role", "body")
-    src = seg.get("source_text", "")
-    masked = seg.get("masked_text", src)
-    tokens = seg.get("protected_tokens", {})
-
-    if role in VERBATIM_ROLES:
-        return src, f"角色 `{role}` 依规范保留原文。"
-
-    if role == "keywords":
-        # Replace known glossary terms inside keyword list
-        out = masked
-        for entry in glossary_entries:
-            for v in [entry["source_term"]] + list(entry.get("aliases", [])):
-                pat = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(v)}(?![A-Za-z0-9\-])", re.IGNORECASE)
-                out = pat.sub(entry["target_zh"], out)
-        out = re.sub(r"^(?:Keywords?|Index\s+Terms?)\s*[:：]\s*", "关键词：", out, flags=re.I)
-        return restore_protected_tokens(out, tokens), "关键词列表按锁定术语表逐项译出。"
-
-    if role == "heading":
-        m = re.match(r"^(\d+(?:\.\d+)*\.?\s+)(.+)$", masked.strip())
-        prefix = m.group(1) if m else ""
-        body_h = m.group(2) if m else masked.strip()
-        key = body_h.lower().rstrip(":").strip()
-        if key in heading_map:
-            zh_h = f"{prefix}{heading_map[key]}"
-            return restore_protected_tokens(zh_h, tokens), "标准章节标题依学术体例本地化。"
-
-    out = masked
-    if role == "caption":
-        out = re.sub(r"^(?:Fig\.|Figure)\s*(\d+)\.?\s*", r"图 \1. ", out, flags=re.I)
-        out = re.sub(r"^(?:Table)\s*(\d+)\.?\s*", r"表 \1. ", out, flags=re.I)
-
-    # Apply locked glossary longest-first to avoid partial replacement collisions
-    ordered_entries = sorted(glossary_entries, key=lambda e: len(e["source_term"]), reverse=True)
-    for entry in ordered_entries:
-        variants = sorted([entry["source_term"]] + list(entry.get("aliases", [])), key=len, reverse=True)
-        for v in variants:
-            pat = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(v)}(?![A-Za-z0-9\-])", re.IGNORECASE)
-            out = pat.sub(entry["target_zh"], out)
-
-    for pat, repl in CONNECTIVE_REWRITES:
-        out = pat.sub(repl, out)
-    for pat, repl in COMMON_SCI_PHRASES:
-        out = pat.sub(repl, out)
-
-    out = restore_protected_tokens(out, tokens)
-    out = re.sub(r"\s{2,}", " ", out).strip()
-    return out, "依据锁定术语表、因果连接词及数值/公式占位符还原生成中文译文。"
+def _location(seg: Dict[str, Any]) -> str:
+    spans = seg.get("source_spans") or [seg.get("source_locator") or {}]
+    labels = []
+    for loc in spans:
+        if "pdf_page" in loc:
+            detail = f"PDF p.{loc['pdf_page']}"
+        elif "line_start" in loc:
+            detail = f"lines {loc['line_start']}–{loc.get('line_end', loc['line_start'])}"
+        elif "docx_paragraph" in loc:
+            detail = f"paragraph {loc['docx_paragraph']}"
+        elif "json_pointer" in loc:
+            detail = str(loc["json_pointer"])
+        else:
+            detail = str(seg.get("block_id", ""))
+        if "field" in loc:
+            detail += f" {loc['field']} {loc.get('index', '')}"
+        if "row" in loc and "column" in loc:
+            detail += f" (r{loc['row']}, c{loc['column']})"
+        labels.append(" ".join(filter(None, [str(loc.get("source", "")), detail])))
+    return " → ".join(labels)
 
 
-def _translate_table(tab: Dict[str, Any], glossary_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    cap_en = tab.get("caption") or tab.get("label") or tab.get("table_id") or "Table"
-    cap_zh = re.sub(r"^Table\s+(\d+)\.?\s*", r"表 \1. ", cap_en, flags=re.I)
-    for entry in sorted(glossary_entries, key=lambda e: len(e["source_term"]), reverse=True):
-        pat = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(entry['source_term'])}(?![A-Za-z0-9\-])", re.I)
-        cap_zh = pat.sub(entry["target_zh"], cap_zh)
-    for pat, repl in COMMON_SCI_PHRASES:
-        cap_zh = pat.sub(repl, cap_zh)
-
-    cols_zh: List[str] = []
-    for col in tab.get("col_paths", []):
-        cz = str(col)
-        for entry in glossary_entries:
-            pat = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(entry['source_term'])}(?![A-Za-z0-9\-])", re.I)
-            cz = pat.sub(entry["target_zh"], cz)
-        for pat, repl in COMMON_SCI_PHRASES:
-            cz = pat.sub(repl, cz)
-        cols_zh.append(cz)
-
-    return {
-        "table_id": tab.get("table_id"),
-        "pages": tab.get("pages", [1]),
-        "caption_en": cap_en,
-        "caption_zh": cap_zh,
-        "col_paths_en": tab.get("col_paths", []),
-        "col_paths_zh": cols_zh,
-        "is_image_table": bool(tab.get("is_image_table", False)),
-        "status": tab.get("status", "extracted"),
-        "records": tab.get("records", []),
-    }
+def _table_markdown(table):
+    columns = table.get("col_paths_zh", [])
+    if not columns:
+        return []
+    grid = [columns, ["---"] * len(columns), *table.get("rows_zh", [])]
+    return ["| " + " | ".join(str(v).replace("|", r"\|").replace("\n", " ") for v in row) + " |" for row in grid]
 
 
 def _render_bilingual_markdown(doc: Dict[str, Any]) -> str:
@@ -191,7 +138,7 @@ def _render_bilingual_markdown(doc: Dict[str, Any]) -> str:
     if doc.get("uncertainties"):
         lines.append("## 待核验与异常提示 (Uncertainties & Review Notes)")
         for u in doc["uncertainties"]:
-            lines.append(f"- **[{u.get('severity', 'warning')}] {u.get('code', 'uncertainty')}** (pages {u.get('pages', [])}): {u.get('message', '')}")
+            lines.append(f"- **[{u.get('severity', 'warning')}] {u.get('code', 'uncertainty')}** {u.get('segment_id', '')} {u.get('message') or u.get('detail', '')}")
         lines.append("")
 
     entries = doc.get("glossary", {}).get("entries", [])
@@ -201,14 +148,14 @@ def _render_bilingual_markdown(doc: Dict[str, Any]) -> str:
         lines.append("|---|---|---|---|---|")
         for e in entries:
             fs = e.get("first_seen") or {}
-            loc = f"p.{fs.get('page', 1)} `{fs.get('block_id', '')}`"
+            loc = str(fs.get('block_id', ''))
             lines.append(f"| `{e['term_id']}` | {e['source_term']} | {e['target_zh']} | `{e['status']}` | {loc} |")
         lines.append("")
 
     lines.append("## 双语段落对照 (Bilingual Aligned Segments)")
     lines.append("")
     for seg in doc.get("segments", []):
-        anchor = f"[`{seg['segment_id']}` | p.{seg['page']} | `{seg['role']}` | `{seg['status']}`]"
+        anchor = f"[`{seg['segment_id']}` | {_location(seg)} | `{seg['role']}` | `{seg['status']}`]"
         lines.append(f"### {anchor}")
         lines.append(f"- **EN:** {seg['source_text']}")
         lines.append(f"- **ZH:** {seg['target_text']}")
@@ -217,15 +164,18 @@ def _render_bilingual_markdown(doc: Dict[str, Any]) -> str:
         lines.append("")
 
     if doc.get("tables_bilingual"):
-        lines.append("## 图表标题与表头双语对照 (Tables Bilingual Mapping)")
+        lines.append("## 表格双语对照")
         for t in doc["tables_bilingual"]:
-            lines.append(f"### {t['table_id']} (Pages {t['pages']}) | Status: `{t['status']}`")
+            lines.append(f"### {t['table_id']} | Status: `{t['status']}`")
             lines.append(f"- **EN Caption:** {t['caption_en']}")
             lines.append(f"- **ZH Caption:** {t['caption_zh']}")
             if t.get("col_paths_en"):
                 lines.append(f"- **Columns EN -> ZH:** `{' | '.join(t['col_paths_en'])}` -> `{' | '.join(t['col_paths_zh'])}`")
             lines.append("")
 
+            if t.get("col_paths_zh") and t.get("rows_zh"):
+                lines.extend(_table_markdown(t))
+                lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -234,7 +184,7 @@ def _render_bilingual_html(doc: Dict[str, Any]) -> str:
     for seg in doc.get("segments", []):
         rows.append(
             "<tr>"
-            f"<td><code>{html_lib.escape(seg['segment_id'])}</code><br><small>p.{seg['page']} · {html_lib.escape(seg['role'])}</small></td>"
+            f"<td><code>{html_lib.escape(seg['segment_id'])}</code><br><small>{html_lib.escape(_location(seg))} · {html_lib.escape(seg['role'])}</small></td>"
             f"<td>{html_lib.escape(seg['source_text'])}</td>"
             f"<td>{html_lib.escape(seg['target_text'])}</td>"
             "</tr>"
@@ -259,12 +209,27 @@ def _render_zh_only(doc: Dict[str, Any]) -> str:
     title_zh = doc.get("title_zh") or doc.get("title_en") or "文献中文译文"
     lines.append(f"# {title_zh}")
     lines.append("")
+    first_title = True
+    tables = {t["table_id"]: t for t in doc.get("tables_bilingual", [])}
+    rendered_tables = set()
     for seg in doc.get("segments", []):
         role = seg.get("role", "body")
-        txt = seg.get("target_text", "")
-        if role == "title":
+        tid = seg.get("table_id")
+        if tid in tables:
+            if tid not in rendered_tables:
+                tab = tables[tid]
+                caption_id = tab.get("translation_ids", {}).get("caption") or ""
+                if caption_id.startswith(tid + "_") and tab.get("caption_zh"):
+                    lines.extend([tab["caption_zh"], ""])
+                lines.extend([*_table_markdown(tab), ""])
+                lines.extend(note + "\n" for note in tab.get("notes_zh", []) if note)
+                rendered_tables.add(tid)
             continue
-        if role == "heading":
+        txt = seg.get("target_text") or f"〔待译：{seg['segment_id']}〕"
+        if role == "title" and first_title:
+            first_title = False
+            continue
+        if role in ("heading", "title"):
             lines.append(f"## {txt}")
         elif role == "caption":
             lines.append(f"**{txt}**")
@@ -283,8 +248,6 @@ def apply_translations(
     seed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Assemble bilingual_doc.json with locked terms, restored tokens, and uncertainty status."""
-    seed = load_seed_glossary(seed_path)
-    heading_map = {str(k).lower(): str(v) for k, v in (seed.get("section_headings_zh") or {}).items()}
     glossary_entries = glossary_data.get("entries", [])
     doc_status = segments_data.get("doc_status", "completed")
     uncertainties = list(segments_data.get("uncertainties", []))
@@ -294,11 +257,19 @@ def apply_translations(
         if "segments" in translations_override and isinstance(translations_override["segments"], list):
             for item in translations_override["segments"]:
                 if isinstance(item, dict) and item.get("segment_id"):
-                    overrides[str(item["segment_id"])] = item
+                    key = str(item["segment_id"])
+                    if key in overrides:
+                        uncertainties.append({"code": "duplicate_translation_id", "segment_id": key, "severity": "high", "message": "Two draft rows share this ID."})
+                    overrides[key] = item
         else:
             for k, v in translations_override.items():
-                overrides[str(k)] = v if isinstance(v, dict) else {"target_text": str(v)}
+                if k not in ("contract_values", "glossary_additions"):
+                    overrides[str(k)] = v if isinstance(v, dict) else {"target_text": v}
 
+    unknown = set(overrides) - {seg["segment_id"] for seg in segments_data.get("segments", [])}
+    for sid in sorted(unknown):
+        uncertainties.append({"code": "unknown_translation_id", "segment_id": sid, "severity": "high",
+                              "message": "No source segment matches this draft ID."})
     out_segments: List[Dict[str, Any]] = []
     title_en: Optional[str] = None
     title_zh: Optional[str] = None
@@ -310,16 +281,36 @@ def apply_translations(
         tokens = seg.get("protected_tokens", {})
         locked_used = [e["source_term"] for e in _find_locked_terms_in_source(src, glossary_entries)]
 
-        if sid in overrides:
-            ov = overrides[sid]
-            tgt = restore_protected_tokens(str(ov.get("target_text", "")).strip(), tokens)
-            rationale = str(ov.get("rationale", "人工/模型精译并执行锁定术语与占位符回填。"))
-            seg_status = "uncertain" if ov.get("uncertain") else ("verbatim" if role in VERBATIM_ROLES else "translated")
-            conf = float(ov.get("confidence", 0.96 if seg_status == "translated" else 0.7))
+        ov = overrides.get(sid, {})
+        supplied = ov.get("target_text")
+        tgt = restore_protected_tokens(supplied.strip(), tokens) if isinstance(supplied, str) else ""
+        clauses = ov.get("sentence_targets")
+        if clauses is not None:
+            if isinstance(clauses, list) and clauses and all(isinstance(v, str) and v.strip() for v in clauses):
+                clauses = [restore_protected_tokens(v.strip(), tokens) for v in clauses]
+                joined = "".join(clauses)
+                if tgt and re.sub(r"\s+", "", tgt) != re.sub(r"\s+", "", joined):
+                    uncertainties.append({"code": "conflicting_sentence_targets", "segment_id": sid, "severity": "high",
+                                          "message": "sentence_targets do not reproduce target_text."})
+                    clauses = []
+                elif not tgt:
+                    tgt = joined
+            else:
+                clauses = []
+        rationale = str(ov.get("rationale") or "")
+        if verbatim_allowed(seg, glossary_entries) and not tgt:
+            tgt, seg_status = src, "verbatim"
+            rationale = "原样保留文献标识、公式或无需转译的内容。"
+        elif not tgt or copied_prose(seg, tgt, glossary_entries):
+            reason = "missing_translation" if not tgt else "copied_source"
+            tgt, seg_status = "", "untranslatable"
+            rationale = "此段缺少可用中文译文，保留原文供补译。"
+            uncertainties.append({"code": reason, "segment_id": sid, "pages": [seg["page"]], "message": rationale})
+        elif ov.get("uncertain"):
+            seg_status = "uncertain"
+            uncertainties.append({"code": "translator_review", "segment_id": sid, "pages": [seg["page"]], "message": rationale or "译者标记此段待复核。"})
         else:
-            tgt, rationale = _deterministic_translate_segment(seg, glossary_entries, heading_map)
-            seg_status = "verbatim" if role in VERBATIM_ROLES else "translated"
-            conf = 0.98 if role in VERBATIM_ROLES else 0.85
+            seg_status = "verbatim" if tgt == src and verbatim_allowed(seg, glossary_entries) else "translated"
 
         if role == "title" and title_en is None:
             title_en = src
@@ -339,13 +330,28 @@ def apply_translations(
                 "protected_tokens": tokens,
                 "locked_terms_used": locked_used,
                 "status": seg_status,
-                "confidence": round(conf, 3),
+                "source_blocks": seg.get("source_blocks", []),
+                "source_locator": seg.get("source_locator", {}),
+                "sentence_alignment": align_sentences(seg, tgt, clauses),
+                **({"table_id": seg["table_id"]} if "table_id" in seg else {}),
             }
         )
 
-    tables_bi = [_translate_table(t, glossary_entries) for t in segments_data.get("tables_to_translate", [])]
+    by_id = {s["segment_id"]: s["target_text"] for s in out_segments}
+    tables_bi = []
+    for table in segments_data.get("tables_to_translate", []):
+        ids = table.get("translation_ids", {})
+        tables_bi.append({
+            **table,
+            "caption_en": table.get("caption") or table.get("label") or "",
+            "caption_zh": by_id.get(ids.get("caption"), ""),
+            "col_paths_en": table.get("col_paths", []),
+            "col_paths_zh": [by_id.get(sid, "") for sid in ids.get("columns", [])],
+            "rows_zh": [[by_id.get(sid, "") for sid in row] for row in ids.get("rows", [])],
+            "notes_zh": [by_id.get(sid, "") for sid in ids.get("notes", [])],
+        })
     has_unextracted_table = any(t.get("is_image_table") or t.get("status") not in ("extracted", "ok") for t in tables_bi)
-    has_uncertain_seg = any(s["status"] == "uncertain" for s in out_segments)
+    has_uncertain_seg = any(s["status"] in ("uncertain", "untranslatable") for s in out_segments)
     has_scan_uncertainty = any(
         u.get("code") in ("ocr_unavailable", "scanned_no_text", "garbled_font_cid") or u.get("severity") == "high"
         for u in uncertainties

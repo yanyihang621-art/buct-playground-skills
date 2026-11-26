@@ -1,35 +1,45 @@
 {
-  "_example_notice": "SYNTHETIC ILLUSTRATIVE EXAMPLE ONLY - derived from synthetic self-test output, not an undisclosed benchmark output.",
-  "schema_version": "reading-03-translation-result/v1",
-  "challenge_id": "product-arena-01-5a9928c1",
+  "_example_notice": "Selected fields from the synthetic example_case.json run. This is an interface example.",
+  "schema_version": "reading-03-translation-result/v2",
+  "case_id": "example-reading03-upper-layer",
   "status": "completed",
-  "source_lang": "en",
-  "target_lang": "zh-CN",
-  "summary": "Completed glossary-locked bilingual translation across 14 aligned segments with 100% protected token fidelity (formulas, citations, numbers+units) and zero terminology drift.",
   "metrics": {
-    "segment_count": 14,
-    "translated_count": 14,
-    "alignment_completeness": 1.0,
-    "protected_token_fidelity": 1.0,
-    "terminology_consistency": 1.0,
-    "negation_preservation": 1.0,
-    "locked_term_count": 6,
+    "segment_count": 1,
+    "translated_count": 1,
+    "verbatim_count": 0,
+    "pending_count": 0,
+    "alignment_completeness": 1,
+    "protected_token_fidelity": 1,
+    "terminology_consistency": 1,
+    "negation_preservation": 1,
+    "locked_term_count": 1,
     "uncertainty_count": 0
   },
-  "artifacts": {
-    "document_json": "work/papers/paper_1/document.json",
-    "glossary_json": "work/translation/glossary.json",
-    "segments_json": "work/translation/segments.json",
-    "bilingual_doc_json": "work/translation/bilingual_doc.json",
-    "bilingual_md": "work/translation/bilingual.md",
-    "bilingual_html": "work/translation/bilingual.html",
-    "zh_only_md": "work/translation/zh_only.md",
-    "qa_report_json": "work/translation/qa_report.json"
-  },
-  "uncertainties": [],
+  "summary": "1/1 segments rendered; 0 QA findings.",
   "verification": {
     "passed": true,
-    "check_count": 6,
+    "check_count": 7,
     "failed_checks": []
-  }
+  },
+  "artifacts": {
+    "document_json": "translation/document.json",
+    "segments_json": "translation/segments.json",
+    "glossary_json": "translation/glossary.json",
+    "qa_report_json": "translation/qa_report.json",
+    "bilingual_doc_json": "translation/bilingual_doc.json",
+    "bilingual_md": "translation/bilingual.md",
+    "bilingual_html": "translation/bilingual.html",
+    "zh_only_md": "translation/zh_only.md"
+  },
+  "bilingual_segments": [
+    {
+      "segment_id": "seg_0001_p1_b01",
+      "source_text": "Only the upper layer changed at 12 Hz.",
+      "target_text": "在 12 Hz 下仅上层发生了变化。",
+      "source_locator": {
+        "source": "case.json#/source_text",
+        "json_pointer": "#/source_text"
+      }
+    }
+  ]
 }

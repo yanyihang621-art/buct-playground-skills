@@ -1,0 +1,125 @@
+"""Resolve the case's result fields from real products and the translator's case-specific values."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _field_map(fields: Any) -> dict:
+    if isinstance(fields, dict):
+        return dict(fields)
+    specs = {}
+    for item in fields if isinstance(fields, list) else []:
+        if isinstance(item, str):
+            specs[item] = {}
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("field") or item.get("key")
+            if isinstance(name, str):
+                specs[name] = item
+    return specs
+
+
+def contract_specs(contract: Any) -> dict:
+    if not isinstance(contract, dict):
+        return _field_map(contract)
+    if "properties" in contract or any(k in contract for k in ("fields", "required_fields", "required")):
+        specs = {}
+        for key in ("required", "required_fields", "fields", "properties"):
+            specs.update(_field_map(contract.get(key)))
+        return specs
+    return {k: v for k, v in contract.items() if k not in ("$schema", "$id", "description", "title", "additionalProperties")}
+
+
+def required_contract_fields(contract: Any) -> set[str]:
+    specs = contract_specs(contract)
+    explicit = set()
+    if isinstance(contract, dict):
+        explicit.update(_field_map(contract.get("required")))
+        explicit.update(_field_map(contract.get("required_fields")))
+    if isinstance(contract, dict) and isinstance(contract.get("properties"), dict):
+        return explicit
+    return explicit | {name for name, spec in specs.items() if not isinstance(spec, dict)
+                       or (spec.get("required") is not False and spec.get("optional") is not True)}
+
+
+def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
+    if spec is False:
+        return [f"{path}: schema disallows this value"]
+    if isinstance(spec, str):
+        spec = {"type": spec}
+    if not isinstance(spec, dict):
+        return []
+    if value is None and spec.get("nullable") is True:
+        return []
+    for label in ("oneOf", "anyOf", "allOf"):
+        branches = spec.get(label)
+        if isinstance(branches, list):
+            matches = sum(not _shape_errors(value, branch, path) for branch in branches)
+            if ((label == "oneOf" and matches != 1) or (label == "anyOf" and not matches)
+                    or (label == "allOf" and matches != len(branches))):
+                return [f"{path}: does not meet {label}"]
+    names = spec.get("type", [])
+    names = [names] if isinstance(names, str) else names
+    types = {"string": str, "object": dict, "array": list, "number": (float, int),
+             "integer": int, "boolean": bool, "null": type(None)}
+    allowed = [t for t in (names or []) if t in types]
+    if allowed and not any(isinstance(value, types[t]) and not
+                           (t in ("number", "integer") and isinstance(value, bool)) for t in allowed):
+        return [f"{path}: expected {' or '.join(allowed)}"]
+    if "enum" in spec and value not in spec["enum"]:
+        return [f"{path}: outside declared enum"]
+    if "const" in spec and value != spec["const"]:
+        return [f"{path}: differs from declared constant"]
+    errors = []
+    if isinstance(value, dict):
+        for k in _field_map(spec.get("required")):
+            if k not in value:
+                errors.append(f"{path}.{k}: missing")
+        properties = spec.get("properties", {})
+        if spec.get("additionalProperties") is False and isinstance(properties, dict) and "patternProperties" not in spec:
+            errors.extend(f"{path}.{k}: undeclared field" for k in value.keys() - properties.keys())
+        for k, child in properties.items():
+            if k in value:
+                errors.extend(_shape_errors(value[k], child, f"{path}.{k}"))
+    elif isinstance(value, list) and "items" in spec:
+        for i, item in enumerate(value):
+            errors.extend(_shape_errors(item, spec["items"], f"{path}[{i}]"))
+    return errors
+
+
+def resolve_contract(result: dict, contract: Any, products: dict, supplied: dict) -> list[dict]:
+    """Resolve required and supplied fields; preserve genuinely nullable values, omit absent optionals."""
+    specs = contract_specs(contract)
+    required = required_contract_fields(contract)
+    issues = []
+    fixed = {"case_id", "status", "metrics", "verification", "artifacts", "uncertainties",
+             "schema_version", "challenge_id", "sources", "change_records", "segments", "glossary",
+             "qa_report", "source_lang", "target_lang", "summary", "tables_bilingual", "evidence"}
+    for field, spec in specs.items():
+        if field == "glossary" and (spec == "array" or isinstance(spec, dict) and spec.get("type") == "array"):
+            result[field] = products["terminology"]
+        if field == "status" and result[field] == "completed" and isinstance(spec, dict):
+            choices = spec.get("enum", [])
+            if "success" in choices and "completed" not in choices:
+                result[field] = "success"
+        if field in supplied and field not in fixed:
+            result[field] = supplied[field]
+        elif field not in result and field in products:
+            result[field] = products[field]
+        if field not in result:
+            if field not in required:
+                continue
+            result[field] = None
+            issues.append({"code": "unresolved_contract_field", "field": field,
+                           "message": "Supply an evidence-based value in translations JSON contract_values or document the missing source."})
+        elif errors := _shape_errors(result[field], spec, field):
+            issues.append({"code": "contract_shape_mismatch", "field": field, "details": errors})
+    return issues
+
+
+def published_fields(result: dict, contract: Any) -> dict:
+    """In a closed schema the internal QA and work index live beside the submitted view."""
+    if (isinstance(contract, dict) and contract.get("additionalProperties") is False
+            and isinstance(contract.get("properties"), dict) and "patternProperties" not in contract):
+        return {k: v for k, v in result.items() if k == "case_id" or k in contract["properties"]}
+    return result
