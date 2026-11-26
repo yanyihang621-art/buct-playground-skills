@@ -220,12 +220,17 @@ def verify_methods_and_experiments(chapter_md, repro_md, facts, param_table, *, 
                "limits": [s for s in limits if isinstance(s, str)]}
     coverage = {}
     for key, pattern in TOPICS.items():
+        linked = facts.get("coverage_evidence", {}).get("limitations" if key == "limits" else key, [])
+        for item in linked:
+            if item.get("mode") == "author_classified":
+                review.append({"reason": "review_author_topic_classification", "topic": key,
+                               "claim": item["claim"], "links": item["links"]})
         in_section = any((re.search(pattern, title, re.I) or includes(title, records[key])) and text_content(body)
                          for title, body in report_sections)
         in_prose = bool(re.search(pattern, prose, re.I)) or includes(prose, records[key])
         if key == "steps" and not in_prose and not in_section:
             in_prose = procedure_matches(prose, steps)
-        coverage[key] = in_section or in_prose
+        coverage[key] = in_section or in_prose or bool(linked)
         if not coverage[key] and ("limitations" if key == "limits" else key) not in excluded:
             target = [v for v in records[key] if v]
             if target:

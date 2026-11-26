@@ -101,6 +101,20 @@ def _resolve_references(value, catalog, field, issues):
     return {k: _resolve_references(v, catalog, f'{field}.{k}', issues) for k, v in value.items()}
 
 
+def project_generated(value, spec):
+    """Select fields from a richer generated record when the case requires a closed object."""
+    if not isinstance(spec, dict):
+        return value
+    if isinstance(value, list):
+        return [project_generated(item, spec.get('items')) for item in value]
+    if isinstance(value, dict):
+        props = spec.get('properties', {})
+        if isinstance(props, dict):
+            return {key: project_generated(val, props.get(key)) for key, val in value.items()
+                    if spec.get('additionalProperties') is not False or key in props}
+    return value
+
+
 def bind_contract(result, contract, provided, catalog, out_dir):
     """Never use schema descriptions or example/default values as answers."""
     issues = []
@@ -113,11 +127,13 @@ def bind_contract(result, contract, provided, catalog, out_dir):
         issues.append({'code': 'unrecognized_output_contract', 'detail': 'Inspect the case and bind its requested outputs manually.'})
     for key, spec in fields.items():
         if key in result:
-            value = result[key]
+            value = project_generated(result[key], spec)
         elif key in provided:
             value = _resolve_references(provided[key], catalog, key, issues)
+            if isinstance(provided[key], dict) and set(provided[key]) == {'$from'}:
+                value = project_generated(value, spec)
         elif key in catalog and catalog[key] is not None:
-            value = catalog[key]
+            value = project_generated(catalog[key], spec)
         else:
             result[key] = None
             issues.append({'code': 'unfilled_contract_field', 'field': key})

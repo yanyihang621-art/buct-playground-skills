@@ -51,11 +51,20 @@ def main():
     p.add_argument("--query", default="")
     p.add_argument("--source", default="")
     p.add_argument("--passages", action="store_true", help="Show material passages and their citation IDs.")
+    p.add_argument("--runs", action="store_true", help="Show measured endpoints with comparable conditions and their row IDs.")
     p.add_argument("--offset", type=int, default=0)
     p.add_argument("--limit", type=int, default=18)
     opts = p.parse_args()
     facts = json.loads(Path(opts.facts).read_text(encoding="utf-8"))
     rows = facts.get("evidence", [])
+    if opts.runs:
+        rows = [row for row in facts.get("run_observations", []) if
+                (not opts.source or row["source"] == opts.source) and
+                opts.query.casefold() in json.dumps(row, ensure_ascii=False).casefold()]
+        start = max(opts.offset, 0)
+        for row in rows[start:start + max(opts.limit, 0)]:
+            print(json.dumps(row, ensure_ascii=False))
+        return
     if not (opts.topic or opts.query or opts.source or opts.passages):
         print(json.dumps({"passages_per_source": Counter(r["source"] for r in rows),
                           "ingestion_issues": facts.get("ingestion_issues", []),

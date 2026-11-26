@@ -8,6 +8,7 @@ import unicodedata
 
 from parameter_claims import TOKEN, UNIT_AFTER, UNITS, plain, same_number
 from direct_evidence import recover_quotes
+from run_comparisons import swapped_arm_values
 
 
 def normalized(value):
@@ -79,9 +80,13 @@ def add_annotation(facts, table, annotation, link, quotes):
         if key not in {"software", "hardware", "seeds", "repeats", "command", "train_protocol", "val_protocol", "test_protocol", "code_version", "data_access"}:
             return "unknown_setup_field"
         existing = facts["setup"].get(key)
-        if existing not in (None, "", []) and existing != value:
+        if existing not in (None, "", []) and normalized(existing) != normalized(value):
             return "conflicts_with_existing_setup"
         facts["setup"][key] = value
+        row = {"value": value, "source": link["source"], "locator": link["locator"]}
+        entries = facts.setdefault("setup_evidence", {}).setdefault(key, [])
+        if row not in entries:
+            entries.append(row)
     elif section == "limitations" and isinstance(value, str):
         if value not in facts[section]:
             facts[section].append(value)
@@ -109,7 +114,7 @@ def add_annotation(facts, table, annotation, link, quotes):
     return None
 
 
-def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case_data=None):
+def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case_data=None, calculations=None):
     facts, table = deepcopy(facts), deepcopy(param_table)
     issues, valid = [], []
     evidence = defaultdict(list)
@@ -133,6 +138,10 @@ def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case
         pos += len(line) + 1
     manuscript = " ".join(lines)
     covered = []
+    measured = defaultdict(list)
+    for row in facts.get("run_observations", []):
+        measured[row["source"], row["locator"]].append(row)
+    calculated = {(line, normalized(text)): data for (line, text), data in (calculations or {}).items()}
     for i, entry in enumerate(claims):
         if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("claim", "source", "locator", "quote")):
             issues.append({"code": "incomplete_claim_link", "row": i})
@@ -161,6 +170,15 @@ def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case
     for (claim, start, end), entries in groups.items():
         quotes = " ".join(normalized(entry["quote"]) for entry in entries)
         unsupported = numbers(claim) - numbers(quotes)
+        derivation = calculated.get((entries[0].get("line"), claim))
+        if derivation:
+            unsupported -= numbers(derivation["value"])
+        else:
+            rows = [row for entry in entries for row in measured[entry["source"], entry["locator"]]]
+            swaps = swapped_arm_values(claim, rows)
+            if swaps:
+                issues.append({"code": "source_arm_value_mismatch", "claim": claim, "mismatches": swaps})
+                continue
         if unsupported:
             unsupported -= converted_numbers(claim, quotes)
         if unsupported:
@@ -170,6 +188,9 @@ def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case
         seen_links = set()
         for entry in entries:
             link = {key: entry[key] for key in ("claim", "source", "locator", "quote", "line", "occurrence") if key in entry}
+            if derivation:
+                link["calculation"] = {"operation": derivation["operation"], "value": derivation["value"],
+                                       "left_id": derivation["left"]["id"], "reference_id": derivation["reference"]["id"]}
             key = (link["source"], link["locator"], link["quote"])
             if key not in seen_links:
                 valid.append(link)

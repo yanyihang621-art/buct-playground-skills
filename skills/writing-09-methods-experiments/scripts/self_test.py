@@ -20,6 +20,7 @@ from exp_utils import write_json_atomic, write_text_lf
 from verify_methods_exp import verify_methods_and_experiments
 from source_labels import label_for
 from extract_experiment_facts import extract_experiment_facts
+from test_run_comparisons import comparison_regression
 
 
 def _setup_m1_ml_experiment(d: Path) -> Path:
@@ -344,6 +345,9 @@ def main() -> int:
     narrative = _test_narrative_sources(root / "narrative")
     summary["suites"]["narrative_sources"] = narrative
     summary["all_passed"] = summary["all_passed"] and all(narrative.values())
+    comparisons = comparison_regression(root / "measured-comparisons")
+    summary["suites"]["measured_comparisons"] = comparisons
+    summary["all_passed"] = summary["all_passed"] and all(comparisons.values())
     if args.compare_baseline:
         summary["baseline_comparison"] = _compare_baseline(r1)
         summary["all_passed"] = summary["all_passed"] and summary["baseline_comparison"]["regression_passed"]

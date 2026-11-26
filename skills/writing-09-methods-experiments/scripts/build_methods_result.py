@@ -5,6 +5,8 @@ import argparse
 import difflib
 import json
 from pathlib import Path
+from xml.etree.ElementTree import ParseError
+from zipfile import BadZipFile
 
 from build_case_scope import apply_scope
 from build_office_artifacts import render_office
@@ -13,8 +15,10 @@ from coverage_evidence import classify_coverage
 from draft_methods_section import render_methods_chapter, render_parameter_table_md, render_repro_and_questions_md
 from exp_utils import write_json_atomic, write_text_lf
 from extract_experiment_facts import extract_experiment_facts, read_case_descriptor
+from material_readers import docx_rows, read_text
 from source_labels import expand_labels
 from review_evidence import apply_review
+from run_comparisons import expand_comparisons
 from verify_methods_exp import verify_methods_and_experiments
 
 
@@ -64,15 +68,26 @@ def diff_manuscript(original_file, input_dir, chapter, output, artifacts, change
     try:
         path = (input_dir / original_file).resolve()
         ref = path.relative_to(input_dir.resolve()).as_posix()
-        old = path.read_text(encoding='utf-8-sig')
+        old = '\n'.join(value for _, value in docx_rows(path)) if path.suffix.lower() == '.docx' else read_text(path)
         diff = list(difflib.unified_diff(old.splitlines(), chapter.splitlines(),
-                                         fromfile=ref, tofile='methods_and_experiments.md', lineterm=''))
+                                         fromfile=ref, tofile=artifacts['methods_and_experiments_md'], lineterm=''))
         if diff:
             write_text_lf(output / 'manuscript.diff', '\n'.join(diff) + '\n')
             artifacts['manuscript_diff'] = 'manuscript.diff'
         changes.append({'action': 'compared_original_manuscript', 'source': ref, 'changed': bool(diff)})
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, KeyError, ParseError, BadZipFile) as exc:
         issues.append({'code': 'original_manuscript_unavailable', 'detail': str(exc)})
+
+
+def manuscript_name(output, requested):
+    name = Path(requested or 'methods_and_experiments.md')
+    path = (output / name).resolve()
+    if not path.is_relative_to(output.resolve()) or path.suffix.lower() not in {'.md', '.txt'}:
+        raise ValueError('expected a .md or .txt filename under the output directory')
+    relative = path.relative_to(output.resolve()).as_posix()
+    if relative.casefold() in {'parameter_table.md', 'reproducibility_and_questions.md'}:
+        raise ValueError('the manuscript filename is already used by a supporting document')
+    return relative
 
 
 def review_list(review, field, issues):
@@ -85,7 +100,7 @@ def review_list(review, field, issues):
 
 def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, draft_file=None,
                          language=None, review_file=None, contract_values=None,
-                         original_file=None, docx=None, pdf=None):
+                         original_file=None, docx=None, pdf=None, manuscript_file=None):
     inputs, work, output = Path(input_dir), Path(work_dir) / 'methods', Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     issues = []
@@ -97,17 +112,22 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
     case_id = case.get('case_id')
     if case_id is None:
         issues.append({'code': 'missing_case_id'})
-    lang = str(language or case.get('language') or 'en')
+    lang = str(language or case.get('output_language') or case.get('language') or 'en')
+    is_zh = lang.lower().startswith(('zh', 'chinese', '中文', '汉语'))
     review = load_object(review_file, issues, 'review_unavailable')
     values = load_object(contract_values, issues, 'contract_values_unavailable')
     extracted = extract_experiment_facts(inputs, case)
     draft = read_draft(draft_file, issues)
     draft, inline_links, label_issues = expand_labels(draft, extracted['facts'].get('evidence', []))
     issues.extend(label_issues)
+    draft, comparison_links, calculations, comparison_issues = expand_comparisons(
+        draft, extracted['facts'], review.get('comparisons', {}), is_zh)
+    inline_links.extend(comparison_links)
+    issues.extend(comparison_issues)
     if inline_links and isinstance(review.get('claim_sources', []), list):
         review['claim_sources'] = review.get('claim_sources', []) + inline_links
     facts, table, claims, review_issues = apply_review(extracted['facts'], extracted['parameter_table'], review, draft,
-                                                      input_dir=inputs)
+                                                      input_dir=inputs, case_data=case, calculations=calculations)
     issues.extend(review_issues)
     out_of_scope = apply_scope(facts, review, case, inputs, issues)
     coverage, coverage_issues = classify_coverage(draft, claims, review.get('coverage_links', {}), out_of_scope)
@@ -140,10 +160,14 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
         elif not claims:
             issues.append({'code': 'missing_claim_sources', 'detail': 'Attach source-checked claim records for the manuscript.'})
         chapter = draft or render_methods_chapter(facts, table, language=lang)
-        is_zh = lang.lower().startswith('zh')
         repro = render_repro_and_questions_md(dict(facts, author_questions=questions), is_zh=is_zh)
         table_md = render_parameter_table_md(table, is_zh=is_zh)
-        for key, filename, content in [('methods_and_experiments_md', 'methods_and_experiments.md', chapter),
+        try:
+            manuscript_path = manuscript_name(output, manuscript_file)
+        except (OSError, ValueError) as exc:
+            issues.append({'code': 'invalid_manuscript_filename', 'detail': str(exc)})
+            manuscript_path = 'methods_and_experiments.md'
+        for key, filename, content in [('methods_and_experiments_md', manuscript_path, chapter),
                                        ('parameter_table_md', 'parameter_table.md', table_md),
                                        ('reproducibility_and_questions_md', 'reproducibility_and_questions.md', repro)]:
             write_text_lf(output / filename, content)
@@ -162,9 +186,13 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
         qa = verify_methods_and_experiments(chapter, repro, facts, table,
                                              status_claimed='partial' if issues else 'completed', language=lang)
         qa['linked_topic_counts'] = {topic: len(rows) for topic, rows in coverage.items()}
-        if review_issues:
+        if label_issues or review_issues:
             qa['checks']['source_claims'] = False
-            qa['violations'].extend({'check': 'source_claims', **item} for item in review_issues)
+            qa['violations'].extend({'check': 'source_claims', **item} for item in label_issues + review_issues)
+            qa['passed'] = False
+        if comparison_issues:
+            qa['checks']['measured_comparisons'] = False
+            qa['violations'].extend({'check': 'measured_comparisons', **item} for item in comparison_issues)
             qa['passed'] = False
         if coverage_issues:
             qa['checks']['source_linked_coverage'] = False
@@ -183,6 +211,11 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
         artifacts[key] = filename
         if key != 'claim_sources_json':
             write_json_atomic(work / filename, obj)
+    comparisons = list(calculations.values())
+    if comparisons or review.get('comparisons') or (output / 'run_comparisons.json').exists():
+        write_json_atomic(output / 'run_comparisons.json', comparisons)
+    if comparisons:
+        artifacts['run_comparisons_json'] = 'run_comparisons.json'
     register_attachments(output, review.get('artifacts', {}), artifacts, issues)
     status = 'refused' if not sources else 'partial' if issues else 'completed'
     result = {'schema_version': 'writing-09-methods-result/v2', 'challenge_id': 'product-arena-05-64faa4a2',
@@ -198,6 +231,7 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
                             'manuscript': chapter, 'chapter': chapter, 'markdown': chapter,
                             'methods_and_experiments': chapter, 'main_result': chapter,
                             'evidence': claims, 'source_map': claims, 'reproducibility_checklist': repro,
+                            'run_comparisons': comparisons,
                             'manuscript_path': artifacts.get('methods_and_experiments_md')})
     catalog.update(artifacts)
     contract = case.get('output_contract')
@@ -232,6 +266,7 @@ def main():
     parser.add_argument('--review-file', help='Claim links, authored changes, uncertainties, questions, and artifact paths.')
     parser.add_argument('--contract-values', help='JSON object containing case-specific answers keyed by output field.')
     parser.add_argument('--original-file', help='Original text manuscript inside input-dir for a real revision diff.')
+    parser.add_argument('--manuscript-file', help='Case-requested name of the editable Markdown or text file, relative to output-dir.')
     parser.add_argument('--docx', nargs='?', const='methods_and_experiments.docx')
     parser.add_argument('--pdf', nargs='?', const='methods_and_experiments.pdf')
     parser.add_argument('--allow-partial', action='store_true',

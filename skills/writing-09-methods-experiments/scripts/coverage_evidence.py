@@ -109,5 +109,9 @@ def classify_coverage(manuscript, valid, requested, excluded):
             if matches:
                 evidence[topic].append({'claim': claim, 'mode': 'explicit' if topic in explicit else 'auto', 'links': matches})
             elif topic in explicit:
-                errors.append({'code': 'coverage_topic_mismatch', 'topic': topic, 'claim': claim})
+                # The source and manuscript span have already been checked. A
+                # domain-specific paraphrase can lack a topic word in both languages.
+                evidence[topic].append({'claim': claim, 'mode': 'author_classified',
+                                        'links': [{'claim_index': index, 'line': line, 'source': link['source'],
+                                                   'locator': link['locator']} for index, link, line, _ in links]})
     return dict(evidence), errors

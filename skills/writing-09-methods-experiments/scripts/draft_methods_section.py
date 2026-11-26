@@ -57,11 +57,18 @@ def render_repro_and_questions_md(facts: Dict[str, Any], is_zh: bool = False) ->
               ("code_version", "代码版本", "Code revision"), ("command", "执行命令或操作规程", "Command or protocol"),
               ("data_access", "数据来源与获取方式", "Data access")]
     missing = "材料未说明" if is_zh else "Not reported in the materials"
+    conflicts = {row.get("parameter") for row in facts.get("conflicts", [])}
     for key, zh, en in labels:
-        lines.append(f"- **{zh if is_zh else en}** — {display(setup.get(key), missing)}")
+        gap = ("来源取值有分歧，见下文" if is_zh else "Sources disagree; see discrepancies below") if "setup." + key in conflicts else missing
+        references = [row["source"] + " " + row["locator"] for row in facts.get("setup_evidence", {}).get(key, [])]
+        suffix = " (" + ", ".join(dict.fromkeys(references)) + ")" if references else ""
+        lines.append(f"- **{zh if is_zh else en}** — {display(setup.get(key), gap)}{suffix}")
     for dataset in facts.get("datasets", []):
         if isinstance(dataset, dict):
-            lines.append(f"- **{display(dataset.get('name'))}** — {display(dataset.get('version'), missing)}")
+            source = dataset.get("evidence_source") or dataset.get("source")
+            locator = dataset.get("evidence_locator") or dataset.get("locator")
+            suffix = f" ({source} {locator})" if source and locator else ""
+            lines.append(f"- **{display(dataset.get('name'))}** — {display(dataset.get('version'), missing)}{suffix}")
     for title, items in [
         ("跨来源冲突" if is_zh else "Discrepancies", [c.get("message") or display(c.get("values")) for c in facts.get("conflicts", [])]),
         ("待作者确认" if is_zh else "Questions for the author", [q.get("question") if isinstance(q, dict) else q for q in facts.get("author_questions", [])]),

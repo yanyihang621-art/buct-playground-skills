@@ -29,6 +29,8 @@ Harbor 入口 `scripts/harbor_methods.sh` 将取材和发布分成两个独立�
 
 ## 依赖与边界
 
+CSV、TSV、JSON 和 JSONL 的实测组记录可用 `read_evidence.py --facts <facts.json> --runs` 单独查看。长表识别 method/group、metric、value、unit 等列，宽表可含常用指标或结构化 metrics 字段。差值按左组减参照组计算。百分数之差以百分点表示，相对变化以参照组为分母，保留两位小数。相同指标、单位和记录条件可计算描述性差值，预算或划分不同、分母为零时返回具体问题。解释误差或显著性还需任务材料提供重复设计和统计方法。科学写作自测中有可运行的修改、编排、差值计算与错配实例。
+
 脚本使用 Python 3.10+。JSON、文本、CSV/TSV、Python/Shell 源码等使用标准库。PDF 使用 PyMuPDF 或环境提供的文本工具。DOCX 输入支持读取文档 XML。YAML 的完整语法需要 PyYAML。Office 导出和预览使用环境可用的文档写入器、Office 渲染器与 PDF 工具。以运行结果中的 ingestion_issues 和 uncertainties 核实实际可用能力。索引有页数、条数和文本长度限制；扫描图像、多栏表和长附件需回看原件，表头与单位尤其重要。
 
 运行 `python3 scripts/self_test.py --out-dir /tmp/writing09-test --compare-baseline`。对照将同一份文本交给首版的全文子串规则和新版局部参数核验，分别测试原稿、互换数值和同一参数的第二个矛盾取值。测试报告输出实际开关结果。竞赛得分由平台使用固定案例独立计算。

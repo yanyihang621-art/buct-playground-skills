@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from exp_utils import write_json_atomic
+from run_comparisons import measured_rows
 from material_readers import (
     CONTROL_KEYS, MAX_BINARY, MAX_ITEMS, MAX_SNIPPET, MAX_TEXT, MEASUREMENT, SCALAR, TEXT,
     code_literals, docx_rows, input_files, is_link, line_pairs, pdf_rows, pointer, read_text,
@@ -21,7 +22,12 @@ SECTIONS = {"steps", "setup", "datasets", "baselines", "limitations"}
 SETUP_KEYS = {"hardware", "software", "code_version", "data_access", "seeds", "repeats", "command", "train_protocol", "val_protocol", "test_protocol"}
 ALIASES = {"random_seed": "seeds", "seed": "seeds", "random_seeds": "seeds", "repetitions": "repeats",
            "num_repeats": "repeats", "run_command": "command", "git_commit": "code_version",
-           "commit_hash": "code_version", "dataset_accession": "data_access"}
+           "commit_hash": "code_version", "dataset_accession": "data_access",
+           "software_version": "software", "instrument": "hardware", "independent_repeats": "repeats",
+           "reproduction_command": "command", "操作规程": "command", "复现命令": "command",
+           "软件版本": "software", "软件": "software", "硬件": "hardware", "仪器": "hardware",
+           "独立重复": "repeats", "重复次数": "repeats", "随机种子": "seeds",
+           "数据获取": "data_access", "代码版本": "code_version"}
 META = {"title", "name", "description", "source", "version", "id", "path", "filename", "unit",
         "target_component", "value", "role", "scope", "condition", "run_id", "phase", "split"}
 PARAM_CONTAINERS = {"parameters", "params", "hyperparameters", "hyperparams", "settings", "config", "configuration"}
@@ -38,6 +44,7 @@ QUESTIONS = {
 class MaterialIndex:
     def __init__(self):
         self.evidence = []
+        self.run_observations = []
         self.issues = []
         self.scanned = []
         self.observations = defaultdict(list)
@@ -99,6 +106,32 @@ class MaterialIndex:
             item["target_component"] = str(target)
         self.observations[qualified].append(item)
 
+    def measured_record(self, obj, locator, excerpt=None):
+        records = measured_rows(obj, self.source, locator)
+        if not records:
+            return
+        if excerpt is None:
+            excerpt = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+        # A comparison must cite both the arm and measured value in the
+        # original row. Keep oversized input as individually indexed leaves.
+        if len(excerpt) <= MAX_SNIPPET and self.record(locator, excerpt, "measurement"):
+            self.run_observations.extend(records)
+
+    def labeled_setup(self, text, locator):
+        # Only explicit labels in a protocol, notebook or table define a field.
+        # Unlabelled narrative needs a source-linked author annotation.
+        if source_scope(self.source):
+            return
+        text = re.sub(r"^\s*[-*]\s+", "", text.strip()).replace("**", "")
+        pair = re.fullmatch(r"([^:：|]{1,40})\s*[:：]\s*(.{1,400})", text)
+        if not pair:
+            pair = re.fullmatch(r"\|?\s*([^|]{1,40}?)\s*\|\s*([^|]{1,400}?)\s*\|?", text)
+        if pair:
+            label = re.sub(r"[ -]+", "_", pair[1].strip().casefold())
+            name = ALIASES.get(label, label)
+            if name in SETUP_KEYS:
+                self.setup_obs[name].append((pair[2].strip(), self.source, locator))
+
     def take_section(self, key, value, locator):
         if key in {"datasets", "baselines"}:
             if isinstance(value, str):
@@ -121,6 +154,8 @@ class MaterialIndex:
             key = str(parts[-1]) if parts else ""
             names = [str(p).lower() for p in parts]
             if isinstance(value, dict):
+                if parts or not inline:
+                    self.measured_record(value, pointer(parts) if parts else "$")
                 parameter_label = value.get("name")
                 if not parameter_label and len(parts) >= 2 and names[-2] in PARAM_CONTAINERS and isinstance(parts[-1], str):
                     parameter_label = key
@@ -236,7 +271,9 @@ class MaterialIndex:
                 if self.item_count >= MAX_ITEMS:
                     self.sampling_note("Document excerpt limit reached; consult original")
                     break
-                self.record(locator, value, suffix[1:])
+                if self.record(locator, value, suffix[1:]):
+                    for line in value[:MAX_SNIPPET].splitlines():
+                        self.labeled_setup(line, locator)
             if not self.item_count:
                 self.issue("No readable document text; inspect original rendering")
             return
@@ -272,6 +309,8 @@ class MaterialIndex:
                     break
                 if not self.record(locator, excerpt, "table"):
                     continue
+                if len(excerpt) <= MAX_SNIPPET:
+                    self.run_observations.extend(measured_rows(row, self.source, locator))
                 # Ordinary observations and metrics remain rows, never global constants.
                 name = row.get("parameter") or row.get("parameter_name") or row.get("参数名")
                 if not name and ("unit" in row or "target_component" in row) and "value" in row:
@@ -282,6 +321,22 @@ class MaterialIndex:
                     self.parameter(name, row.get("value", row.get("取值")), locator, "table", scope,
                                    row.get("unit") or row.get("单位"), row.get("target_component"))
             return
+        if suffix == ".jsonl":
+            for num, line in enumerate(raw.splitlines(), 1):
+                if not line.strip():
+                    continue
+                if self.item_count >= MAX_ITEMS:
+                    self.sampling_note("JSON Lines excerpt limit reached; inspect remaining records")
+                    break
+                loc = f"L{num}"
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    self.issue(f"Invalid JSON record at {loc}; inspect source")
+                    obj = None
+                if self.record(loc, line, "jsonl") and len(line) <= MAX_SNIPPET:
+                    self.run_observations.extend(measured_rows(obj, self.source, loc))
+            return
         literals = code_literals(raw) if suffix == ".py" else {}
         lines = [(n, line) for n, line in enumerate(raw.splitlines(), 1) if line.strip()]
         if len(lines) > MAX_ITEMS:
@@ -291,6 +346,8 @@ class MaterialIndex:
             locator = f"L{num}"
             if not self.record(locator, line, suffix[1:]):
                 continue
+            if suffix in {".md", ".rst", ".txt"}:
+                self.labeled_setup(line[:MAX_SNIPPET], locator)
             scope = source_scope(self.source, line=line)
             for name, value in (literals.get(num, []) if suffix == ".py" else line_pairs(line, suffix)):
                 if str(value) in line[:MAX_SNIPPET] or suffix == ".py" and len(line) <= MAX_SNIPPET:
@@ -380,9 +437,12 @@ class MaterialIndex:
             missing.append("dataset_version")
         questions = [{"field": k, "question": QUESTIONS[k]} for k in missing]
         questions.extend({"field": c["parameter"], "question": c["message"]} for c in conflicts)
+        setup_evidence = {key: [{"value": value, "source": source, "locator": locator}
+                                for value, source, locator in self.setup_obs[key]] for key in setup}
         facts = {"schema_version": "writing-09-experiment-facts/v1", "title": self.title,
                  "scanned_sources": self.scanned, "evidence": self.evidence, "ingestion_issues": self.issues,
-                 "setup": setup, **self.sections, "conflicts": conflicts,
+                 "setup": setup, "setup_evidence": setup_evidence, **self.sections,
+                 "conflicts": conflicts, "run_observations": self.run_observations,
                  "missing_repro_fields": missing, "author_questions": questions}
         return {"facts": facts, "parameter_table": {"schema_version": "writing-09-parameter-table/v1",
                 "parameter_count": len(parameters), "parameters": parameters, "conflicts": conflicts}}
