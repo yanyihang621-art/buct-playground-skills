@@ -17,6 +17,8 @@ python3 scripts/build_methods_result.py --input-dir "$T/input" --work-dir "$T/wo
 
 示例稿每句话末尾的 ⟦…⟧ 由真实材料索引生成。打开 output/result.json 的 manuscript、evidence 和 data_release，可看到已去除侧注的稿件和完整来源。examples/tutorial_draft.md 与 examples/tutorial_review.json 给出同一案例的手工引用形式。output/parameter_table.md 可逐行核对每条参数的取值和位置。示例的真实复现测试会打开全部产物，篡改一条定位并添加一句无来源的数字，检查是否能报告对应问题。
 
+Harbor 入口 `scripts/harbor_methods.sh` 将取材和发布分成两个独立命令。`prepare` 建立证据索引，`publish` 读取工作区的 `methods/agent_draft.md` 和实际存在的两个可选 JSON 文件。可通过 `METHODS_INPUT_DIR`、`METHODS_WORK_DIR`、`METHODS_OUTPUT_DIR` 在 POSIX shell 中本地重放。发布后用 `result.json` 中的 `status` 和 `verification` 判断交付状态。直接调用 Python 时，默认的严格退出码可用于 CI，`--allow-partial` 则允许交出已经写入的部分结果。
+
 ## 实际案例
 
 1. 按 SKILL.md 在 Harbor 中读取案例和契约，建立材料目录。read_evidence.py 支持按主题、路径或短语查看摘录。若文档为扫描件，核对原页并保留页码。找不到来源的参数不可写成已使用值。

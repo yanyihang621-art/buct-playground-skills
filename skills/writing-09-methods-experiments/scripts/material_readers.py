@@ -85,7 +85,9 @@ def docx_rows(path):
                 yield f"table{table}.row{row}", " | ".join(cells)
 
 
-def pdf_rows(path, issue):
+def pdf_rows(path, issue, *, pages=None):
+    """Return page/block evidence. An explicit page selection addresses the original directly."""
+    requested = sorted(set(pages)) if pages is not None else None
     try:
         import fitz
     except ImportError:
@@ -96,27 +98,32 @@ def pdf_rows(path, issue):
             if not program:
                 raise ValueError("PDF extraction requires PyMuPDF, pypdf or pdftotext")
             # Read one page per subprocess so a single large document cannot monopolize memory.
-            for n in range(1, 101):
+            for n in requested if requested is not None else range(1, 101):
                 result = subprocess.run([program, "-f", str(n), "-l", str(n), "-enc", "UTF-8",
                                          str(path.resolve()), "-"], capture_output=True, timeout=10)
                 if result.returncode:
                     if b"Wrong page range" not in result.stderr:
                         issue(f"PDF extraction stopped at page {n}; inspect the original")
+                    if requested is not None:
+                        continue
                     break
                 value = result.stdout.decode("utf-8", errors="replace").strip()
                 if not value:
                     issue(f"page {n} has no text layer; inspect or OCR original page")
                 yield f"p{n}", value
             else:
-                issue("PDF page budget: inspect whether pages follow page 100")
+                if requested is None:
+                    issue("PDF page budget: inspect whether pages follow page 100")
             return
         doc = PdfReader(str(path))
         if doc.is_encrypted:
             raise ValueError("encrypted PDF")
-        for i, page in enumerate(doc.pages, 1):
-            if i > 100:
-                issue("PDF page budget: read first 100 pages")
-                break
+        if requested is None and len(doc.pages) > 100:
+            issue("PDF page budget: read first 100 pages")
+        for i in requested if requested is not None else range(1, min(len(doc.pages), 100) + 1):
+            if not 1 <= i <= len(doc.pages):
+                continue
+            page = doc.pages[i-1]
             value = page.extract_text() or ""
             if not value.strip():
                 issue(f"page {i} has no text layer; inspect or OCR original page")
@@ -125,9 +132,12 @@ def pdf_rows(path, issue):
     with fitz.open(path) as doc:
         if doc.needs_pass:
             raise ValueError("encrypted PDF")
-        if len(doc) > 100:
+        if requested is None and len(doc) > 100:
             issue("PDF page budget: read first 100 pages")
-        for i in range(min(len(doc), 100)):
+        for n in requested if requested is not None else range(1, min(len(doc), 100) + 1):
+            if not 1 <= n <= len(doc):
+                continue
+            i = n - 1
             blocks = [b for b in doc[i].get_text("blocks", sort=True) if b[6] == 0 and b[4].strip()]
             if not blocks:
                 issue(f"page {i+1} has no text layer; inspect or OCR original page")

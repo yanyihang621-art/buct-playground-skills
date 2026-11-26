@@ -7,6 +7,7 @@ import re
 import unicodedata
 
 from parameter_claims import TOKEN, UNIT_AFTER, UNITS, plain, same_number
+from direct_evidence import recover_quotes
 
 
 def normalized(value):
@@ -108,7 +109,7 @@ def add_annotation(facts, table, annotation, link, quotes):
     return None
 
 
-def apply_review(facts, param_table, review, chapter_md):
+def apply_review(facts, param_table, review, chapter_md, *, input_dir=None, case_data=None):
     facts, table = deepcopy(facts), deepcopy(param_table)
     issues, valid = [], []
     evidence = defaultdict(list)
@@ -118,6 +119,12 @@ def apply_review(facts, param_table, review, chapter_md):
     claims = review.get("claim_sources", []) if isinstance(review, dict) else None
     if not isinstance(claims, list):
         return facts, table, [], [{"code": "invalid_claim_sources"}]
+    if input_dir is not None:
+        for row in recover_quotes(input_dir, claims, evidence, normalized, case_data):
+            evidence[(row["source"], row["locator"])].append(row["text"])
+            facts.setdefault("evidence", []).append(row)
+            if row["source"] not in facts.setdefault("scanned_sources", []):
+                facts["scanned_sources"].append(row["source"])
     lines = [normalized(line) for line in chapter_md.splitlines()]
     offsets = []
     pos = 0

@@ -272,6 +272,18 @@ def _test_narrative_sources(root: Path) -> Dict[str, bool]:
     review = root / "review.json"
     write_json_atomic(review, {"coverage_links": {"baselines": ["An unverified comparator."]}})
     wrong_topic = run_methods_pipeline(inputs, root / "work", root / "bad-topic", review_file=review, **args)["result"]
+    # Expanding an unrelated tail moves an otherwise unchanged quote outside the compact sample.
+    supplement = inputs / "records" / "supplement.md"
+    quote = "The logger settled after 7 seconds."
+    lines = ["Routine log note."] * 300
+    lines[159] = quote
+    write_text_lf(supplement, "\n".join(lines))
+    write_text_lf(draft, annotated + "\n\n" + quote)
+    link = {"claim": quote, "source": "records/supplement.md", "locator": "L160", "quote": quote}
+    write_json_atomic(review, {"claim_sources": [link]})
+    recovered = run_methods_pipeline(inputs, root / "work", root / "recovered", review_file=review, **args)
+    write_json_atomic(review, {"claim_sources": [dict(link, locator="L161")]})
+    wrong_line = run_methods_pipeline(inputs, root / "work", root / "wrong-line", review_file=review, **args)["result"]
     write_json_atomic(options, {"editable_text": {"$from": "unavailable"}, "data_release": "BenchTrace release A"})
     wrong_ref = run_methods_pipeline(inputs, root / "work", root / "bad-ref", **args)["result"]
     return {
@@ -281,6 +293,10 @@ def _test_narrative_sources(root: Path) -> Dict[str, bool]:
         "rendered_text_reference": good["editable_text"] == good["manuscript"] and "⟦" not in good["editable_text"],
         "unverified_topic_rejected": any(i.get("code") == "unverified_coverage_claim" for i in wrong_topic["uncertainties"]),
         "unknown_reference_rejected": any(i.get("code") == "invalid_contract_value_reference" for i in wrong_ref["uncertainties"]),
+        "unsampled_quote_recovered": recovered["result"]["status"] == "completed" and any(
+            row["kind"] == "direct" and row["locator"] == "L160" for row in recovered["facts"]["evidence"]),
+        "wrong_original_line_fails_verification": not wrong_line["verification"]["passed"]
+        and "source_claims" in wrong_line["verification"]["failed_checks"],
     }
 
 

@@ -8,11 +8,11 @@ from pathlib import Path
 
 from build_case_scope import apply_scope
 from build_office_artifacts import render_office
-from build_result_contract import artifact_ref, bind_contract
+from build_result_contract import artifact_ref, bind_contract, contract_fields
 from coverage_evidence import classify_coverage
 from draft_methods_section import render_methods_chapter, render_parameter_table_md, render_repro_and_questions_md
 from exp_utils import write_json_atomic, write_text_lf
-from extract_experiment_facts import extract_experiment_facts
+from extract_experiment_facts import extract_experiment_facts, read_case_descriptor
 from source_labels import expand_labels
 from review_evidence import apply_review
 from verify_methods_exp import verify_methods_and_experiments
@@ -26,7 +26,7 @@ def load_object(filename, issues, code):
         if not isinstance(obj, dict):
             raise ValueError('expected a JSON object')
         return obj
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         issues.append({'code': code, 'detail': str(exc)})
         return {}
 
@@ -89,7 +89,11 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
     inputs, work, output = Path(input_dir), Path(work_dir) / 'methods', Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     issues = []
-    case = load_object(case_path or inputs / 'case.json', issues, 'case_unavailable')
+    try:
+        case = read_case_descriptor(Path(case_path) if case_path else inputs / 'case.json')
+    except (OSError, ValueError, RecursionError) as exc:
+        issues.append({'code': 'case_unavailable', 'detail': str(exc)})
+        case = {}
     case_id = case.get('case_id')
     if case_id is None:
         issues.append({'code': 'missing_case_id'})
@@ -102,7 +106,8 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
     issues.extend(label_issues)
     if inline_links and isinstance(review.get('claim_sources', []), list):
         review['claim_sources'] = review.get('claim_sources', []) + inline_links
-    facts, table, claims, review_issues = apply_review(extracted['facts'], extracted['parameter_table'], review, draft)
+    facts, table, claims, review_issues = apply_review(extracted['facts'], extracted['parameter_table'], review, draft,
+                                                      input_dir=inputs)
     issues.extend(review_issues)
     out_of_scope = apply_scope(facts, review, case, inputs, issues)
     coverage, coverage_issues = classify_coverage(draft, claims, review.get('coverage_links', {}), out_of_scope)
@@ -118,8 +123,12 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
     if gaps:
         issues.append({'code': 'missing_reproducibility_fields', 'fields': gaps})
     issues.extend(conflicts)
+    source_notes = []
     for item in facts.get('ingestion_issues', []):
-        issues.append({'code': 'source_read_limit', 'detail': item})
+        if item.get('kind') in ('sampling_limit', 'decoder_fallback'):
+            source_notes.append(item)
+        else:
+            issues.append({'code': 'source_read_limit', 'detail': item})
 
     chapter = ''
     repro = ''
@@ -153,6 +162,10 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
         qa = verify_methods_and_experiments(chapter, repro, facts, table,
                                              status_claimed='partial' if issues else 'completed', language=lang)
         qa['linked_topic_counts'] = {topic: len(rows) for topic, rows in coverage.items()}
+        if review_issues:
+            qa['checks']['source_claims'] = False
+            qa['violations'].extend({'check': 'source_claims', **item} for item in review_issues)
+            qa['passed'] = False
         if coverage_issues:
             qa['checks']['source_linked_coverage'] = False
             qa['violations'].extend({'check': 'source_linked_coverage', **item} for item in coverage_issues)
@@ -177,6 +190,7 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
               'metrics': qa['metrics'], 'artifacts': artifacts,
               'sources': [{'file': source} for source in sources], 'claim_sources': claims, 'change_records': changes,
               'scope_exclusions': facts['scope_exclusions'],
+              'source_notes': source_notes,
               'uncertainties': issues, 'author_questions': questions,
               'verification': {'passed': bool(qa['passed']), 'check_count': len(qa['checks']),
                                'failed_checks': [k for k, passed in qa['checks'].items() if not passed]}}
@@ -199,7 +213,7 @@ def run_methods_pipeline(input_dir, work_dir, output_dir, *, case_path=None, dra
                          f"{len(claims)} verified manuscript-source link(s), {len(questions)} author question(s).")
     if isinstance(contract, dict) and contract.get('additionalProperties') is False and isinstance(contract.get('properties'), dict):
         write_json_atomic(output / 'methods_diagnostics.json', result)
-        delivered = {k: result[k] for k in dict.fromkeys(['case_id', *contract['properties'], *contract.get('required', [])]) if k in result}
+        delivered = {key: result[key] for key in dict.fromkeys(['case_id', *contract_fields(contract)])}
     else:
         delivered = result
     write_json_atomic(output / 'result.json', delivered)
@@ -220,10 +234,14 @@ def main():
     parser.add_argument('--original-file', help='Original text manuscript inside input-dir for a real revision diff.')
     parser.add_argument('--docx', nargs='?', const='methods_and_experiments.docx')
     parser.add_argument('--pdf', nargs='?', const='methods_and_experiments.pdf')
-    result = run_methods_pipeline(**vars(parser.parse_args()))['result']
+    parser.add_argument('--allow-partial', action='store_true',
+                        help='Return success when result.json was written. Inspect its status and verification.')
+    options = vars(parser.parse_args())
+    allow_partial = options.pop('allow_partial')
+    result = run_methods_pipeline(**options)['result']
     print(json.dumps({'status': result['status'], 'summary': result['summary'],
-                      'verification': result['verification']}, ensure_ascii=False))
-    return 0 if result['status'] != 'refused' and result['verification']['passed'] else 1
+                      'verification': result['verification']}))
+    return 0 if allow_partial or (result['status'] != 'refused' and result['verification']['passed']) else 1
 
 
 if __name__ == '__main__':

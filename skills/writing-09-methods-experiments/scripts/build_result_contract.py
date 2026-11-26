@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 
-def _fields(contract):
+def contract_fields(contract):
     if isinstance(contract, list):
         fields = {}
         for item in contract:
@@ -19,8 +19,8 @@ def _fields(contract):
         return {}
     if any(key in contract for key in ('properties', 'fields', 'required', 'required_fields')):
         props = contract.get('properties', contract.get('fields', {}))
-        fields = dict(props) if isinstance(props, dict) else _fields(props)
-        for key in _fields(contract.get('required', [])) | _fields(contract.get('required_fields', [])):
+        fields = dict(props) if isinstance(props, dict) else contract_fields(props)
+        for key in contract_fields(contract.get('required', [])) | contract_fields(contract.get('required_fields', [])):
             fields.setdefault(key, {})
         return fields
     return {k: v for k, v in contract.items() if k not in ('type', '$schema', 'additionalProperties', 'description')}
@@ -104,7 +104,11 @@ def _resolve_references(value, catalog, field, issues):
 def bind_contract(result, contract, provided, catalog, out_dir):
     """Never use schema descriptions or example/default values as answers."""
     issues = []
-    fields = _fields(contract)
+    fields = contract_fields(contract)
+    if isinstance(contract, dict) and 'required' in contract:
+        required = contract['required']
+        if not isinstance(required, list) or any(not contract_fields([item]) for item in required):
+            issues.append({'code': 'invalid_contract_required', 'expected': 'array of field names'})
     if contract and not fields:
         issues.append({'code': 'unrecognized_output_contract', 'detail': 'Inspect the case and bind its requested outputs manually.'})
     for key, spec in fields.items():

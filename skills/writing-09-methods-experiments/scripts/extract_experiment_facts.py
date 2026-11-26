@@ -52,21 +52,30 @@ class MaterialIndex:
         self.source = source
         self.item_count = 0
 
-    def issue(self, reason):
-        key = (self.source, reason)
+    def issue(self, reason, *, kind="read_problem"):
+        key = (self.source, kind, reason)
         if key not in self.truncated:
-            self.issues.append({"source": self.source, "reason": reason})
+            self.issues.append({"source": self.source, "kind": kind, "reason": reason})
             self.truncated.add(key)
+
+    def sampling_note(self, reason):
+        self.issue(reason, kind="sampling_limit")
+
+    def pdf_issue(self, reason):
+        if reason.startswith("PDF page budget:"):
+            self.sampling_note(reason)
+        else:
+            self.issue(reason)
 
     def record(self, locator, text, kind):
         content = str(text).strip()
         if not content:
             return False
         if self.item_count >= MAX_ITEMS or len(self.evidence) >= 2400:
-            self.issue("Evidence index limit reached; consult original for omitted material")
+            self.sampling_note("Evidence index limit reached; consult original for omitted material")
             return False
         if len(content) > MAX_SNIPPET:
-            self.issue(f"Excerpt shortened at {locator}; consult full source")
+            self.sampling_note(f"Excerpt shortened at {locator}; consult full source")
             content = content[:MAX_SNIPPET]
         self.evidence.append({"source": self.source, "locator": locator, "text": content, "kind": kind})
         if self.source not in self.scanned:
@@ -106,7 +115,7 @@ class MaterialIndex:
         """Traverse scalar leaves once, retaining full JSON-pointer ancestry for all observations."""
         def walk(value, parts, nodes):
             if self.item_count >= MAX_ITEMS or len(self.evidence) >= 2400 or nodes[0] >= 4500 or len(parts) > 32:
-                self.issue("Structured input index limit reached; consult remaining original fields")
+                self.sampling_note("Structured input index limit reached; consult remaining original fields")
                 return
             nodes[0] += 1
             key = str(parts[-1]) if parts else ""
@@ -129,7 +138,7 @@ class MaterialIndex:
                         return
                 for k, v in value.items():
                     if nodes[0] >= 4500 or self.item_count >= MAX_ITEMS or len(self.evidence) >= 2400:
-                        self.issue("Structured input index limit reached; consult remaining original fields")
+                        self.sampling_note("Structured input index limit reached; consult remaining original fields")
                         break
                     if str(k).lower() in CONTROL_KEYS or str(k).lower().startswith("output_contract"):
                         continue
@@ -138,7 +147,7 @@ class MaterialIndex:
             if isinstance(value, list):
                 for n, v in enumerate(value):
                     if nodes[0] >= 4500 or self.item_count >= MAX_ITEMS or len(self.evidence) >= 2400:
-                        self.issue("Structured input index limit reached; consult remaining original fields")
+                        self.sampling_note("Structured input index limit reached; consult remaining original fields")
                         break
                     walk(v, parts + [n], nodes)
                 return
@@ -222,10 +231,10 @@ class MaterialIndex:
             self.issue("File exceeds extraction budget; inspect original selectively")
             return
         if suffix in {".pdf", ".docx"}:
-            rows = pdf_rows(path, self.issue) if suffix == ".pdf" else docx_rows(path)
+            rows = pdf_rows(path, self.pdf_issue) if suffix == ".pdf" else docx_rows(path)
             for locator, value in rows:
                 if self.item_count >= MAX_ITEMS:
-                    self.issue("Document excerpt limit reached; consult original")
+                    self.sampling_note("Document excerpt limit reached; consult original")
                     break
                 self.record(locator, value, suffix[1:])
             if not self.item_count:
@@ -248,16 +257,18 @@ class MaterialIndex:
                 self.structured(obj, config=bool(config))
                 return
             except ImportError as exc:
-                self.issue(f"Structured decoding unavailable ({type(exc).__name__}); indexed raw lines")
+                self.issue(f"Structured decoding unavailable ({type(exc).__name__}); indexing raw lines", kind="decoder_fallback")
                 if suffix in {".yaml", ".yml"}:
                     self.yaml_scalars(raw)
+                    if not self.item_count:
+                        self.issue("No readable YAML text")
                     return
             except Exception as exc:
                 self.issue(f"Structured decode failed ({type(exc).__name__}); indexed raw lines")
         if suffix in {".csv", ".tsv"}:
             for locator, excerpt, row in tabular_rows(raw, "," if suffix == ".csv" else "\t"):
                 if self.item_count >= MAX_ITEMS:
-                    self.issue("Tabular excerpt limit reached; consult original")
+                    self.sampling_note("Tabular excerpt limit reached; consult original")
                     break
                 if not self.record(locator, excerpt, "table"):
                     continue
@@ -274,7 +285,7 @@ class MaterialIndex:
         literals = code_literals(raw) if suffix == ".py" else {}
         lines = [(n, line) for n, line in enumerate(raw.splitlines(), 1) if line.strip()]
         if len(lines) > MAX_ITEMS:
-            self.issue("Text excerpt limit reached; first and last lines indexed; inspect omitted lines")
+            self.sampling_note("Text excerpt limit reached; first and last lines indexed; inspect omitted lines")
             lines = lines[:MAX_ITEMS * 2 // 3] + lines[-(MAX_ITEMS - MAX_ITEMS * 2 // 3):]
         for num, line in lines:
             locator = f"L{num}"
@@ -292,7 +303,7 @@ class MaterialIndex:
         stack = []
         for n, line in enumerate(text.splitlines(), 1):
             if self.item_count >= MAX_ITEMS:
-                self.issue("YAML excerpt limit reached; inspect remaining original fields")
+                self.sampling_note("YAML excerpt limit reached; inspect remaining original fields")
                 break
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
@@ -398,7 +409,7 @@ def extract_experiment_facts(input_dir: Path, case_data: dict) -> dict:
         for n, file in enumerate(input_files(root)):
             material.begin(file.relative_to(root).as_posix())
             if n >= 160 or len(material.evidence) >= 2400 or time.monotonic() - started >= 75:
-                material.issue("Input inventory budget reached; inspect remaining original files")
+                material.sampling_note("Input inventory budget reached; inspect remaining original files")
                 break
             try:
                 material.file(file)
@@ -410,6 +421,20 @@ def extract_experiment_facts(input_dir: Path, case_data: dict) -> dict:
     return material.output()
 
 
+def read_case_descriptor(path: Path) -> dict:
+    """Read bounded case metadata consistently across the indexing and publishing commands."""
+    if is_link(path):
+        raise ValueError("descriptor is a symbolic link")
+    if not path.is_file():
+        raise FileNotFoundError("descriptor is missing or is not a regular file")
+    if path.stat().st_size > MAX_TEXT:
+        raise ValueError("oversized descriptor")
+    case_data = json.loads(read_text(path))
+    if not isinstance(case_data, dict):
+        raise ValueError("descriptor is not an object")
+    return case_data
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", required=True, type=Path)
@@ -418,22 +443,16 @@ def main():
     parser.add_argument("--out-params", required=True, type=Path)
     args = parser.parse_args()
     case = args.case or (args.input_dir / "case.json")
-    case_data, case_error = {}, None
-    if is_link(case):
-        case_error = "Input descriptor is a symbolic link"
-    elif case.is_file():
-        try:
-            if case.stat().st_size > MAX_TEXT:
-                raise ValueError("oversized descriptor")
-            case_data = json.loads(read_text(case))
-            if not isinstance(case_data, dict):
-                raise ValueError("descriptor is not an object")
-        except (ValueError, OSError) as exc:
-            case_error = f"Cannot read case descriptor ({type(exc).__name__}); inspected other materials"
-            case_data = {}
+    case_error = None
+    try:
+        case_data = read_case_descriptor(case)
+    except (ValueError, OSError, RecursionError) as exc:
+        case_data = {}
+        if args.case is not None or not isinstance(exc, FileNotFoundError):
+            case_error = f"Cannot read case descriptor: {exc}; inspected other materials"
     result = extract_experiment_facts(args.input_dir, case_data)
     if case_error:
-        result["facts"]["ingestion_issues"].append({"source": "case.json", "reason": case_error})
+        result["facts"]["ingestion_issues"].append({"source": "case.json", "kind": "read_problem", "reason": case_error})
     write_json_atomic(args.out_facts, result["facts"])
     write_json_atomic(args.out_params, result["parameter_table"])
     print(json.dumps({"sources": len(result["facts"]["scanned_sources"]),
