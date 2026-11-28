@@ -1,0 +1,21 @@
+schema_version: "4.0.0"
+skill: "reading-14-nanopublication"
+rules:
+  atomicity:
+    - "Each claim expresses exactly one falsifiable proposition (<= 280 chars, single sentence)."
+    - "Split coordinated results, separate conditions, or distinct baselines into separate claims sharing qualifiers."
+    - "Preserve quantitative operating conditions (e.g. temperature + pressure) inside qualifiers rather than merging multiple conclusions."
+  evidence_binding:
+    - "Bind each claim to the minimal sufficient verbatim quote(s) copied directly from reader/paper_*.md or find.py."
+    - "When experimental metrics live in a table and conditions live in a footnote/paragraph, include both anchors in evidence[]."
+    - "Distinguish direct_experimental / direct_table_figure from indirect_inference, cited_prior_work, and hypothesis."
+  modality_and_polarity:
+    - "Null or non-significant findings ('no significant difference') use predicate='differs_from' and polarity='negative'."
+    - "Hedged phrasing ('may', 'might', 'could', 'suggest', 'likely', '可能', '推测') MUST set modality='hedged' or 'hypothesized', never 'asserted'."
+    - "Never upgrade associational wording ('associated with', 'correlated with') to predicate='causes' unless explicit causal verbs appear in evidence."
+  provenance_and_missing_data:
+    - "Preserve per-paper source_metadata (title, authors, year, doi, arxiv_id, version, venue, source_sha256)."
+    - "Never fabricate missing DOI, year, venue, or unreadable scanned pages; emit 'not_reported'."
+  deduplication_and_conflicts:
+    - "Merge duplicate claims sharing predicate and polarity when normalized token Jaccard >= 0.85, unioning resolved_evidence."
+    - "Preserve contradictory claims supported by valid quotes and record polarity, antonym-predicate, or directional conflicts in conflicts[]."

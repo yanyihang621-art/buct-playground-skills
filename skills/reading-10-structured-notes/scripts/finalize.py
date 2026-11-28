@@ -1,4 +1,4 @@
-"""Verify agent-authored reading notes and case answers, render Markdown/JSON artifacts, and write result.json."""
+"""Verify agent-authored reading notes and case answers, project contracts safely, and write deliverables."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from evidence import (
     IndexStore,
     check_negation_and_hedge,
     check_numbers,
+    check_units,
     format_anchor,
     scan_fields_evidence,
     verify,
@@ -26,6 +27,7 @@ from output_contract import (
     build_skeleton,
     contract_issues,
     contract_specs,
+    field_conforms,
     is_closed_contract,
     pick_status_value,
 )
@@ -74,9 +76,25 @@ def _load_notes(work_dir: Path) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     by_pid: Dict[str, Dict[str, Any]] = {}
     for fp in files:
         data = json.loads(fp.read_text(encoding="utf-8-sig"))
-        if data.get("language"):
-            merged["language"] = data["language"]
-        for p in data.get("papers") or []:
+        if isinstance(data, list):
+            papers_list = data
+        elif isinstance(data, dict):
+            if data.get("language"):
+                merged["language"] = data["language"]
+            if "papers" in data and isinstance(data["papers"], list):
+                papers_list = data["papers"]
+            elif any(k in data for k in ("sections", "card", "knowledge", "bibliography")):
+                papers_list = [data]
+            else:
+                papers_list = []
+            if data.get("comparison"):
+                merged["comparison"].extend(data["comparison"])
+        else:
+            papers_list = []
+
+        for p in papers_list:
+            if not isinstance(p, dict):
+                continue
             pid = p.get("paper_id") or f"paper_{len(by_pid) + 1}"
             p = dict(p)
             p["paper_id"] = pid
@@ -85,16 +103,44 @@ def _load_notes(work_dir: Path) -> Tuple[Optional[Dict[str, Any]], List[str]]:
             else:
                 by_pid[pid] = p
                 merged["papers"].append(p)
-        if data.get("comparison"):
-            merged["comparison"].extend(data["comparison"])
     return merged, [str(f) for f in files]
 
 
-def _load_answer(work_dir: Path) -> Optional[Dict[str, Any]]:
+def _load_answer(work_dir: Path, contract: Any = None) -> Optional[Dict[str, Any]]:
     path = work_dir / "answer.json"
     if not path.is_file():
         return None
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("fields"), dict) and raw["fields"]:
+        return raw
+
+    # Support unwrapped answer.json where contract fields are at the top level.
+    specs = contract_specs(contract)
+    meta_only = {"fields", "status_reason", "derived_values", "_example_notice"}
+    fields: Dict[str, Any] = {}
+    pointer_ev: Dict[str, Any] = {}
+    for k, v in raw.items():
+        if k in meta_only:
+            continue
+        if k == "evidence" and isinstance(v, dict) and any(str(pk).startswith("/") for pk in v.keys()):
+            pointer_ev = v
+            if "evidence" in specs and field_conforms(specs["evidence"], v, contract):
+                fields["evidence"] = v
+            continue
+        if k in {"status", "uncertainties"} and k not in specs and not is_closed_contract(contract):
+            fields[k] = v
+            continue
+        fields[k] = v
+    return {
+        "fields": fields,
+        "status": raw.get("status"),
+        "status_reason": raw.get("status_reason"),
+        "evidence": pointer_ev if pointer_ev else (raw.get("evidence") if isinstance(raw.get("evidence"), dict) else {}),
+        "uncertainties": raw.get("uncertainties") if isinstance(raw.get("uncertainties"), list) else [],
+        "derived_values": raw.get("derived_values") if isinstance(raw.get("derived_values"), list) else [],
+    }
 
 
 def _overlay(dst: Any, src: Any) -> Any:
@@ -134,6 +180,14 @@ def _flatten_strings(val: Any) -> str:
     return "" if val is None else str(val)
 
 
+def _is_empty_val(val: Any) -> bool:
+    if val is None or val == "" or val == [] or val == {}:
+        return True
+    if isinstance(val, dict):
+        return all(_is_empty_val(v) for v in val.values())
+    return False
+
+
 def _verify_ev_list(
     ev_list: Any,
     claim_text: str,
@@ -169,6 +223,8 @@ def _verify_ev_list(
             "quote": quote,
             "match": res["match"],
         }
+        if res.get("span_anchors"):
+            rec["span_anchors"] = res["span_anchors"]
         checks.append(rec)
         if res["match"] == "relocated":
             old_anc = anc
@@ -221,6 +277,14 @@ def _verify_ev_list(
                 "missing_numbers": missing_nums,
                 "text": claim_text[:140],
             })
+        unit_mismatches = check_units(claim_text, ev_texts_for_nums)
+        if unit_mismatches:
+            warnings.append({
+                "code": "unit_mismatch",
+                "context": context_label,
+                "mismatches": unit_mismatches,
+                "text": claim_text[:140],
+            })
         for flag in check_negation_and_hedge(claim_text, any_quote):
             warnings.append({
                 "code": flag,
@@ -266,16 +330,180 @@ def _check_section_order(
         })
 
 
+def _project_card_to_spec(paper: Dict[str, Any], pmeta: Dict[str, Any], spec: Any) -> Any:
+    bib = paper.get("bibliography") or {}
+    card = paper.get("card") or {}
+
+    def _slot_text(val: Any) -> str:
+        if isinstance(val, str):
+            return val
+        if isinstance(val, dict):
+            return str(val.get("text") or val.get("summary") or val.get("item") or "")
+        if isinstance(val, list):
+            return "; ".join(_slot_text(x) for x in val if _slot_text(x))
+        return ""
+
+    raw_map = {
+        "title": bib.get("title") or pmeta.get("title") or "",
+        "authors": bib.get("authors") or pmeta.get("authors") or [],
+        "year": bib.get("year") or pmeta.get("year") or "not_reported",
+        "venue": bib.get("venue") or pmeta.get("venue") or "not_reported",
+        "identifier": bib.get("identifier") or pmeta.get("doi") or pmeta.get("arxiv_id") or "not_reported",
+        "research_question": card.get("research_question"),
+        "data_materials": card.get("data_materials"),
+        "method": card.get("method"),
+        "conditions": card.get("conditions"),
+        "key_findings": card.get("key_findings"),
+        "conclusions": card.get("conclusions"),
+        "limitations": card.get("limitations"),
+        "not_reported": card.get("not_reported"),
+    }
+    if isinstance(spec, dict) and isinstance(spec.get("properties"), dict):
+        out: Dict[str, Any] = {}
+        for k, cspec in spec["properties"].items():
+            if k not in raw_map or raw_map[k] is None:
+                continue
+            val = raw_map[k]
+            ct = cspec.get("type") if isinstance(cspec, dict) else None
+            if ct == "string" and not isinstance(val, str):
+                out[k] = _slot_text(val)
+            elif ct == "array" and isinstance(val, list):
+                item_t = (cspec.get("items") or {}).get("type") if isinstance(cspec.get("items"), dict) else None
+                if item_t == "string":
+                    out[k] = [_slot_text(x) for x in val if _slot_text(x)]
+                else:
+                    out[k] = copy.deepcopy(val)
+            else:
+                out[k] = copy.deepcopy(val)
+        return out
+    return copy.deepcopy(card)
+
+
+def _project_sections_to_spec(sections: List[Dict[str, Any]], spec: Any) -> Any:
+    item_spec = spec.get("items") if isinstance(spec, dict) else None
+    if not isinstance(item_spec, dict) or not isinstance(item_spec.get("properties"), dict):
+        return copy.deepcopy(sections)
+    props = item_spec["properties"]
+    out: List[Dict[str, Any]] = []
+    for sec in sections:
+        evs: List[Dict[str, Any]] = []
+        for pt in sec.get("points") or []:
+            for ev in pt.get("resolved_evidence") or pt.get("evidence") or []:
+                evs.append({
+                    k: v for k, v in {
+                        "anchor": ev.get("anchor", ""),
+                        "page": ev.get("page"),
+                        "quote": ev.get("quote", ""),
+                    }.items() if v is not None
+                })
+        cand = {
+            "section_id": sec.get("section_id", ""),
+            "section": sec.get("title", ""),
+            "title": sec.get("title", ""),
+            "role": sec.get("role", "section"),
+            "summary": sec.get("summary", ""),
+            "points": sec.get("points", []),
+            "links_to_next": sec.get("links_to_next", ""),
+            "evidence": evs,
+        }
+        projected: Dict[str, Any] = {}
+        for k, kspec in props.items():
+            if k in cand and cand[k] is not None:
+                projected[k] = cand[k]
+        out.append(projected)
+    return out
+
+
+def _project_notes_to_contract(
+    result: Dict[str, Any],
+    contract: Any,
+    notes: Dict[str, Any],
+    papers_meta_by_id: Dict[str, Dict[str, Any]],
+    sources_list: List[Dict[str, Any]],
+    checks: List[Dict[str, Any]],
+) -> None:
+    specs = contract_specs(contract)
+    if not specs or not notes.get("papers"):
+        return
+    primary = notes["papers"][0]
+    pmeta = papers_meta_by_id.get(primary.get("paper_id", ""), {})
+    card = primary.get("card") or {}
+
+    for fname, fspec in specs.items():
+        if not _is_empty_val(result.get(fname)):
+            continue
+        low = fname.lower()
+        cand: Any = None
+        if low in {"paper_card", "card"}:
+            cand = _project_card_to_spec(primary, pmeta, fspec)
+        elif low in {"section_notes", "section_summaries", "sections"}:
+            cand = _project_sections_to_spec(primary.get("sections") or [], fspec)
+        elif low in {"knowledge", "knowledge_entries", "knowledge_points", "glossary"}:
+            cand = copy.deepcopy(primary.get("knowledge") or [])
+        elif low in {"comparison", "comparison_matrix"}:
+            cand = copy.deepcopy(notes.get("comparison") or [])
+        elif low in {"bibliography", "metadata"}:
+            cand = copy.deepcopy(primary.get("bibliography") or {})
+        elif low in {"key_findings", "findings"}:
+            cand = copy.deepcopy(card.get("key_findings") or [])
+        elif low == "limitations":
+            cand = copy.deepcopy(card.get("limitations") or [])
+        elif low == "not_reported":
+            cand = copy.deepcopy(card.get("not_reported") or [])
+        elif low == "summary":
+            parts = [s.get("summary", "") for s in (primary.get("sections") or []) if s.get("summary")]
+            if not parts and isinstance(card.get("conclusions"), dict):
+                parts = [card["conclusions"].get("text", "")]
+            cand = " ".join(parts).strip()
+        elif low == "sources":
+            cand = copy.deepcopy(sources_list)
+        elif low == "evidence" and isinstance(fspec, dict) and fspec.get("type") == "array":
+            cand = [
+                {k: v for k, v in {"anchor": c.get("anchor", ""), "page": c.get("page"), "quote": c.get("quote", "")}.items() if v is not None}
+                for c in checks
+            ]
+        if cand is not None and not _is_empty_val(cand) and field_conforms(fspec, cand, contract):
+            result[fname] = cand
+
+
+def _format_anchor_tags(evs: Any) -> str:
+    if not isinstance(evs, list) or not evs:
+        return "-"
+    tags = []
+    for e in evs:
+        if isinstance(e, dict):
+            p = e.get("page")
+            anc = e.get("anchor", "")
+            tags.append(f"p.{p} {anc}".strip() if p is not None else anc)
+    return ", ".join(t for t in tags if t) or "-"
+
+
 def _render_notes_md(
     case_id: str,
+    status: str,
     notes: Dict[str, Any],
+    answer: Dict[str, Any],
     papers_meta_by_id: Dict[str, Dict[str, Any]],
     checks: List[Dict[str, Any]],
     warnings: List[Dict[str, Any]],
     must_fix: List[Dict[str, Any]],
+    uncertainties: List[Any],
 ) -> str:
-    lines: List[str] = [f"# Literature Notes — {case_id}", ""]
     multi = len(notes.get("papers", [])) > 1
+    counts = {k: sum(1 for c in checks if c["match"] == k) for k in ("exact", "relocated", "fuzzy", "unverified", "too_short")}
+
+    lines: List[str] = [
+        "---",
+        f'case_id: "{case_id}"',
+        f'status: "{status}"',
+        f"papers: {len(notes.get('papers', []))}",
+        f"verified_quotes: {counts['exact'] + counts['relocated']}",
+        'skill: "reading-10-structured-notes"',
+        "---",
+        "",
+        f"# Literature Notes — {case_id}",
+        "",
+    ]
 
     for paper in notes.get("papers", []):
         pid = paper.get("paper_id", "paper_1")
@@ -289,7 +517,7 @@ def _render_notes_md(
         lines.extend([
             f"## {pid}: {title}",
             f"- **Authors**: {authors}",
-            f"- **Year**: {year} | **Venue**: {bib.get('venue') or 'not_reported'} | **Identifier**: {ident}",
+            f"- **Year**: {year} | **Venue**: {bib.get('venue') or meta.get('venue') or 'not_reported'} | **Identifier**: {ident}",
             f"- **Source**: `{meta.get('source_file', '')}` ({meta.get('page_count', '?')} pages)",
             "",
         ])
@@ -300,22 +528,36 @@ def _render_notes_md(
             for slot in ("research_question", "data_materials", "method", "conclusions"):
                 obj = card.get(slot)
                 if isinstance(obj, dict):
-                    txt = (obj.get("text") or obj.get("summary") or "").replace("\n", " ")
-                    ancs = ", ".join(
-                        f"p.{e.get('page', '?')} {e.get('anchor', '')}"
-                        for e in (obj.get("resolved_evidence") or obj.get("evidence") or [])
-                    )
+                    txt = (obj.get("text") or obj.get("summary") or "").replace("\n", " ").replace("|", "/")
+                    ancs = _format_anchor_tags(obj.get("resolved_evidence") or obj.get("evidence"))
                     lines.append(f"| {slot} | {txt} | {ancs} |")
             for slot in ("conditions", "key_findings", "limitations", "not_reported"):
                 items = card.get(slot) or []
                 if isinstance(items, list) and items:
-                    summary_parts = []
+                    summary_parts: List[str] = []
+                    slot_evs: List[Any] = []
+                    searched_refs: List[str] = []
                     for it in items:
                         if isinstance(it, str):
                             summary_parts.append(it)
                         elif isinstance(it, dict):
-                            summary_parts.append(it.get("text") or it.get("item") or json.dumps(it, ensure_ascii=False))
-                    lines.append(f"| {slot} | {'; '.join(summary_parts).replace('|', '/')} | - |")
+                            base_txt = it.get("text") or it.get("item") or ""
+                            if slot == "key_findings":
+                                extras = [f"{k}={it[k]}" for k in ("metric", "value", "comparator", "condition") if it.get(k)]
+                                if extras:
+                                    base_txt = f"{base_txt} ({', '.join(extras)})"
+                            elif slot == "limitations" and it.get("source"):
+                                base_txt = f"[{it['source']}] {base_txt}"
+                            elif not base_txt:
+                                base_txt = json.dumps(it, ensure_ascii=False)
+                            summary_parts.append(base_txt)
+                            slot_evs.extend(it.get("resolved_evidence") or it.get("evidence") or [])
+                            if it.get("searched"):
+                                searched_refs.extend(str(s) for s in it["searched"])
+                    anc_col = _format_anchor_tags(slot_evs)
+                    if anc_col == "-" and searched_refs:
+                        anc_col = "searched: " + ", ".join(dict.fromkeys(searched_refs))
+                    lines.append(f"| {slot} | {'; '.join(summary_parts).replace('|', '/')} | {anc_col} |")
             lines.append("")
 
         sections = paper.get("sections") or []
@@ -348,7 +590,7 @@ def _render_notes_md(
         if knowledge:
             lines.extend(["### Knowledge Entries", "", "| Term | Kind | Definition | Anchors |", "|---|---|---|---|"])
             for k in knowledge:
-                ancs = ", ".join(e.get("anchor", "") for e in (k.get("evidence") or []))
+                ancs = _format_anchor_tags(k.get("evidence"))
                 lines.append(
                     f"| {k.get('term', '')} | {k.get('kind', '')} | "
                     f"{(k.get('definition') or '').replace('|', '/')} | {ancs} |"
@@ -361,11 +603,25 @@ def _render_notes_md(
             lines.append(f"- **{row.get('dimension', '')}**: {json.dumps(row.get('values', {}), ensure_ascii=False)}")
         lines.append("")
 
-    counts = {k: sum(1 for c in checks if c["match"] == k) for k in ("exact", "relocated", "fuzzy", "unverified", "too_short")}
+    fields = answer.get("fields") or {}
+    if fields:
+        lines.extend(["## Case Answers & Grounded Evidence", ""])
+        for fk, fv in fields.items():
+            if fk in {"case_id", "status", "paper_card", "section_notes"}:
+                continue
+            lines.append(f"### `{fk}`")
+            if isinstance(fv, str):
+                lines.append(fv)
+            else:
+                lines.append("```json")
+                lines.append(json.dumps(fv, ensure_ascii=False, indent=2)[:4000])
+                lines.append("```")
+            lines.append("")
+
     lines.extend([
-        "### Verification Summary",
-        f"- Total evidence checks: {len(checks)} ({counts})",
-        f"- Must-fix issues: {len(must_fix)} | Warnings: {len(warnings)}",
+        "## Verification & Review Boundaries",
+        f"- **Machine-verified**: {len(checks)} evidence checks ({counts}); must-fix={len(must_fix)}.",
+        f"- **Needs human review**: warnings={len(warnings)}; uncertainties={len(uncertainties)}.",
     ])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -378,6 +634,42 @@ def _render_comparison_md(notes: Dict[str, Any]) -> str:
         cells = [str(vals.get(pid, "not_reported")).replace("\n", " ").replace("|", "/") for pid in papers]
         lines.append(f"| {row.get('dimension', '')} | " + " | ".join(cells) + " |")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_notes_index(notes: Dict[str, Any]) -> Dict[str, Any]:
+    terms: Dict[str, List[Dict[str, Any]]] = {}
+    sections_idx: List[Dict[str, Any]] = []
+    for paper in notes.get("papers", []):
+        pid = paper.get("paper_id", "paper_1")
+        for sec in paper.get("sections") or []:
+            anchors = [
+                ev.get("anchor")
+                for pt in (sec.get("points") or [])
+                for ev in (pt.get("resolved_evidence") or pt.get("evidence") or [])
+                if ev.get("anchor")
+            ]
+            sections_idx.append({
+                "paper_id": pid,
+                "section_id": sec.get("section_id"),
+                "title": sec.get("title"),
+                "role": sec.get("role"),
+                "anchors": list(dict.fromkeys(anchors)),
+            })
+        for k in paper.get("knowledge") or []:
+            term = str(k.get("term") or "").strip()
+            if not term:
+                continue
+            entry = {
+                "paper_id": pid,
+                "kind": k.get("kind"),
+                "definition": str(k.get("definition") or "")[:200],
+                "anchors": [e.get("anchor") for e in (k.get("evidence") or []) if e.get("anchor")],
+            }
+            terms.setdefault(term, []).append(entry)
+            for al in k.get("aliases") or []:
+                if al:
+                    terms.setdefault(str(al), []).append(entry)
+    return {"terms": terms, "sections": sections_idx}
 
 
 def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
@@ -402,7 +694,7 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
     multi_paper = len(papers_meta) > 1
 
     notes, note_files = _load_notes(work_dir)
-    answer = _load_answer(work_dir)
+    answer = _load_answer(work_dir, contract=contract)
 
     if notes is None and answer is None:
         skeleton = build_skeleton(contract, case_id, status_intent="partial")
@@ -510,7 +802,7 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
                 )
 
     fields_payload = copy.deepcopy(answer.get("fields") or {})
-    scan_fields_evidence(fields_payload, default_paper, store, multi_paper, change_records, warnings)
+    scan_fields_evidence(fields_payload, default_paper, store, multi_paper, change_records, warnings, checks=checks)
 
     resolved_answer_ev: Dict[str, Any] = {}
     for ptr, evs in (answer.get("evidence") or {}).items():
@@ -530,38 +822,6 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
             must_fix,
         )
 
-    intent = str(answer.get("status") or ("partial" if must_fix else "success")).lower()
-    if intent not in {"success", "partial", "unable"}:
-        intent = "partial"
-    if must_fix and intent == "success":
-        intent = "partial"
-
-    skeleton = build_skeleton(contract, case_id, status_intent=intent)
-    result = _overlay(skeleton, fields_payload)
-    if "case_id" in contract_specs(contract) or not closed:
-        result["case_id"] = case_id
-
-    specs = contract_specs(contract)
-    if "status" in specs or not closed:
-        st_spec = specs.get("status")
-        enum_vals = st_spec.get("enum") if isinstance(st_spec, dict) else None
-        if isinstance(enum_vals, list) and result.get("status") not in enum_vals:
-            result["status"] = pick_status_value(contract, intent)
-        elif not result.get("status"):
-            result["status"] = pick_status_value(contract, intent)
-
-    all_uncertainties = list(meta.get("uncertainties") or []) + list(answer.get("uncertainties") or [])
-    if "uncertainties" in specs and not result.get("uncertainties") and all_uncertainties:
-        u_items = (specs["uncertainties"] or {}).get("items", {}) if isinstance(specs["uncertainties"], dict) else {}
-        if isinstance(u_items, dict) and u_items.get("type") == "string":
-            result["uncertainties"] = [
-                u if isinstance(u, str) else f"{u.get('item') or u.get('code')}: {u.get('reason') or u.get('message')}"
-                for u in all_uncertainties
-            ]
-        else:
-            result["uncertainties"] = all_uncertainties
-
-    counts = {k: sum(1 for c in checks if c["match"] == k) for k in ("exact", "relocated", "fuzzy", "unverified", "too_short")}
     sources_list = [
         {
             "paper_id": p["paper_id"],
@@ -573,18 +833,95 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
         for p in papers_meta
     ]
 
+    intent = str(answer.get("status") or ("partial" if must_fix else "success")).lower()
+    if intent not in {"success", "partial", "unable"}:
+        intent = "partial"
+    if must_fix and intent == "success":
+        intent = "partial"
+
+    skeleton = build_skeleton(contract, case_id, status_intent=intent)
+    result = _overlay(skeleton, fields_payload)
+    _project_notes_to_contract(result, contract, notes, papers_meta_by_id, sources_list, checks)
+
+    specs = contract_specs(contract)
+    if "case_id" in specs or not closed:
+        result["case_id"] = case_id
+
+    all_uncertainties = list(meta.get("uncertainties") or []) + list(answer.get("uncertainties") or [])
+    if "uncertainties" in specs and _is_empty_val(result.get("uncertainties")) and all_uncertainties:
+        u_items = (specs["uncertainties"] or {}).get("items", {}) if isinstance(specs["uncertainties"], dict) else {}
+        if isinstance(u_items, dict) and u_items.get("type") == "string":
+            result["uncertainties"] = [
+                u if isinstance(u, str) else f"{u.get('item') or u.get('code')}: {u.get('reason') or u.get('message')}"
+                for u in all_uncertainties
+            ]
+        else:
+            result["uncertainties"] = all_uncertainties
+
+    counts = {k: sum(1 for c in checks if c["match"] == k) for k in ("exact", "relocated", "fuzzy", "unverified", "too_short")}
     notes_md_path = out_dir / "notes.md"
     notes_json_path = out_dir / "notes.json"
+    notes_idx_path = out_dir / "notes_index.json"
     ev_check_path = out_dir / "evidence_check.json"
-    artifacts = {"notes_md": str(notes_md_path), "notes_json": str(notes_json_path), "evidence_check_json": str(ev_check_path)}
-
-    write_text_lf(notes_md_path, _render_notes_md(case_id, notes, papers_meta_by_id, checks, warnings, must_fix))
-    write_json_atomic(notes_json_path, notes)
+    artifacts: Dict[str, str] = {
+        "notes_md": str(notes_md_path),
+        "notes_json": str(notes_json_path),
+        "notes_index_json": str(notes_idx_path),
+        "evidence_check_json": str(ev_check_path),
+    }
     if multi_paper or notes.get("comparison"):
         comp_path = out_dir / "comparison.md"
         write_text_lf(comp_path, _render_comparison_md(notes))
         artifacts["comparison_md"] = str(comp_path)
 
+    if not closed:
+        enrichments = {
+            "status_reason": answer.get("status_reason") or (
+                "verified with unresolved issues; see evidence_check.json" if must_fix else "notes and answers verified"
+            ),
+            "structured_notes": notes,
+            "evidence": resolved_answer_ev,
+            "uncertainties": all_uncertainties,
+            "sources": sources_list,
+            "artifacts": artifacts,
+            "verification": {"counts": counts, "warning_count": len(warnings), "must_fix_count": len(must_fix)},
+            "change_records": change_records,
+        }
+        for ek, ev in enrichments.items():
+            existing_empty = _is_empty_val(result.get(ek))
+            conforms = (ek not in specs) or field_conforms(specs[ek], ev, contract)
+            if existing_empty and conforms:
+                result[ek] = ev
+            elif ek != "status_reason" and not existing_empty:
+                result[f"skill_{ek}"] = ev
+            elif ek in specs and not conforms:
+                result[f"skill_{ek}"] = ev
+    else:
+        allowed = set(contract["properties"].keys())
+        result = {k: v for k, v in result.items() if k in allowed}
+
+    # Check contract issues BEFORE finalizing status and writing artifacts.
+    c_issues = contract_issues(contract, result)
+    for ci in c_issues:
+        must_fix.append({"code": ci["code"], "context": ci["field"], "message": ci["message"]})
+    if c_issues and intent == "success":
+        intent = "partial"
+
+    if "status" in specs or not closed:
+        st_spec = specs.get("status")
+        enum_vals = st_spec.get("enum") if isinstance(st_spec, dict) else None
+        if intent == "partial" or not result.get("status") or (isinstance(enum_vals, list) and result.get("status") not in enum_vals):
+            result["status"] = pick_status_value(contract, intent)
+    if not closed and not result.get("verification"):
+        result["verification"] = {"counts": counts, "warning_count": len(warnings), "must_fix_count": len(must_fix)}
+
+    final_status = str(result.get("status") or intent)
+    write_text_lf(
+        notes_md_path,
+        _render_notes_md(case_id, final_status, notes, answer, papers_meta_by_id, checks, warnings, must_fix, all_uncertainties),
+    )
+    write_json_atomic(notes_json_path, notes)
+    write_json_atomic(notes_idx_path, _build_notes_index(notes))
     write_json_atomic(ev_check_path, {
         "case_id": case_id,
         "note_files": note_files,
@@ -594,26 +931,6 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
         "change_records": change_records,
         "checks": checks,
     })
-
-    if not closed:
-        result["status_reason"] = answer.get("status_reason") or (
-            "verified with unresolved issues; see evidence_check.json" if must_fix else "notes and answers verified"
-        )
-        result["structured_notes"] = notes
-        result["evidence"] = resolved_answer_ev
-        result["uncertainties"] = all_uncertainties
-        result["sources"] = sources_list
-        result["artifacts"] = artifacts
-        result["verification"] = {"counts": counts, "warning_count": len(warnings), "must_fix_count": len(must_fix)}
-        result["change_records"] = change_records
-    else:
-        allowed = set(contract["properties"].keys())
-        result = {k: v for k, v in result.items() if k in allowed}
-
-    c_issues = contract_issues(contract, result)
-    for ci in c_issues:
-        must_fix.append({"code": ci["code"], "context": ci["field"], "message": ci["message"]})
-
     write_json_atomic(out_dir / "result.json", result)
 
     print(f"MUST_FIX ({len(must_fix)}):")
@@ -622,7 +939,7 @@ def run_finalize(case_path: Path, work_dir: Path, out_dir: Path) -> int:
     print(f"WARNINGS ({len(warnings)}):")
     for w in warnings[:15]:
         ctx = w.get("context") or w.get("paper_id") or ""
-        detail = w.get("missing_numbers") or w.get("sections") or w.get("text") or w.get("quote", "")
+        detail = w.get("missing_numbers") or w.get("mismatches") or w.get("sections") or w.get("text") or w.get("quote", "")
         print(f"  - [{w.get('code')}] {ctx}: {detail}")
     print(
         f"STATS: checks={len(checks)} exact={counts['exact']} relocated={counts['relocated']} "

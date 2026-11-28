@@ -21,6 +21,32 @@ def _field_map(fields: Any) -> dict:
     return specs
 
 
+def _resolve_ref(spec: Any, root: Any, seen: Optional[set[str]] = None) -> Any:
+    if not isinstance(spec, dict) or "$ref" not in spec or not isinstance(root, dict):
+        return spec
+    ref = spec["$ref"]
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return spec
+    seen = set(seen or set())
+    if ref in seen:
+        return spec
+    seen.add(ref)
+    cur: Any = root
+    for comp in ref[2:].split("/"):
+        key = comp.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict) and key in cur:
+            cur = cur[key]
+        else:
+            return spec
+    if isinstance(cur, dict):
+        merged = dict(cur)
+        for k, v in spec.items():
+            if k != "$ref":
+                merged[k] = v
+        return _resolve_ref(merged, root, seen)
+    return cur
+
+
 def contract_specs(contract: Any) -> dict:
     if not isinstance(contract, dict):
         return _field_map(contract)
@@ -31,7 +57,7 @@ def contract_specs(contract: Any) -> dict:
         return specs
     return {
         k: v for k, v in contract.items()
-        if k not in ("$schema", "$id", "$defs", "type", "description", "title", "additionalProperties")
+        if k not in ("$schema", "$id", "$defs", "definitions", "type", "description", "title", "additionalProperties")
     }
 
 
@@ -58,11 +84,16 @@ def is_closed_contract(contract: Any) -> bool:
     )
 
 
-def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
+def _shape_errors(value: Any, spec: Any, path: str, root: Any = None, depth: int = 0) -> list[str]:
+    if depth > 20:
+        return []
     if spec is False:
         return [f"{path}: schema disallows this value"]
     if isinstance(spec, str):
         spec = {"type": spec}
+    if not isinstance(spec, dict):
+        return []
+    spec = _resolve_ref(spec, root)
     if not isinstance(spec, dict):
         return []
     if value is None and spec.get("nullable") is True:
@@ -70,7 +101,7 @@ def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
     for label in ("oneOf", "anyOf", "allOf"):
         branches = spec.get(label)
         if isinstance(branches, list):
-            matches = sum(not _shape_errors(value, branch, path) for branch in branches)
+            matches = sum(not _shape_errors(value, branch, path, root=root, depth=depth + 1) for branch in branches)
             if ((label == "oneOf" and matches != 1) or (label == "anyOf" and not matches)
                     or (label == "allOf" and matches != len(branches))):
                 return [f"{path}: does not meet {label}"]
@@ -100,24 +131,29 @@ def _shape_errors(value: Any, spec: Any, path: str) -> list[str]:
             errors.extend(f"{path}.{k}: undeclared field" for k in sorted(value.keys() - properties.keys()))
         for k, child in properties.items():
             if k in value:
-                errors.extend(_shape_errors(value[k], child, f"{path}.{k}"))
+                errors.extend(_shape_errors(value[k], child, f"{path}.{k}", root=root, depth=depth + 1))
     elif isinstance(value, list):
         if len(value) < spec.get("minItems", 0):
             errors.append(f"{path}: requires at least {spec['minItems']} items")
         if "maxItems" in spec and len(value) > spec["maxItems"]:
             errors.append(f"{path}: exceeds {spec['maxItems']} items")
         for i, item in enumerate(value):
-            errors.extend(_shape_errors(item, spec.get("items"), f"{path}[{i}]"))
+            errors.extend(_shape_errors(item, spec.get("items"), f"{path}[{i}]", root=root, depth=depth + 1))
     return errors
 
 
-def allows_null(spec: Any) -> bool:
+def field_conforms(spec: Any, value: Any, contract: Any = None) -> bool:
+    """Return True if value conforms to the declared field schema spec."""
+    return len(_shape_errors(value, spec, "", root=contract)) == 0
+
+
+def allows_null(spec: Any, root: Any = None) -> bool:
     if spec == "null":
         return True
     return (
         isinstance(spec, dict)
-        and any(k in spec for k in ("type", "nullable", "enum", "const", "oneOf", "anyOf"))
-        and not _shape_errors(None, spec, "")
+        and any(k in spec for k in ("type", "nullable", "enum", "const", "oneOf", "anyOf", "$ref"))
+        and not _shape_errors(None, spec, "", root=root)
     )
 
 
@@ -144,9 +180,9 @@ def contract_issues(contract: Any, result: dict) -> list[dict]:
             if name in required:
                 issues.append({"code": "missing_contract_field", "field": name, "message": f"{name}: missing required field"})
             continue
-        errors = _shape_errors(result[name], spec, name)
+        errors = _shape_errors(result[name], spec, name, root=contract)
         if name in required and result[name] is None and not errors:
-            if not allows_null(spec):
+            if not allows_null(spec, root=contract):
                 errors.append(f"{name}: missing required value")
         if errors:
             issues.append({"code": "contract_shape_mismatch", "field": name, "message": "; ".join(errors)})
@@ -161,7 +197,7 @@ def pick_status_value(contract: Any, intent: str) -> str:
         "unable": ("unable", "refused", "unverifiable", "failed", "error", "partial", "partially_completed"),
     }.get(intent, ("partial",))
     specs = contract_specs(contract)
-    st_spec = specs.get("status")
+    st_spec = _resolve_ref(specs.get("status"), contract)
     enum_vals = st_spec.get("enum") if isinstance(st_spec, dict) else None
     if isinstance(enum_vals, list) and enum_vals:
         lower_map = {str(v).lower(): v for v in enum_vals}
@@ -172,10 +208,15 @@ def pick_status_value(contract: Any, intent: str) -> str:
     return prefs[0]
 
 
-def _default_for_spec(spec: Any, depth: int = 0) -> Any:
-    if depth > 6 or not isinstance(spec, dict):
-        if isinstance(spec, str):
-            return {"string": "", "array": [], "object": {}, "boolean": False}.get(spec)
+def _default_for_spec(spec: Any, depth: int = 0, root: Any = None) -> Any:
+    if depth > 6:
+        return None
+    if isinstance(spec, str):
+        return {"string": "", "array": [], "object": {}, "boolean": False}.get(spec)
+    if not isinstance(spec, dict):
+        return None
+    spec = _resolve_ref(spec, root)
+    if not isinstance(spec, dict):
         return None
     if "const" in spec:
         return spec["const"]
@@ -202,12 +243,12 @@ def _default_for_spec(spec: Any, depth: int = 0) -> Any:
         props = spec.get("properties", {})
         if isinstance(props, dict):
             for k, v in props.items():
-                obj[k] = _default_for_spec(v, depth + 1)
+                obj[k] = _default_for_spec(v, depth + 1, root=root)
         return obj
     if isinstance(spec.get("anyOf"), list) and spec["anyOf"]:
-        return _default_for_spec(spec["anyOf"][0], depth + 1)
+        return _default_for_spec(spec["anyOf"][0], depth + 1, root=root)
     if isinstance(spec.get("oneOf"), list) and spec["oneOf"]:
-        return _default_for_spec(spec["oneOf"][0], depth + 1)
+        return _default_for_spec(spec["oneOf"][0], depth + 1, root=root)
     return None
 
 
@@ -216,7 +257,7 @@ def build_skeleton(contract: Any, case_id: str, status_intent: str = "partial") 
     specs = contract_specs(contract)
     res: dict[str, Any] = {}
     for name, spec in specs.items():
-        res[name] = _default_for_spec(spec)
+        res[name] = _default_for_spec(spec, root=contract)
     if "case_id" in specs or not is_closed_contract(contract):
         res["case_id"] = case_id
     if "status" in specs or not is_closed_contract(contract):
@@ -226,8 +267,8 @@ def build_skeleton(contract: Any, case_id: str, status_intent: str = "partial") 
     return res
 
 
-def format_contract_tree(contract: Any, max_len: int = 1600) -> str:
-    """Render a compact human/agent-readable contract summary."""
+def format_contract_tree(contract: Any, max_len: int = 5000) -> str:
+    """Render a complete human/agent-readable contract summary up to depth 5."""
     if not contract:
         return "(no output_contract declared; open result.json)"
     specs = contract_specs(contract)
@@ -237,20 +278,32 @@ def format_contract_tree(contract: Any, max_len: int = 1600) -> str:
     def desc(spec: Any, depth: int = 0) -> str:
         if not isinstance(spec, dict):
             return str(spec or "any")
+        spec = _resolve_ref(spec, contract)
+        if not isinstance(spec, dict):
+            return str(spec or "any")
+        note = ""
+        if isinstance(spec.get("description"), str) and spec["description"].strip():
+            d_txt = " ".join(spec["description"].split())
+            if len(d_txt) > 90:
+                d_txt = d_txt[:87] + "..."
+            note = f" # {d_txt}"
         if "enum" in spec:
-            return f"enum{spec['enum']}"
+            return f"enum{spec['enum']}{note}"
         t = spec.get("type", "any")
         if t == "object" or isinstance(spec.get("properties"), dict):
             props = spec.get("properties", {})
-            if depth >= 2 or not isinstance(props, dict) or not props:
-                return "object"
-            inner = ", ".join(f"{k}: {desc(v, depth + 1)}" for k, v in list(props.items())[:10])
-            if len(props) > 10:
-                inner += ", ..."
-            return "{" + inner + "}"
+            if depth >= 5 or not isinstance(props, dict) or not props:
+                return f"object{note}"
+            nested_req = set(_field_map(spec.get("required")).keys())
+            nested_closed = " [closed]" if spec.get("additionalProperties") is False else ""
+            inner = ", ".join(
+                f"{k}{'*' if k in nested_req else ''}: {desc(v, depth + 1)}"
+                for k, v in props.items()
+            )
+            return "{" + inner + "}" + nested_closed + note
         if t == "array":
-            return f"[{desc(spec.get('items'), depth + 1)}]"
-        return str(t)
+            return f"[{desc(spec.get('items'), depth + 1)}]{note}"
+        return f"{t}{note}"
 
     lines = [f"mode: {'CLOSED (additionalProperties:false)' if closed else 'OPEN'}"]
     for name, spec in specs.items():

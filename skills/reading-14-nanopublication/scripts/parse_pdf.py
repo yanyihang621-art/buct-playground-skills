@@ -94,7 +94,6 @@ def _render_markdown(doc_data: Dict[str, Any]) -> str:
                 lines.append(f"{blk['structured_text']}  \n<sub>{prov}</sub>")
                 lines.append("")
 
-    # Emit any image tables that did not have a table_ref anchor
     for tab in doc_data.get("tables", []):
         if tab.get("is_image_table"):
             lines.append(f"#### {tab.get('caption') or tab.get('label')} (Image Table)")
@@ -172,7 +171,6 @@ def _build_compact_summary(doc_data: Dict[str, Any]) -> Dict[str, Any]:
         "uncertainties": doc_data.get("uncertainties", [])[:12],
     }
 
-    # Ensure compact size <= 8 KB
     raw = json.dumps(summary, ensure_ascii=False)
     if len(raw.encode("utf-8")) > 7800:
         summary["sections_outline"] = summary["sections_outline"][:20]
@@ -191,9 +189,18 @@ def run_parse_pipeline(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     crops_dir = (out_path / "crops") if save_crops else None
+    hard_crops_dir = (out_path / "crops") if (save_crops or ocr_mode != "off") else None
 
     diagnostics = diagnose_pdf(pdf_path, max_pages=max_pages)
     uncertainties: List[Dict[str, Any]] = []
+    if 0 < diagnostics["analyzed_pages"] < diagnostics["page_count"]:
+        first_missing = diagnostics["analyzed_pages"] + 1
+        uncertainties.append({
+            "code": "page_limit",
+            "severity": "high",
+            "pages": [],
+            "message": f"Pages {first_missing}–{diagnostics['page_count']} were outside this pass.",
+        })
 
     if diagnostics.get("encrypted") or diagnostics.get("corrupt") or not diagnostics.get("file_exists"):
         for anom in diagnostics.get("anomalies", []):
@@ -234,19 +241,19 @@ def run_parse_pipeline(
         tables = extract_tables(
             pdf_path,
             diagnostics,
-            crops_dir=crops_dir,
+            crops_dir=hard_crops_dir,
             ocr_fn=ocr_cb,
             max_pages=max_pages,
         )
 
-        # Adaptive OCR for scanned or garbled pages
+        # Adaptive OCR for scanned or garbled pages (always save hard-page crops for vision inspection)
         ocr_results: Dict[int, Dict[str, Any]] = {}
         if ocr_mode != "off":
             for prof in diagnostics.get("page_profiles", []):
                 pnum = prof["page"]
                 ptype = prof["page_type"]
                 if ocr_mode == "always" or ptype in ("scanned_no_text", "garbled_font_cid"):
-                    ocr_res = run_ocr_on_page(pdf_path, page_num=pnum, crops_dir=crops_dir, dpi=300)
+                    ocr_res = run_ocr_on_page(pdf_path, page_num=pnum, crops_dir=hard_crops_dir, dpi=300)
                     ocr_results[pnum] = ocr_res
                     if ocr_res.get("ocr_status") in ("unavailable", "failed", "empty"):
                         uncertainties.append(
@@ -291,7 +298,6 @@ def run_parse_pipeline(
             max_pages=max_pages,
         )
 
-        # Record uncertainties from image tables, 2D formulas, garbled pages, disordered pages
         for anom in diagnostics.get("anomalies", []):
             uncertainties.append(
                 {
@@ -324,7 +330,6 @@ def run_parse_pipeline(
                     }
                 )
 
-        # Determine honest overall status
         total_blocks = len(layout_data.get("blocks", []))
         high_unverified = any(
             u["code"] in ("ocr_unavailable", "ocr_failed", "image_based_table", "garbled_font_cid")
@@ -361,7 +366,6 @@ def run_parse_pipeline(
             "change_log": layout_data["change_log"],
         }
 
-    # Write all output artifacts
     write_json_atomic(out_path / "document.json", doc_data)
     write_json_atomic(out_path / "document_summary.json", _build_compact_summary(doc_data))
     write_text_lf(out_path / "full_text.md", _render_markdown(doc_data))

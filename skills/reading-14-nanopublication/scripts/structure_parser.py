@@ -13,7 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from pdf_utils import bbox_union, normalize_ligatures, round_bbox, write_json_atomic
+from pdf_utils import bbox_union, dehyphenate_lines, normalize_ligatures, round_bbox, write_json_atomic
 
 try:
     import fitz  # type: ignore
@@ -51,8 +51,24 @@ FIGURE_CAPTION_RE = re.compile(
     r"^\s*(?:(Figure|Fig\.?|图)\s*([A-Za-z]?\d+(?:\.\d+)?))\b[:.\s]*(.*)$",
     flags=re.IGNORECASE,
 )
-REF_ITEM_RE = re.compile(r"^(?:\[(\d{1,3})\]|(\d{1,3})\.)\s+(.+)$")
-PUBLISHER_STAMP = re.compile(r"^(?:arxiv\s*:\s*\d|doi\s*:\s*10\.|https?://doi\.org/|published as a conference paper\b)", re.I)
+REF_ITEM_RE = re.compile(r"^(?:\[(\d{1,4})\]\s*|(\d{1,3})[.)]\s+)(?=\S)")
+REF_END_RE = re.compile(
+    r"^(?:appendi(?:x|ces)\b|supplement(?:ary|al)?\s+(?:material|information)\b|"
+    r"acknowledg(?:e)?ments?$|author\s+contributions?$|data\s+availability(?:\s+statement)?$|附录|致谢$)",
+    re.IGNORECASE,
+)
+REF_YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}[a-z]?\b")
+REF_AUTHOR_RE = re.compile(
+    r"^(?:[A-ZÀ-Þ][^\W\d_]*[.,’'\-]?\s+(?:[A-ZÀ-Þ][\w’'\-]*\b|(?:van|von|de|di)\s+|et\s+al\.)|"
+    r"[A-ZÀ-Þ][\w’'\-]+,\s*[A-ZÀ-Þ]|[\u4e00-\u9fff]{2,5}[，、,])"
+)
+REF_VENUE_RE = re.compile(
+    r"\b(?:proceedings|conference|workshop|journal|volume|pages|press|transactions)\b", re.IGNORECASE
+)
+PUBLISHER_STAMP = re.compile(
+    r"^(?:arxiv\s*:\s*\d|doi\s*:\s*10\.|https?://doi\.org/|published as a conference paper\b)",
+    re.I,
+)
 TICK = r"[+−-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+−-]?\d+)?%?"
 AXIS_TICKS = re.compile(rf"^(?:{TICK}\s+){{2}}{TICK}(?:\s|$)")
 
@@ -109,6 +125,7 @@ def _extract_metadata(
     affiliations: List[str] = []
     abstract: Optional[str] = None
     keywords: List[str] = []
+    byline_evidence: List[Dict[str, Any]] = []
 
     if p1_blocks:
         top_cands = []
@@ -122,6 +139,7 @@ def _extract_metadata(
                 continue
             if not ABSTRACT_HEADING_RE.match(text) and len(text) <= 450:
                 top_cands.append(block)
+
         if top_cands:
             title_blk = max(top_cands, key=lambda b: (b["max_font_size"], -b["bbox"][1]))
             if title_blk["max_font_size"] >= body_font_size * 1.18 or title_blk["is_bold"]:
@@ -136,29 +154,62 @@ def _extract_metadata(
                     if b["bbox"][1] < title_y - 5.0:
                         continue
                     t = b["text"].strip()
-                    if ABSTRACT_HEADING_RE.match(t) or re.match(r"^(?:1\.?\s+Introduction|I\.\s+Introduction|1\.?\s+引言)", t, re.IGNORECASE):
+                    if ABSTRACT_HEADING_RE.match(t) or re.match(
+                        r"^(?:1\.?\s+Introduction|I\.\s+Introduction|1\.?\s+引言)", t, re.IGNORECASE
+                    ):
                         break
                     if b["bbox"][1] > title_y + 220.0:
                         break
                     if b.get("role") == "publication_notice":
                         continue
-                    # Some PDFs place a name, institution and email in a single text block.
-                    front_lines = [line["text"].strip() for line in b.get("lines", [])] or [t]
-                    has_name = False
-                    in_affiliation = False
-                    for line in front_lines:
-                        if AFFILIATION_HINT_RE.search(line):
-                            in_affiliation = True
-                        if in_affiliation:
-                            if line and "@" not in line:
-                                affiliations.append(line)
-                        elif line and len(line) <= 180 and not line.endswith("."):
-                            parts = [re.sub(r"[*∗†‡\d]+$", "", p.strip()).strip()
-                                     for p in re.split(r",|;|\band\b", line)]
-                            authors.extend(p for p in parts if p)
-                            has_name = True
-                    if has_name or in_affiliation:
-                        b["role"] = "authors" if has_name else "affiliation"
+                    lines = b.get("lines", [])
+                    first_line = lines[0] if lines else {"text": t}
+                    runs = first_line.get("spaced_runs", [])
+                    names = (
+                        [run["text"] for run in runs]
+                        if runs
+                        else re.split(r",|;|、|；|\band\b", first_line["text"])
+                    )
+                    names = [re.sub(r"[*∗†‡\d]+$", "", name.strip()).strip() for name in names if name.strip()]
+                    name_row = bool(names) and all(
+                        re.fullmatch(r"(?:[A-ZÀ-ÖØ-Þ][\w.·’'\-]*\s+){1,4}[\w.·’'\-]+|[\u4e00-\u9fff]{2,5}", name)
+                        and not AFFILIATION_HINT_RE.search(name)
+                        for name in names
+                    )
+                    if name_row and (len(runs) > 1 or (len(lines) > 1 and AFFILIATION_HINT_RE.search(t))):
+                        authors.extend(names)
+                        byline_evidence.append({
+                            "field": "authors",
+                            "page": b["page"],
+                            "block_id": b["block_id"],
+                            "bbox": first_line.get("bbox", b["bbox"]),
+                            "text": first_line["text"],
+                        })
+                        for line in lines[1:]:
+                            if "@" not in line["text"]:
+                                affiliations.append(line["text"])
+                                byline_evidence.append({
+                                    "field": "affiliations",
+                                    "page": b["page"],
+                                    "block_id": b["block_id"],
+                                    "bbox": line["bbox"],
+                                    "text": line["text"],
+                                })
+                        b["role"] = "authors"
+                    elif AFFILIATION_HINT_RE.search(t):
+                        for line in (lines or [{"text": t}]):
+                            lt = line["text"].strip()
+                            if lt and "@" not in lt:
+                                affiliations.append(lt)
+                        b["role"] = "affiliation"
+                    elif len(t) <= 180 and not t.endswith("."):
+                        parts = [
+                            re.sub(r"[*∗†‡\d]+$", "", p).strip()
+                            for p in re.split(r",|;|\band\b", t)
+                            if p.strip()
+                        ]
+                        authors.extend(p for p in parts if p)
+                        b["role"] = "authors"
 
     # Extract Abstract and Keywords from Page 1 (or Page 2)
     for idx, b in enumerate(blocks):
@@ -169,13 +220,30 @@ def _extract_metadata(
         if m_abs and abstract is None:
             inline_rest = m_abs.group(1).strip()
             b["role"] = "abstract"
+            label = t[:m_abs.start(1)].rstrip(":： ").strip()
+            b["section_path"] = [label]
             abs_parts = [inline_rest] if inline_rest else []
-            # Look ahead to immediate body block(s) if inline abstract was empty
-            if not inline_rest and idx + 1 < len(blocks):
-                nxt = blocks[idx + 1]
-                if nxt["page"] <= 2 and not KEYWORDS_RE.match(nxt["text"]) and not _classify_heading(nxt, body_font_size):
-                    abs_parts.append(nxt["text"].strip())
-                    nxt["role"] = "abstract"
+            following = []
+            bounded = False
+            for nxt in blocks[idx + 1:]:
+                if nxt["page"] > 2:
+                    break
+                txt = nxt["text"].strip()
+                if (
+                    KEYWORDS_RE.match(txt)
+                    or _classify_heading(nxt, body_font_size)
+                    or FIGURE_CAPTION_RE.match(txt)
+                    or nxt.get("role") in {"table_ref", "footnote"}
+                ):
+                    bounded = True
+                    break
+                following.append(nxt)
+            if not bounded:
+                following = [] if inline_rest else following[:1]
+            for nxt in following:
+                abs_parts.append(nxt["text"].strip())
+                nxt["role"] = "abstract"
+                nxt["section_path"] = [label]
             abstract = " ".join(abs_parts).strip() or None
             continue
 
@@ -190,6 +258,7 @@ def _extract_metadata(
         "title": title,
         "authors": authors,
         "affiliations": affiliations,
+        "byline_evidence": byline_evidence,
         "abstract": abstract,
         "keywords": keywords,
         "toc": toc,
@@ -225,7 +294,6 @@ def _extract_figures(
                             boxes.append(round_bbox(ib))
                 except Exception:
                     pass
-                # Also cluster large vector drawing regions if no raster images found
                 if not boxes:
                     draw_rects = []
                     for drw in page.get_drawings() or []:
@@ -243,11 +311,17 @@ def _extract_figures(
             m = FIGURE_CAPTION_RE.match(blk["text"].strip())
             if not m:
                 continue
+            suffix = blk["text"].strip()[m.end(2):]
+            if re.match(
+                r"^\s+(?:shows?|presents?|demonstrates?|depicts?|illustrates?|reports?|summari[sz]es?|compares?|is|was|gives?)\b",
+                suffix,
+                re.I,
+            ):
+                continue
             fig_idx += 1
             blk["role"] = "figure_caption"
             pnum = blk["page"]
             cb = blk["bbox"]
-            # Find nearest image box above (or below) caption
             best_img = None
             best_dist = 9999.0
             for ib in img_boxes_by_page.get(pnum, []):
@@ -283,96 +357,81 @@ def _extract_figures(
 
 
 def _extract_references(blocks: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    refs: List[Dict[str, Any]] = []
+    entries = []
+    margins: Dict[Tuple[int, Any], List[float]] = {}
     in_refs = False
-    ref_idx = 0
-
     for blk in blocks:
         txt = blk["text"].strip()
-        if REFERENCES_HEADING_RE.match(txt):
+        if REFERENCES_HEADING_RE.fullmatch(txt):
             in_refs = True
             continue
-
-        # Detect start of references by "[1] Author..." even without heading if near end
         if not in_refs:
-            if blk.get("section_path") and any(
-                "reference" in sp.lower() or "参考文献" in sp for sp in blk["section_path"]
-            ):
-                in_refs = True
-            else:
+            in_refs = any(REFERENCES_HEADING_RE.fullmatch(sp.strip()) for sp in blk.get("section_path", []))
+            if not in_refs:
                 continue
-
-        # A numbered appendix or supplementary section can follow the bibliography.
-        if blk.get("role") == "heading" and not any(
-            REFERENCES_HEADING_RE.match(name) for name in blk.get("section_path", [])
+        if blk.get("role") in {"table_ref", "header", "footer", "footnote", "figure_caption"}:
+            continue
+        if REF_END_RE.match(txt) and (
+            blk.get("is_bold")
+            or blk.get("role") == "heading"
+            or (len(txt) <= 120 and not txt.endswith((".", "。")) and not REF_YEAR_RE.search(txt))
         ):
-            in_refs = False
+            break
+        if not txt:
             continue
-
-        if blk.get("role") in ("table_ref", "header", "footer", "figure_caption"):
+        lines = blk.get("lines") or [{"bbox": blk["bbox"], "text": txt}]
+        lines = [ln for ln in lines if ln.get("text", "").strip()]
+        if not lines:
             continue
+        region = (blk["page"], blk.get("column"))
+        entries.append((blk, region, lines))
+        start_x = lines[0]["bbox"][0]
+        if len(lines) > 1 and 3 <= lines[1]["bbox"][0] - start_x <= 40 and (
+            REF_ITEM_RE.match(txt) or REF_YEAR_RE.search(txt[:550])
+        ):
+            margins.setdefault(region, []).append(start_x)
 
+    first_x = {region: sorted(values)[len(values) // 2] for region, values in margins.items()}
+    refs: List[Dict[str, Any]] = []
+    parts: List[str] = []
+    for blk, region, lines in entries:
         blk["role"] = "reference"
-        # Split multi-entry blocks if multiple [n] markers appear on separate lines
-        lines = blk.get("lines", [])
-        if lines and sum(1 for ln in lines if REF_ITEM_RE.match(ln["text"])) >= 2:
-            cur_marker = None
-            cur_parts: List[str] = []
-            cur_boxes: List[List[float]] = []
-            for ln in lines:
-                m = REF_ITEM_RE.match(ln["text"])
-                if m:
-                    if cur_parts:
-                        ref_idx += 1
-                        refs.append(
-                            {
-                                "ref_id": f"ref_{ref_idx}",
-                                "marker": cur_marker,
-                                "raw_text": " ".join(cur_parts),
-                                "page": blk["page"],
-                                "printed_page": blk.get("printed_page"),
-                                "bbox": bbox_union(cur_boxes),
-                            }
-                        )
-                    cur_marker = m.group(1) or m.group(2)
-                    cur_parts = [ln["text"]]
-                    cur_boxes = [ln["bbox"]]
-                else:
-                    cur_parts.append(ln["text"])
-                    cur_boxes.append(ln["bbox"])
-            if cur_parts:
-                ref_idx += 1
-                refs.append(
-                    {
-                        "ref_id": f"ref_{ref_idx}",
-                        "marker": cur_marker,
-                        "raw_text": " ".join(cur_parts),
-                        "page": blk["page"],
-                        "printed_page": blk.get("printed_page"),
-                        "bbox": bbox_union(cur_boxes),
-                    }
-                )
-        else:
-            m = REF_ITEM_RE.match(txt)
-            marker = (m.group(1) or m.group(2)) if m else None
-            if (marker is None and refs and blk["page"] == refs[-1]["page"]
-                    and blk["bbox"][0] > refs[-1]["bbox"][0] + 3 and not txt.startswith("[")):
-                # Indented continuation; a flush-left author-year entry starts a new record.
-                refs[-1]["raw_text"] = refs[-1]["raw_text"] + " " + txt
-                refs[-1]["bbox"] = bbox_union([refs[-1]["bbox"], blk["bbox"]])
+        margin = first_x.get(region)
+        for i, ln in enumerate(lines):
+            text = ln["text"].strip()
+            marker = REF_ITEM_RE.match(text)
+            hanging_start = margin is not None and abs(ln["bbox"][0] - margin) <= 2
+            author_start = False
+            if margin is None and REF_AUTHOR_RE.match(text) and not (i == 0 and blk.get("continuation_of")):
+                sample = blk["text"][:550] if i == 0 else text
+                year = REF_YEAR_RE.search(sample)
+                author_start = bool(year and not REF_VENUE_RE.search(sample[:year.start()]))
+            if not refs or marker or (refs[-1]["marker"] is None and (hanging_start or author_start)):
+                if refs:
+                    refs[-1]["raw_text"] = dehyphenate_lines(parts)[0]
+                parts = []
+                refs.append({
+                    "ref_id": f"ref_{len(refs) + 1}",
+                    "marker": (marker[1] or marker[2]) if marker else None,
+                    "page": blk["page"],
+                    "printed_page": blk.get("printed_page"),
+                    "bbox": list(ln["bbox"]),
+                    "anchors": [],
+                })
+            parts.append(text)
+            anchors = refs[-1]["anchors"]
+            if i > 0 and anchors and anchors[-1]["block_id"] == blk.get("block_id"):
+                anchors[-1]["bbox"] = bbox_union([anchors[-1]["bbox"], ln["bbox"]])
             else:
-                ref_idx += 1
-                refs.append(
-                    {
-                        "ref_id": f"ref_{ref_idx}",
-                        "marker": marker,
-                        "raw_text": txt,
-                        "page": blk["page"],
-                        "printed_page": blk.get("printed_page"),
-                        "bbox": blk["bbox"],
-                    }
-                )
-
+                anchors.append({
+                    "page": blk["page"],
+                    "printed_page": blk.get("printed_page"),
+                    "block_id": blk.get("block_id"),
+                    "bbox": list(ln["bbox"]),
+                })
+            refs[-1]["bbox"] = anchors[0]["bbox"]
+    if refs:
+        refs[-1]["raw_text"] = dehyphenate_lines(parts)[0]
     return refs
 
 
@@ -388,7 +447,6 @@ def parse_document_structure(
     blocks = layout_data.get("blocks", [])
     body_font_size = float(diagnostics.get("body_font_size", 10.0))
 
-    # Read PDF bookmarks / TOC when present
     toc_list: List[Dict[str, Any]] = []
     if fitz is not None and not diagnostics.get("encrypted") and not diagnostics.get("corrupt") and Path(pdf_path).exists():
         try:
@@ -405,7 +463,6 @@ def parse_document_structure(
     page_profiles = diagnostics.get("page_profiles") or [{}]
     metadata = _extract_metadata(blocks, body_font_size, toc_list, page_profiles[0].get("height", 800.0))
 
-    # Build hierarchical section tree
     root_sections: List[Dict[str, Any]] = []
     stack: List[Dict[str, Any]] = []
     sec_counter = 0
@@ -455,7 +512,6 @@ def parse_document_structure(
             for s in stack:
                 s["page_end"] = max(s["page_end"], blk["page"])
 
-    # Assign section_id to tables, formulas, and extract figures & references
     blk_by_id = {b["block_id"]: b for b in blocks}
     for tab in tables:
         anchor = next((b for b in blocks if b.get("table_id") == tab["table_id"]), None)
