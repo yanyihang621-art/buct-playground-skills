@@ -1,6 +1,102 @@
 {
-  "_example_notice": "Excerpt from the synthetic interface example. Run worked_example.py to generate the complete evidence, QA and artifacts.",
+  "schema_version": "writing-08-intro-rw-result/v3",
+  "challenge_id": "product-arena-04-4b82ad21",
   "case_id": "demo_drift",
+  "status": "success",
+  "language": "en",
+  "task_mode": "full_intro_rw",
+  "manuscript": "## Research Background\n\nTransitioning optical sensors from controlled laboratories into outdoor monitoring introduces rapid thermal and humidity swings that degrade baseline stability [1].\n\n## Related Work\n\nUnder outdoor calibration stability targets, static thermal lookup models [1] hold indoor error near 2.8% but deteriorate above 75% RH, whereas active Peltier stabilization [2] achieves 1.2% error across 15-40 C at the cost of 6.5 W continuous power draw.\n\n## Research Gaps\n\nTogether, static lookup calibration [1] and powered Peltier loops [2] leave unresolved how to limit calibration drift under outdoor humidity and thermal transitions while staying within sub-watt battery budgets.\n\n## Contributions\n\nWe evaluate an unpowered passive-reference calibration scheme in a 30-run outdoor protocol (Field protocol, Table 1), reducing mean calibration drift from 3.4% to 1.3% below 0.2 W across 15-40 C and 45-85% RH. Because measurements come from one coastal site, arid-climate transfer remains unverified.\n\n## References\n\n[1] Wei Chen, Mei Lin. 2024. Thermal Drift Modeling in Field Micro-Spectrometers. Measurement Science and Technology.\n\n[2] Rohan Patel. 2023. Active Peltier Stabilization for Portable Optical Probes. IEEE Transactions on Instrumentation and Measurement.\n",
+  "metrics": {
+    "task_mode": "full_intro_rw",
+    "literature_count": 2,
+    "citation_coverage_ratio": 1.0,
+    "cited_in_manuscript": [
+      "chen2024",
+      "patel2023"
+    ],
+    "uncited_supplied_keys": [],
+    "verified_quotes_count": 3,
+    "cross_work_comparisons": [
+      [
+        "chen2024",
+        "patel2023"
+      ]
+    ],
+    "gap_count": 1,
+    "contribution_count": 1,
+    "interpretation_limits_expected": 1,
+    "interpretation_limits_in_text": 1
+  },
+  "artifacts": {
+    "intro_and_related_work_md": "intro_and_related_work.md",
+    "comparison_matrix_md": "comparison_matrix.md",
+    "related_work_clusters_json": "related_work_clusters.json",
+    "gap_contribution_map_json": "gap_contribution_map.json",
+    "claim_evidence_json": "claim_evidence.json",
+    "sources_json": "sources.json",
+    "qa_report_json": "qa_report.json"
+  },
+  "sources": [
+    {
+      "doc_id": "doc_1",
+      "path": "case.json",
+      "format": "json",
+      "role": "material",
+      "passage_count": 2
+    },
+    {
+      "doc_id": "doc_2",
+      "path": "field_protocol.md",
+      "format": "md",
+      "role": "material",
+      "passage_count": 2
+    },
+    {
+      "doc_id": "doc_3",
+      "path": "literature.json",
+      "format": "json",
+      "role": "literature",
+      "passage_count": 17
+    }
+  ],
+  "claim_evidence": [],
+  "research_gaps": [
+    {
+      "gap_id": "G1",
+      "gap_statement": "Balancing outdoor humidity/thermal drift stability without 6.5 W active power draw.",
+      "derived_from_cite_keys": [
+        "chen2024",
+        "patel2023"
+      ]
+    }
+  ],
+  "contributions": [
+    {
+      "contrib_id": "C1",
+      "claim": "Passive-reference calibration reduced mean calibration drift from 3.4% to 1.3% below 0.2 W across 30 outdoor runs.",
+      "addresses_gap_id": "G1",
+      "evidence": [
+        {
+          "doc_id": "doc_2",
+          "anchor": "L2",
+          "quote": "reduced mean calibration drift from 3.4% to 1.3% under battery power below 0.2 W."
+        }
+      ]
+    }
+  ],
+  "change_records": [],
+  "uncertainties": [],
+  "verification": {
+    "passed": true,
+    "checks": {
+      "structure_and_completeness": true,
+      "citation_resolution": true,
+      "evidence_grounding": true,
+      "honesty_and_placeholders": true
+    },
+    "must_fix": [],
+    "warnings_count": 0
+  },
   "bounded_question": "How does calibration drift change when a sensor moves outdoors?",
   "study_evidence": [
     "Field protocol, Table 1"

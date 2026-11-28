@@ -179,16 +179,21 @@ class MaterialIndex:
             contradictory = both_formal and bool(other.get("year") and paper.get("year") and str(other["year"]) != str(paper["year"]))
             same_work = (doi == other_doi) if doi and other_doi else (same_title and not contradictory)
             if same_work:
-                if (
-                    other.get("key_origin") in {"generated", "file_stem"}
-                    and paper.get("cite_key")
-                    and not paper.get("key_origin")
-                    and paper["cite_key"] != other["cite_key"]
-                    and all(p["cite_key"] != paper["cite_key"] for p in self.papers)
-                ):
-                    other.setdefault("aliases", []).append(other["cite_key"])
-                    other.update(cite_key=paper["cite_key"], key_origin="supplied")
-                elif paper.get("key_origin") in {"generated", "file_stem"}:
+                other_inferred = other.get("key_origin") in {"generated", "file_stem"}
+                paper_inferred = paper.get("key_origin") in {"generated", "file_stem"}
+                if other_inferred and not paper_inferred:
+                    if (
+                        paper.get("cite_key")
+                        and paper["cite_key"] != other["cite_key"]
+                        and all(p["cite_key"] != paper["cite_key"] for p in self.papers)
+                    ):
+                        other.setdefault("aliases", []).append(other["cite_key"])
+                        other["cite_key"] = paper["cite_key"]
+                    other["key_origin"] = paper.get("key_origin") or "supplied"
+                    for bib_key in ("title", "authors", "year", "venue", "doi"):
+                        if paper.get(bib_key):
+                            other[bib_key] = paper[bib_key]
+                elif paper_inferred and not other_inferred:
                     if paper.get("cite_key") and paper["cite_key"] != other["cite_key"]:
                         other.setdefault("aliases", []).append(paper["cite_key"])
                     paper.pop("cite_key", None)

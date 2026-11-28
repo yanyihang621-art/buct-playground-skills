@@ -145,6 +145,7 @@ def verify_manuscript(
         warnings.append({"check": "citations", "code": "no_supplied_paper_cited"})
 
     # Gate 5: Evidence quotes & numeric/unit/negation/hedge fidelity
+    passages_map = {p["source_id"]: p for p in materials.get("passages", []) if p.get("source_id")}
     derived_vals = {str(d.get("value") or "").strip() for d in (ledger.get("derived_values") or []) if isinstance(d, dict)}
     ev_items: List[tuple[str, str, Dict[str, Any]]] = []
     for idx, card in enumerate(ledger.get("paper_cards") or []):
@@ -163,8 +164,22 @@ def verify_manuscript(
     verified_quotes = 0
     for ctx, claim_txt, ev in ev_items:
         quote = str(ev.get("quote") or "").strip()
-        did = str(ev.get("doc_id") or ev.get("source_id") or "doc_1")
-        anc = str(ev.get("anchor") or "")
+        raw_sid = str(ev.get("source_id") or "").strip()
+        raw_did = str(ev.get("doc_id") or "").strip()
+        raw_anc = str(ev.get("anchor") or "").strip()
+        pinfo = passages_map.get(raw_sid) if raw_sid else None
+        if pinfo is not None:
+            did = raw_did or str(pinfo.get("doc_id") or "doc_1")
+            anc = raw_anc or str(pinfo.get("anchor") or "")
+        else:
+            did = raw_did or raw_sid
+            anc = raw_anc
+        if ":" in anc and not did:
+            did, anc = anc.split(":", 1)
+        elif did and anc.startswith(f"{did}:"):
+            anc = anc[len(did) + 1:]
+        did = did.strip() or "doc_1"
+        anc = anc.strip()
         vr = ev_verify(quote, f"{did}:{anc}" if anc else did, did, index_store)
         if vr["match"] in ("unverified", "too_short"):
             must_fix.append({"check": "grounding", "code": "unverified_quote", "context": ctx, "quote": quote[:120], "message": f"Quote unverified ({vr['match']}) at {ctx}."})
@@ -193,7 +208,6 @@ def verify_manuscript(
             warnings.append({"check": "contributions", "code": "contribution_missing_study_evidence", "contrib_id": c.get("contrib_id")})
 
     # Gate 7: Observational design & interpretation limits (advisory)
-    passages_map = {p["source_id"]: p for p in materials.get("passages", []) if p.get("source_id")}
     limits = [l for l in (ledger.get("interpretation_limits") or []) if isinstance(l, dict)]
     limit_issues, wording_alerts, limit_metrics = audit_interpretation(body, limits, passages_map, contribs, ABSOLUTE)
     for li in limit_issues:

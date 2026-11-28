@@ -15,7 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from kg_engine import _load_draft_parts, compile_kg, execute_all_queries, execute_query, export_all
+from kg_engine import _load_draft_parts, compile_kg, execute_all_queries, execute_query, export_all, is_blocking_uncertainty
 from output_contract import (
     allows_null,
     contract_issues,
@@ -209,9 +209,18 @@ def _assemble_result(
             ans_uncertainties = list(answer_data["uncertainties"])
 
     has_edges = any(e.get("relation_type") != "instance_of" for e in kg.get("edges", []))
-    intent = "unable" if not kg.get("sources_manifest") else ("partial" if (must_fix or not has_edges or kg.get("uncertainties")) else "success")
+    has_blocking = any(is_blocking_uncertainty(u) for u in kg.get("uncertainties", []))
+    kg_unreadable = kg.get("status") in ("unverifiable", "refused")
+    if not kg.get("sources_manifest") or kg_unreadable:
+        intent = "unable"
+    elif must_fix or not has_edges or has_blocking or kg.get("status") == "partial":
+        intent = "partial"
+    else:
+        intent = "success"
     if ans_status in ("unable", "unverifiable", "refused", "partial"):
         intent = ans_status if ans_status in ("unable", "partial") else "unable"
+    elif ans_status == "success" and not must_fix and has_edges and not kg_unreadable:
+        intent = "success"
     status_val = pick_status_value(contract, intent)
 
     result: Dict[str, Any] = {}

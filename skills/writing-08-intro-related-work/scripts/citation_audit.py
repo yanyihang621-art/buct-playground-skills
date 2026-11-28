@@ -41,7 +41,12 @@ def _surname(paper):
         return str(first.get("family") or first.get("surname") or "")
     name = str(first).split(" and ")[0].split(",")[0].strip()
     words = name.split()
-    if len(words) > 1 and all(len(w.strip(".")) <= 2 for w in words[1:]):
+    if len(words) > 1 and all(
+        (w.endswith(".") and len(w.strip(".")) <= 2)
+        or len(w) == 1
+        or (len(w) <= 2 and w.isupper())
+        for w in words[1:]
+    ):
         return words[0]
     return words[-1] if words else ""
 

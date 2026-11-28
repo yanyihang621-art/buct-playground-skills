@@ -22,6 +22,72 @@ from evidence import IndexStore, check_negation_and_hedge, check_units, normaliz
 from pdf_utils import write_text_lf
 
 INSTANCE_CONCEPTS = {"Material", "Method", "Model", "Dataset", "Instrument"}
+BLOCKING_UNCERTAINTY_CODES = {
+    "missing_input_file",
+    "unreadable_source",
+    "encrypted_pdf",
+    "corrupt_pdf",
+    "ocr_unavailable",
+    "empty_document",
+    "scan_without_ocr",
+}
+
+
+def is_blocking_uncertainty(u: Any) -> bool:
+    """Return True only when an uncertainty represents missing/unreadable core input rather than an info/scope note."""
+    if not isinstance(u, dict):
+        return False
+    if u.get("blocking") is True:
+        return True
+    sev = str(u.get("severity") or "").strip().lower()
+    if sev in ("high", "critical", "fatal"):
+        return True
+    code = str(u.get("code") or u.get("type") or "").strip().lower()
+    return code in BLOCKING_UNCERTAINTY_CODES
+
+
+def _extract_provenance(item: Dict[str, Any]) -> Tuple[str, str, str, List[Tuple[str, str, str]]]:
+    """Support flat source_id/paragraph_id/quote, combined anchor 'sid:pid', and nested evidence[] lists."""
+    sid = str(item.get("source_id") or item.get("paper_id") or item.get("doc_id") or "").strip()
+    pid = str(item.get("paragraph_id") or item.get("block_id") or item.get("locator") or "").strip()
+    quote = str(item.get("quote") or item.get("quote_snippet") or item.get("verbatim_quote") or "").strip()
+    raw_anchor = str(item.get("anchor") or "").strip()
+    if raw_anchor:
+        if ":" in raw_anchor and not sid:
+            sid, anc_pid = raw_anchor.split(":", 1)
+            pid = pid or anc_pid.strip()
+        elif sid and raw_anchor.startswith(f"{sid}:"):
+            pid = pid or raw_anchor[len(sid) + 1:].strip()
+        elif not pid:
+            pid = raw_anchor
+
+    extras: List[Tuple[str, str, str]] = []
+    ev_raw = item.get("evidence")
+    ev_list = ev_raw if isinstance(ev_raw, list) else ([ev_raw] if isinstance(ev_raw, dict) else [])
+    for idx, ev in enumerate(ev_list):
+        if isinstance(ev, dict):
+            e_sid = str(ev.get("source_id") or ev.get("paper_id") or ev.get("doc_id") or "").strip()
+            e_pid = str(ev.get("paragraph_id") or ev.get("block_id") or ev.get("locator") or "").strip()
+            e_anc = str(ev.get("anchor") or "").strip()
+            if e_anc:
+                if ":" in e_anc and not e_sid:
+                    e_sid, e_anc_pid = e_anc.split(":", 1)
+                    e_pid = e_pid or e_anc_pid.strip()
+                elif e_sid and e_anc.startswith(f"{e_sid}:"):
+                    e_pid = e_pid or e_anc[len(e_sid) + 1:].strip()
+                elif not e_pid:
+                    e_pid = e_anc
+            e_sid = e_sid or sid
+            e_q = str(ev.get("quote") or ev.get("quote_snippet") or ev.get("verbatim_quote") or "").strip() or quote
+            if idx == 0 and (not sid or not pid or not quote):
+                sid = sid or e_sid
+                pid = pid or e_pid
+                quote = quote or e_q
+            elif e_sid and e_q:
+                extras.append((e_sid, e_pid, e_q))
+        elif isinstance(ev, str) and ev.strip() and not quote:
+            quote = ev.strip()
+    return sid.strip(), pid.strip(), quote.strip(), extras
 
 
 def load_ontology() -> Dict[str, Any]:
@@ -268,11 +334,9 @@ def compile_kg(
     for idx, ent in enumerate(draft.get("entities", []), 1):
         if not isinstance(ent, dict):
             continue
-        label = str(ent.get("label") or "").strip()
-        etype = str(ent.get("entity_type") or "Concept").strip()
-        sid = str(ent.get("source_id") or "").strip()
-        pid = str(ent.get("paragraph_id") or "").strip()
-        quote = str(ent.get("quote") or ent.get("quote_snippet") or "").strip()
+        label = str(ent.get("label") or ent.get("name") or "").strip()
+        etype = str(ent.get("entity_type") or ent.get("type") or "Concept").strip()
+        sid, pid, quote, extra_ev = _extract_provenance(ent)
         if not label or not sid:
             must_fix.append({"code": "invalid_entity", "index": idx, "message": "Entity missing label or source_id."})
             continue
@@ -282,21 +346,36 @@ def compile_kg(
         if err or anc is None:
             must_fix.append({"code": "unverified_quote", "context": f"entity:{label}", "message": err or "unverified"})
             continue
+        extra_anchors: List[Dict[str, Any]] = []
+        for e_sid, e_pid, e_q in extra_ev:
+            e_anc, e_err = _verify_quote_anchor(e_q, e_sid, e_pid, store, paper_loc_types)
+            if e_err or e_anc is None:
+                must_fix.append({"code": "unverified_quote", "context": f"entity:{label}", "message": e_err or "unverified"})
+            else:
+                e_anc.pop("block_text", None)
+                extra_anchors.append(e_anc)
         block_text = anc.pop("block_text", "")
         if normalize_text(label) not in normalize_text(anc["quote_snippet"]) and normalize_text(label) not in normalize_text(block_text):
             warnings.append({"code": "entity_label_not_literal_in_quote", "label": label, "source_id": sid, "paragraph_id": anc["paragraph_id"]})
         aliases_in = [str(a) for a in (ent.get("aliases") or []) if isinstance(a, str) and a.strip()]
         entity_aliases_map[(sid, _concept_key(label, sid))] = aliases_in
-        verified_entities.append({"label": label, "etype": etype, "sid": sid, "anchor": anc, "aliases": aliases_in})
+        verified_entities.append({
+            "label": label,
+            "etype": etype,
+            "sid": sid,
+            "anchor": anc,
+            "extra_anchors": extra_anchors,
+            "aliases": aliases_in,
+        })
 
     # Pass 2: verify relations
     verified_relations: List[Dict[str, Any]] = []
     for idx, rel in enumerate(draft.get("relations", []), 1):
         if not isinstance(rel, dict):
             continue
-        subj = str(rel.get("subject") or "").strip()
-        obj = str(rel.get("object") or "").strip()
-        rtype = str(rel.get("relation") or rel.get("relation_type") or "").strip()
+        subj = str(rel.get("subject") or rel.get("source") or "").strip()
+        obj = str(rel.get("object") or rel.get("target") or "").strip()
+        rtype = str(rel.get("relation") or rel.get("relation_type") or rel.get("predicate") or "").strip()
         stype = str(rel.get("subject_type") or "Concept").strip()
         otype = str(rel.get("object_type") or "Concept").strip()
         polarity = str(rel.get("polarity") or "affirmative").strip().lower()
@@ -307,9 +386,7 @@ def compile_kg(
             warnings.append({"code": "nonstandard_evidence_strength", "index": idx, "value": strength})
         if rtype not in rel_meta:
             warnings.append({"code": "custom_relation_used", "index": idx, "relation": rtype})
-        sid = str(rel.get("source_id") or "").strip()
-        pid = str(rel.get("paragraph_id") or "").strip()
-        quote = str(rel.get("quote") or rel.get("quote_snippet") or "").strip()
+        sid, pid, quote, extra_ev = _extract_provenance(rel)
         conds = [str(c).strip() for c in (rel.get("conditions") or []) if str(c).strip()]
         if not subj or not obj or not rtype or not sid:
             must_fix.append({"code": "invalid_relation", "index": idx, "message": "Relation missing subject/object/relation/source_id."})
@@ -318,6 +395,10 @@ def compile_kg(
         if err or anc is None:
             must_fix.append({"code": "unverified_quote", "context": f"relation:{subj}->{rtype}->{obj}", "message": err or "unverified"})
             continue
+        for e_sid, e_pid, e_q in extra_ev:
+            _, e_err = _verify_quote_anchor(e_q, e_sid, e_pid, store, paper_loc_types)
+            if e_err:
+                must_fix.append({"code": "unverified_quote", "context": f"relation:{subj}->{rtype}->{obj}", "message": e_err})
         block_text = anc.pop("block_text", "")
         ev_texts = [anc["quote_snippet"], block_text]
         um = check_units(f"{subj} {obj} {' '.join(conds)}", ev_texts)
@@ -424,9 +505,15 @@ def compile_kg(
 
     # Create entity nodes
     for ent in verified_entities:
-        _resolve_node_and_instance(
+        node = _resolve_node_and_instance(
             ent["label"], ent["etype"], ent["sid"], ent["anchor"], [], "direct_author_evidence", ent["aliases"]
         )
+        for ea in ent.get("extra_anchors") or []:
+            if not any(
+                a.get("source_id") == ea["source_id"] and a.get("paragraph_id") == ea["paragraph_id"]
+                for a in node["evidence_anchors"]
+            ):
+                node["evidence_anchors"].append(ea)
 
     # Create relation edges
     def _edge_id_tuple(e: Dict[str, Any]) -> tuple:
@@ -555,11 +642,13 @@ def compile_kg(
         if p["source_id"] not in substantive_sources and p.get("paragraphs"):
             warnings.append({"code": "paper_without_edges", "source_id": p["source_id"]})
 
-    statuses = {p.get("status", "partial") for p in papers}
-    if edges:
-        status = "partial" if (uncertainties or must_fix or statuses - {"success"}) else "success"
-    elif not papers or statuses <= {"unverifiable", "refused"}:
+    blocking_unc = [u for u in uncertainties if is_blocking_uncertainty(u)]
+    unreadable_papers = [p for p in papers if p.get("status") in ("unverifiable", "refused", "failed")]
+    has_substantive = any(e.get("relation_type") != "instance_of" for e in edges)
+    if not papers or (unreadable_papers and len(unreadable_papers) == len(papers)):
         status = "unverifiable"
+    elif has_substantive:
+        status = "partial" if (blocking_unc or must_fix or unreadable_papers) else "success"
     else:
         status = "partial"
 

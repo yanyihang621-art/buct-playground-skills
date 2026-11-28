@@ -15,6 +15,7 @@ SKILL_ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from citation_audit import _surname
 from finalize import run_finalize
 from output_contract import contract_issues
 from pdf_utils import write_json_atomic, write_text_lf
@@ -25,8 +26,8 @@ def _make_twocol_pdf(path: Path) -> None:
     import fitz  # type: ignore
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
-    page.insert_text((72, 60), "Spectral Drift Compensation in Portable Sensors", fontsize=14, fontname="hebo")
-    page.insert_text((72, 80), "Alice Smith, Bob Lee (2024)", fontsize=10, fontname="helv")
+    page.insert_text((72, 60), "SPECTRAL DRIFT COMPENSATION IN PORTABLE SENSORS", fontsize=14, fontname="hebo")
+    page.insert_text((72, 80), "Alice Smith, Bob Lee (2022)", fontsize=10, fontname="helv")
     # Left column
     page.insert_text((50, 120), "1. Introduction", fontsize=11, fontname="hebo")
     page.insert_text((50, 140), "Portable field spectrometers suffer from thermal", fontsize=9.5, fontname="helv")
@@ -60,7 +61,7 @@ def run_all_tests(out_root: Path) -> Dict[str, Any]:
     t1_in, t1_w, t1_o = out_root / "t1_in", out_root / "t1_work", out_root / "t1_out"
     (t1_in / "papers").mkdir(parents=True, exist_ok=True)
     (t1_in / "study").mkdir(parents=True, exist_ok=True)
-    _make_twocol_pdf(t1_in / "papers" / "smith2024.pdf")
+    _make_twocol_pdf(t1_in / "papers" / "a_smith.pdf")
     write_text_lf(t1_in / "papers" / "refs.bib", """@article{smith2024,
   author = {Alice Smith and Bob Lee},
   title = {Spectral Drift Compensation in Portable Sensors},
@@ -90,8 +91,12 @@ def run_all_tests(out_root: Path) -> Dict[str, Any]:
         "instructions": "Write a concise academic Introduction and Related Work comparing routes, deriving a bounded gap, and aligning contributions.",
     })
     run_prepare(t1_in, case1, t1_w, t1_o)
-    # Verify 2-column PDF was NOT scrambled
-    reader_pdf = (t1_w / "reader" / "doc_3.md").read_text(encoding="utf-8") if (t1_w / "reader" / "doc_3.md").is_file() else ""
+    # Verify BibTeX metadata overrides noisy earlier PDF year/title AND 2-column PDF was NOT scrambled
+    idx1 = json.loads((t1_w / "materials_index.json").read_text(encoding="utf-8"))
+    smith_p = next(p for p in idx1["papers"] if p["cite_key"] == "smith2024")
+    assert smith_p["year"] == 2024, f"Expected BibTeX year 2024, got {smith_p['year']}"
+    assert smith_p["title"] == "Spectral Drift Compensation in Portable Sensors", f"Unexpected title: {smith_p['title']}"
+    study_passage = next(p for p in idx1["passages"] if "reduced RMSE from 3.2%" in p["text"])
     all_readers = "\n".join(p.read_text(encoding="utf-8") for p in (t1_w / "reader").glob("*.md"))
     assert "Portable field spectrometers suffer from thermal" in all_readers
     assert "static calibration did not correct" in all_readers
@@ -121,7 +126,10 @@ We introduce a passive-reference module operating across 15-45 C without benchto
             {"cite_key": "jones2023", "route": "Active Dual-Beam", "limitation": "Required benchtop power"},
         ],
         "research_gaps": [{"gap_id": "G1", "gap_statement": "Unresolved low-drift operation up to 45 C without benchtop power.", "derived_from_cite_keys": ["smith2024", "jones2023"]}],
-        "contributions": [{"contrib_id": "C1", "claim": "Passive-reference module reduced RMSE from 3.2% to 1.1% across 40 field runs.", "addresses_gap_id": "G1", "evidence": [{"doc_id": "doc_4", "anchor": "para_2", "quote": "reduced RMSE from 3.2% to 1.1% across 40 field runs."}]}],
+        "contributions": [{"contrib_id": "C1", "claim": "Passive-reference module reduced RMSE from 3.2% to 1.1% across 40 field runs.", "addresses_gap_id": "G1", "evidence": [
+            {"anchor": f"{study_passage['doc_id']}:{study_passage['anchor']}", "quote": "reduced RMSE from 3.2% to 1.1% across 40 field runs."},
+            {"source_id": study_passage["source_id"], "quote": "reduced RMSE from 3.2% to 1.1% across 40 field runs."},
+        ]}],
     })
     rc1 = run_finalize(case1, t1_w, t1_o)
     res1 = json.loads((t1_o / "result.json").read_text(encoding="utf-8"))
@@ -265,6 +273,31 @@ We introduce a passive-reference module operating across 15-45 C without benchto
 
     assert all(faults.values()), f"Fault checks failed: {faults}"
     results["t5_fault_injection"] = {"passed": True, "faults": faults}
+
+    assert _surname({"authors": ["Jimmy Ba"]}) == "Ba"
+    assert _surname({"authors": ["Wei Li"]}) == "Li"
+    assert _surname({"authors": ["Smith AB"]}) == "Smith"
+    assert _surname({"authors": ["Smith J."]}) == "Smith"
+    results["t5b_surname_parsing"] = {"passed": True}
+
+    # 6. Run worked example in skill/examples and verify zero contract/grounding errors
+    ex_dir = SKILL_ROOT / "examples"
+    ex_in, ex_w, ex_o = out_root / "ex_in", out_root / "ex_w", out_root / "ex_o"
+    ex_in.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ex_dir / "example_case.json", ex_in / "case.json")
+    for fname in ("literature.json", "field_protocol.md"):
+        shutil.copyfile(ex_dir / fname, ex_in / fname)
+    run_prepare(ex_in, ex_in / "case.json", ex_w, ex_o)
+    shutil.copyfile(ex_dir / "example_draft.md", ex_w / "draft.md")
+    shutil.copyfile(ex_dir / "example_ledger.json", ex_w / "evidence_ledger.json")
+    shutil.copyfile(ex_dir / "example_answer.json", ex_w / "answer.json")
+    rc_ex = run_finalize(ex_in / "case.json", ex_w, ex_o)
+    ex_res = json.loads((ex_o / "result.json").read_text(encoding="utf-8"))
+    ex_issues = contract_issues(json.loads((ex_dir / "example_case.json").read_text(encoding="utf-8"))["output_contract"], ex_res)
+    assert rc_ex == 0 and not ex_issues and ex_res["verification"]["warnings_count"] == 0, (
+        f"Worked example failed: rc={rc_ex}, issues={ex_issues}, ver={ex_res.get('verification')}"
+    )
+    results["t6_worked_example"] = {"passed": True, "keys": sorted(ex_res.keys())}
 
     summary = {"all_passed": True, "tests": results}
     write_json_atomic(out_root / "self_test_report.json", summary)

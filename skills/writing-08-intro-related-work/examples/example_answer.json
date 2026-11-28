@@ -1,0 +1,9 @@
+{
+  "fields": {
+    "bounded_question": "How does calibration drift change when a sensor moves outdoors?",
+    "study_evidence": [
+      "Field protocol, Table 1"
+    ]
+  },
+  "status": "success"
+}

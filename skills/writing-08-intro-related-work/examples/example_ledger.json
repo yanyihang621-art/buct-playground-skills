@@ -1,0 +1,65 @@
+{
+  "task_mode": "full_intro_rw",
+  "paper_cards": [
+    {
+      "cite_key": "chen2024",
+      "route": "Static thermal lookup calibration",
+      "limitation": "Fails to bound drift during rapid outdoor humidity swings above 75% RH.",
+      "evidence": [
+        {
+          "doc_id": "doc_3",
+          "anchor": "literature_json",
+          "quote": "Fails to bound drift during rapid outdoor humidity swings above 75% RH."
+        }
+      ]
+    },
+    {
+      "cite_key": "patel2023",
+      "route": "Active closed-loop Peltier stabilization",
+      "limitation": "Draws 6.5 W continuous power, restricting battery-powered field endurance.",
+      "evidence": [
+        {
+          "doc_id": "doc_3",
+          "anchor": "literature_json",
+          "quote": "Draws 6.5 W continuous power, restricting battery-powered field endurance."
+        }
+      ]
+    }
+  ],
+  "research_gaps": [
+    {
+      "gap_id": "G1",
+      "gap_statement": "Balancing outdoor humidity/thermal drift stability without 6.5 W active power draw.",
+      "derived_from_cite_keys": ["chen2024", "patel2023"]
+    }
+  ],
+  "contributions": [
+    {
+      "contrib_id": "C1",
+      "claim": "Passive-reference calibration reduced mean calibration drift from 3.4% to 1.3% below 0.2 W across 30 outdoor runs.",
+      "addresses_gap_id": "G1",
+      "evidence": [
+        {
+          "doc_id": "doc_2",
+          "anchor": "L2",
+          "quote": "reduced mean calibration drift from 3.4% to 1.3% under battery power below 0.2 W."
+        }
+      ]
+    }
+  ],
+  "interpretation_limits": [
+    {
+      "limit_id": "L1",
+      "kind": "generalization_scope",
+      "manuscript_span": "Because measurements come from one coastal site, arid-climate transfer remains unverified.",
+      "reason": "Single coastal site limits outdoor humidity/temperature generalization.",
+      "evidence": [
+        {
+          "doc_id": "doc_2",
+          "anchor": "L3",
+          "quote": "Because trials were conducted at a single coastal test site, multi-season drift across arid climates remains unverified."
+        }
+      ]
+    }
+  ]
+}

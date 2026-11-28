@@ -339,6 +339,40 @@ def run_all_tests(out_root: Path) -> Dict[str, Any]:
     assert rc_ex == 0
     results["t7_worked_example"] = {"passed": True}
 
+    # 8. Flexible schema aliases (type, nested evidence[] + anchor) & non-blocking uncertainty preserves status="success"
+    t8_in, t8_w, t8_o = out_root / "t8_in", out_root / "t8_w", out_root / "t8_out"
+    case8 = _make_revised_corpus(t8_in, reverse_manifest=False)
+    run_prepare(t8_in, case8, t8_w, t8_o)
+    write_json_atomic(t8_w / "kg_draft.json", {
+        "entities": [
+            {
+                "label": "graphene filter",
+                "type": "Material",
+                "evidence": [{"anchor": "p_vision:v2", "quote": "At 450 nm illumination, the graphene filter decreased spectral noise by 18%."}],
+            }
+        ],
+        "relations": [
+            {
+                "subject": "graphene filter", "subject_type": "Material", "relation": "decreases",
+                "object": "spectral noise", "object_type": "Metric",
+                "evidence": [{"anchor": "p_vision:v2", "quote": "At 450 nm illumination, the graphene filter decreased spectral noise by 18%."}],
+            },
+            {
+                "subject": "graphene filter", "subject_type": "Material", "relation": "increases",
+                "object": "AP amplitude", "object_type": "Metric",
+                "evidence": [{"anchor": "p_neuro:n2", "quote": "At 620 nm illumination, the graphene filter increased AP amplitude by 12%."}],
+            },
+        ],
+        "uncertainties": [
+            {"code": "scope_note", "message": "Figure plots not OCR'd"}
+        ],
+    })
+    rc8 = run_finalize(case8, t8_w, t8_o)
+    res8 = json.loads((t8_o / "result.json").read_text(encoding="utf-8"))
+    assert rc8 == 0 and res8["status"] == "success"
+    assert any(isinstance(u, dict) and u.get("code") == "scope_note" for u in res8.get("uncertainties", []))
+    results["t8_flexible_schema_and_status"] = {"passed": True, "status": res8["status"]}
+
     summary = {"all_passed": True, "tests": results}
     write_json_atomic(out_root / "self_test_report.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

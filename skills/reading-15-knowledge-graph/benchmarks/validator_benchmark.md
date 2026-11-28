@@ -2,7 +2,7 @@
 
 > **Disclaimer**: All metrics below are from local synthetic test suites and local published-paper dogfooding. They are **not** official Bohrium platform scores.
 
-## 1. Self-Test Suite (`scripts/self_test.py`, 7/7 Passed)
+## 1. Self-Test Suite (`scripts/self_test.py`, 8/8 Passed)
 
 | Suite | Scope Verified | Outcome |
 |---|---|---|
@@ -13,9 +13,10 @@
 | `t5_closed_contract` | Closed `output_contract` (`additionalProperties: false`, `status.enum`, `answer.json` override) with 0 contract issues | **Pass** |
 | `t6_fault_injection` | Fabricated quote (`unverified_quote` blocker), unit mismatch `450 nm` vs `450 um` (`unit_mismatch`), dropped hedge (`hedge_dropped`), encrypted PDF (`status="unable"`) | **4/4 Caught** |
 | `t7_worked_example` | End-to-end execution of `examples/example_case.json` + `examples/example_kg_draft.json` | **Pass** |
+| `t8_flexible_schema_and_status` | Alias fields (`type` vs `entity_type`, nested `evidence[].anchor`) & non-blocking `scope_note` uncertainty preserve `status="success"` | **Pass** |
 
 ## 2. Real Published-Paper Dogfooding (`N19-1423.pdf` + `ba2016-layer-normalization.pdf`)
 
-- **Corpus**: 16-page two-column BERT (`N19-1423.pdf`, 284 blocks + 8 tables) and 14-page Layer Normalization (`ba2016-layer-normalization.pdf`, 397 blocks + 3 tables).
-- **Execution**: `finalize.py` completed in **0.29s** (`must_fix: []`, `pass: true`).
+- **Corpus**: 16-page two-column BERT (`N19-1423.pdf`, 284 blocks + 8 tables, `status="success"`) and 14-page Layer Normalization (`ba2016-layer-normalization.pdf`, 397 blocks + 3 tables, `status="partial"` due to `garbled_font_cid` + `ocr_unavailable` on figure pages 5, 13, 14).
+- **Execution**: `finalize.py` completed with `must_fix: []`, `pass: true`, and honest `status: "partial"` preserving pages `[5, 13, 14]` provenance notes.
 - **Output Metrics**: 22 verified nodes, 12 substantive directed edges (all verbatim-grounded in PDF blocks and `tab_3`), 12 executed replayable queries (covering `paper_1`, `paper_2`, `cross_paper_comparison`, `path_search`, `conflict_and_boundary_audit`), valid GraphML XML, DOT, Markdown report, and `graph_preview.png`.
