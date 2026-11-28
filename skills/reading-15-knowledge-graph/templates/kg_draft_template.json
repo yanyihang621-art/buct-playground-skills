@@ -1,0 +1,59 @@
+{
+  "entities": [
+    {
+      "label": "Example Entity",
+      "entity_type": "Method",
+      "aliases": ["EE"],
+      "source_id": "paper_1",
+      "paragraph_id": "p1_b03",
+      "quote": "verbatim substring from reader/paper_1.md or find.py"
+    }
+  ],
+  "relations": [
+    {
+      "subject": "Example Entity",
+      "subject_type": "Method",
+      "relation": "outperforms",
+      "object": "Baseline Method",
+      "object_type": "Method",
+      "polarity": "affirmative",
+      "conditions": ["exact or verified condition from paragraph"],
+      "evidence_strength": "direct_author_evidence",
+      "source_id": "paper_1",
+      "paragraph_id": "p1_b05",
+      "quote": "verbatim sentence or clause supporting subject, relation, and object"
+    }
+  ],
+  "merge_decisions": [
+    {
+      "canonical_label": "Example Entity",
+      "entity_type": "Method",
+      "merged_aliases": ["Example Entity", "EE"],
+      "source_ids": ["paper_1"],
+      "reason": "Explicit abbreviation declaration in paper_1",
+      "allow_instance_merge": false
+    }
+  ],
+  "do_not_merge_notes": [
+    {
+      "term": "AP",
+      "source_ids": ["paper_1", "paper_2"],
+      "reason": "paper_1 defines AP as average precision; paper_2 defines AP as activation potential."
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "q_case_1",
+      "query_type": "relation_evidence_probe",
+      "entity_a": "Example Entity",
+      "entity_b": "Baseline Method",
+      "direction": "forward",
+      "relation": "outperforms"
+    },
+    {
+      "query_id": "q_case_2",
+      "query_type": "cross_paper_comparison"
+    }
+  ],
+  "uncertainties": []
+}

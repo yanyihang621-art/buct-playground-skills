@@ -1,0 +1,56 @@
+{
+  "task_mode": "full_intro_rw",
+  "paper_cards": [
+    {
+      "cite_key": "smith2024",
+      "title": "Example Prior Study",
+      "authors": ["Alice Smith"],
+      "year": 2024,
+      "venue": "Journal of Examples",
+      "doi": "",
+      "route": "Route A: Direct Calibration",
+      "problem_setting": "Controlled bench setup",
+      "evaluation_system": "RMSE over 100 trials",
+      "key_finding": "Reduced error by 12% under static load",
+      "limitation": "Did not evaluate under thermal drift",
+      "evidence": [
+        {"doc_id": "doc_1", "anchor": "p2_b04", "quote": "verbatim substring from reader"}
+      ]
+    }
+  ],
+  "claim_links": [
+    {
+      "kind": "comparison",
+      "claim": "Sentence or clause in draft.md",
+      "cite_keys": ["smith2024"],
+      "evidence": [
+        {"doc_id": "doc_1", "anchor": "p2_b04", "quote": "verbatim substring from reader"}
+      ]
+    }
+  ],
+  "research_gaps": [
+    {
+      "gap_id": "G1",
+      "gap_statement": "Existing methods did not evaluate under thermal drift.",
+      "derived_from_cite_keys": ["smith2024"],
+      "evidence": [
+        {"doc_id": "doc_1", "anchor": "p2_b04", "quote": "verbatim substring from reader"}
+      ]
+    }
+  ],
+  "contributions": [
+    {
+      "contrib_id": "C1",
+      "claim": "We introduce a drift-compensated protocol evaluated across 5 thermal regimes.",
+      "addresses_gap_id": "G1",
+      "evidence": [
+        {"doc_id": "study_1", "anchor": "para_2", "quote": "verbatim substring from author study"}
+      ]
+    }
+  ],
+  "interpretation_limits": [],
+  "derived_values": [],
+  "change_records": [],
+  "uncertainties": [],
+  "artifact_names": {}
+}

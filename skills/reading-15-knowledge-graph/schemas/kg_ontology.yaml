@@ -1,4 +1,4 @@
-schema_version: "1.0.0"
+schema_version: "2.0.0"
 ontology_name: "Scientific Literature Knowledge Graph Ontology"
 
 entity_types:
@@ -17,6 +17,14 @@ entity_types:
   - Metric
   - Condition
   - Finding
+  - Concept
+
+instance_concept_types:
+  - Material
+  - Method
+  - Model
+  - Dataset
+  - Instrument
 
 relation_types:
   - id: "uses"
@@ -34,6 +42,12 @@ relation_types:
   - id: "outperforms"
     polarity: "positive"
     contradicts: ["contradicts"]
+  - id: "comparable_to"
+    polarity: "neutral"
+    contradicts: ["differs_from"]
+  - id: "differs_from"
+    polarity: "neutral"
+    contradicts: ["comparable_to"]
   - id: "increases"
     polarity: "positive"
     contradicts: ["decreases", "inhibits"]
@@ -42,16 +56,49 @@ relation_types:
     contradicts: ["increases"]
   - id: "inhibits"
     polarity: "negative"
-    contradicts: ["increases", "catalyzes"]
+    contradicts: ["increases", "catalyzes", "activates"]
+  - id: "activates"
+    polarity: "positive"
+    contradicts: ["inhibits"]
   - id: "catalyzes"
     polarity: "positive"
     contradicts: ["inhibits"]
+  - id: "causes"
+    polarity: "positive"
+    contradicts: ["prevents", "inhibits"]
+  - id: "prevents"
+    polarity: "negative"
+    contradicts: ["causes"]
+  - id: "associated_with"
+    polarity: "neutral"
+    contradicts: []
+  - id: "correlated_with"
+    polarity: "neutral"
+    contradicts: []
+  - id: "regulates"
+    polarity: "neutral"
+    contradicts: []
+  - id: "produces"
+    polarity: "positive"
+    contradicts: []
+  - id: "requires"
+    polarity: "neutral"
+    contradicts: []
+  - id: "part_of"
+    polarity: "neutral"
+    contradicts: []
+  - id: "is_a"
+    polarity: "neutral"
+    contradicts: []
+  - id: "defined_as"
+    polarity: "neutral"
+    contradicts: []
   - id: "supports"
     polarity: "positive"
     contradicts: ["contradicts"]
   - id: "contradicts"
     polarity: "negative"
-    contradicts: ["supports"]
+    contradicts: ["supports", "achieves", "outperforms"]
   - id: "restricted_to"
     polarity: "neutral"
     contradicts: []
@@ -67,12 +114,14 @@ evidence_strength_tiers:
   - direct_tabular_evidence
   - prior_work_citation
   - indirect_speculation
+  - negative_evidence
 
 alignment_policy:
   merge_allowed:
     - "Resolve each acronym using definitions in its own source. Align across papers only when the expansions and scientific objects agree."
-    - "Case and hyphenation normalization of abstract concepts or tasks"
+    - "Case, Greek symbol, and hyphenation normalization of abstract concepts or tasks."
   do_not_merge_required:
     - "Preserve distinct source-bound meanings when two papers define the same written abbreviation differently."
-    - "A common material, method, model or dataset term does not establish a common sample, fitted model, physical run or data split. Keep each paper's instances linked to the generic concept via instance_of."
+    - "A common material, method, model, dataset, or instrument term does not establish a common physical sample, fitted model, experimental run, or data split. Keep each paper's instances linked to the generic concept via instance_of unless allow_instance_merge is explicitly justified."
     - "Never treat multiple file formats (e.g., JSON + Markdown) of the same paper as independent cross-paper evidence."
+    - "Never apply Paper 1's root DOI, title, or authors to Paper 2."

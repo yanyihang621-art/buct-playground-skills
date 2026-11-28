@@ -1,4 +1,4 @@
-"""Resolve manuscript citations against supplied metadata; never infer numeric order."""
+"""Resolve manuscript citations against supplied metadata; supports [@key], \\cite{key}, numeric [1], author-year, and CJK."""
 
 from __future__ import annotations
 
@@ -14,10 +14,13 @@ REFERENCES = re.compile(
     r"(?im)^\s*(?:#{1,6}\s+|\\(?:sub)*section\*?\{|\*\*)?(?:\d+[.)]?\s+)?"
     r"(?:references|bibliography|works cited|参考文献)\s*(?:\}|\*\*)?\s*$"
 )
-KEY_CITATION = re.compile(r"(?<![\w@])@([\w][\w.:/+#-]*)")
+# Only treat @key inside brackets or standalone prose citation (not inside emails like a@b.com or code fences)
+BRACKET_KEY_CITATION = re.compile(r"\[(?=[^\]\n]*@[\w][\w.:/+#-]*)([^\[\]\n]+)\](?!\()")
+INLINE_KEY_TOKEN = re.compile(r"(?<![\w.@])@([\w][\w.:/+#-]*)")
 TEX_CITATION = re.compile(
     r"\\(?:cite(?:alp|alt|author|year|num|p|t)?|autocite|parencite|textcite|supercite)"
-    r"\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]+)\}", re.I
+    r"\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]+)\}",
+    re.I,
 )
 NUMBER_CITATION = re.compile(r"\[(\s*\d+(?:\s*[-–—,;，、]\s*\d+)*\s*)\](?!\()")
 LOCATED_NUMBER = re.compile(r"^\s*(\d+)\s*,\s*(?:(?:pp?|ch|sec|fig|tab)\.?\s*|第)\d+(?:\s*[-–—]\s*\d+)?(?:页|章|节)?\s*$", re.I)
@@ -28,6 +31,7 @@ COMPARISON = re.compile(
     r"相比|相较|相同|共同|均在|更适合|不同于|相反|相对而言|分别|前者|后者|二者|两者|而",
     re.I,
 )
+CODE_BLOCK_RE = re.compile(r"(?ms)^`{3,}.*?^`{3,}[ \t]*$|`[^`\n]+`")
 
 
 def _surname(paper):
@@ -56,7 +60,6 @@ class Citations:
             if name and year:
                 self.author_year.setdefault((normalized(name), year), []).append(key)
         for (name, year), matches in self.author_year.items():
-            # English surnames need a word boundary, CJK names can touch surrounding prose.
             boundary = r"(?<![a-z])" if name.isascii() else ""
             surname = boundary + re.escape(name)
             coauthors = r"(?:\s+(?:et\s+al\.?|and\s+[\w’'-]+|&\s*[\w’'-]+)|\s*等)?"
@@ -67,19 +70,33 @@ class Citations:
             keys = set()
             for key, p in self.papers.items():
                 title, doi = normalized(p.get("title")), normalized(p.get("doi"))
-                if ((title and title in line) or (doi and doi in line)
-                        or re.search(r"@" + re.escape(key.casefold()) + r"(?![\w-])", line)):
+                surname = normalized(_surname(p))
+                yr = str(p.get("year") or "")
+                if (
+                    (title and title in line)
+                    or (doi and doi in line)
+                    or (surname and yr and surname in line and yr in line)
+                    or re.search(r"@" + re.escape(key.casefold()) + r"(?![\w-])", line)
+                ):
                     keys.add(key)
             if len(keys) == 1:
                 self.numbers[num] = keys.pop()
 
     def resolve(self, passage):
-        keys = {m.group(1).rstrip(".,:") for m in KEY_CITATION.finditer(passage)}
-        for match in TEX_CITATION.finditer(passage):
+        clean = CODE_BLOCK_RE.sub(" ", passage or "")
+        # Strip email addresses so user@domain.edu isn't treated as @domain.edu citation
+        clean_no_email = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", " ", clean)
+        keys = set()
+        for bm in BRACKET_KEY_CITATION.finditer(clean_no_email):
+            keys.update(m.group(1).rstrip(".,:") for m in INLINE_KEY_TOKEN.finditer(bm.group(1)))
+        for m in INLINE_KEY_TOKEN.finditer(clean_no_email):
+            keys.add(m.group(1).rstrip(".,:"))
+        for match in TEX_CITATION.finditer(clean_no_email):
             keys.update(k.strip() for k in match.group(1).split(",") if k.strip())
+
         ambiguous = set()
         numeric = set()
-        for match in NUMBER_CITATION.finditer(passage):
+        for match in NUMBER_CITATION.finditer(clean_no_email):
             for spec in re.split(r"[,;，、]", match.group(1)):
                 ends = re.split(r"[-–—]", spec.strip())
                 first, last = int(ends[0]), int(ends[-1])
@@ -87,8 +104,7 @@ class Citations:
                     ambiguous.add(match.group(0))
                     continue
                 numeric.update(str(i) for i in range(first, last + 1))
-        # In [2, p. 15; 5, pp. 8–10], only 2 and 5 identify references.
-        for bracket in re.finditer(r"\[([^\]\[\n]+)\](?!\()", passage):
+        for bracket in re.finditer(r"\[([^\]\[\n]+)\](?!\()", clean_no_email):
             entries = re.split(r"[;；]", bracket.group(1))
             parts = [LOCATED_NUMBER.fullmatch(e) or re.fullmatch(r"\s*(\d+)\s*", e) for e in entries]
             if all(parts):
@@ -96,13 +112,15 @@ class Citations:
         missing_numbers = numeric.difference(self.numbers)
         keys.update(self.numbers[n] for n in numeric if n in self.numbers)
         for pattern, candidates in self.authors:
-            for match in pattern.finditer(passage):
+            for match in pattern.finditer(clean_no_email):
                 if len(candidates) == 1:
                     keys.add(candidates[0])
                 else:
                     ambiguous.add(match.group(0))
-        for match in re.finditer(r"\b([A-Z][^\W\d_]*(?:[-’'][^\W\d_]+)*)\s+et\s+al\.?"
-                                 r"\s*[,（(]?\s*((?:19|20)\d{2}[a-z]?)\b", passage):
+        for match in re.finditer(
+            r"\b([A-Z][^\W\d_]*(?:[-’'][^\W\d_]+)*)\s+et\s+al\.?\s*[,（(]?\s*((?:19|20)\d{2}[a-z]?)\b",
+            clean_no_email,
+        ):
             if (normalized(match[1]), match[2]) not in self.author_year:
                 ambiguous.add(match.group(0))
         return keys, missing_numbers, ambiguous

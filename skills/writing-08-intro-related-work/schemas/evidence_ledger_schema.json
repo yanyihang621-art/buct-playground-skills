@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Writing08EvidenceLedger",
+  "description": "Compact optional evidence ledger written alongside work/draft.md for citation metadata enrichment, route comparison, gap-to-contribution alignment, and revision tracking.",
+  "type": "object",
+  "properties": {
+    "task_mode": {
+      "type": "string",
+      "enum": ["full_intro_rw", "revision", "related_work_only", "intro_only", "citation_audit"]
+    },
+    "paper_cards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cite_key"],
+        "properties": {
+          "cite_key": { "type": "string" },
+          "title": { "type": "string" },
+          "authors": { "type": "array", "items": { "type": "string" } },
+          "year": { "type": ["integer", "string", "null"] },
+          "venue": { "type": "string" },
+          "doi": { "type": ["string", "null"] },
+          "route": { "type": "string" },
+          "problem_setting": { "type": "string" },
+          "evaluation_system": { "type": "string" },
+          "key_finding": { "type": "string" },
+          "limitation": { "type": "string" },
+          "evidence": { "type": "array" }
+        }
+      }
+    },
+    "claim_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["background", "comparison", "related_work", "gap", "contribution", "limit"] },
+          "claim": { "type": "string" },
+          "cite_keys": { "type": "array", "items": { "type": "string" } },
+          "addresses_gap_id": { "type": "string" },
+          "evidence": { "type": "array" }
+        }
+      }
+    },
+    "research_gaps": { "type": "array" },
+    "contributions": { "type": "array" },
+    "interpretation_limits": { "type": "array" },
+    "derived_values": { "type": "array" },
+    "change_records": { "type": "array" },
+    "uncertainties": { "type": "array" },
+    "artifact_names": { "type": "object" }
+  }
+}

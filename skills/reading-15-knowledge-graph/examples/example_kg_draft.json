@@ -1,0 +1,125 @@
+{
+  "_example_notice": "ILLUSTRATIVE SYNTHETIC EXAMPLE ONLY",
+  "entities": [
+    {
+      "label": "reference filter",
+      "entity_type": "Material",
+      "aliases": [],
+      "source_id": "bench",
+      "paragraph_id": "a1",
+      "quote": "Spectral drift was reduced by the reference filter."
+    },
+    {
+      "label": "Spectral drift",
+      "entity_type": "Metric",
+      "aliases": [],
+      "source_id": "bench",
+      "paragraph_id": "a1",
+      "quote": "Spectral drift was reduced by the reference filter."
+    },
+    {
+      "label": "camera",
+      "entity_type": "Instrument",
+      "aliases": [],
+      "source_id": "bench",
+      "paragraph_id": "a2",
+      "quote": "The camera used a reference filter."
+    },
+    {
+      "label": "repeatability",
+      "entity_type": "Metric",
+      "aliases": [],
+      "source_id": "monitor",
+      "paragraph_id": "b1",
+      "quote": "The reference filter increased repeatability."
+    },
+    {
+      "label": "contrast",
+      "entity_type": "Metric",
+      "aliases": [],
+      "source_id": "monitor",
+      "paragraph_id": "b2",
+      "quote": "The reference filter may improve contrast."
+    }
+  ],
+  "relations": [
+    {
+      "subject": "reference filter",
+      "subject_type": "Material",
+      "relation": "decreases",
+      "object": "Spectral drift",
+      "object_type": "Metric",
+      "polarity": "affirmative",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "source_id": "bench",
+      "paragraph_id": "a1",
+      "quote": "Spectral drift was reduced by the reference filter."
+    },
+    {
+      "subject": "camera",
+      "subject_type": "Instrument",
+      "relation": "uses",
+      "object": "reference filter",
+      "object_type": "Material",
+      "polarity": "affirmative",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "source_id": "bench",
+      "paragraph_id": "a2",
+      "quote": "The camera used a reference filter."
+    },
+    {
+      "subject": "reference filter",
+      "subject_type": "Material",
+      "relation": "increases",
+      "object": "repeatability",
+      "object_type": "Metric",
+      "polarity": "affirmative",
+      "conditions": [],
+      "evidence_strength": "direct_author_evidence",
+      "source_id": "monitor",
+      "paragraph_id": "b1",
+      "quote": "The reference filter increased repeatability."
+    },
+    {
+      "subject": "reference filter",
+      "subject_type": "Material",
+      "relation": "increases",
+      "object": "contrast",
+      "object_type": "Metric",
+      "polarity": "affirmative",
+      "conditions": [],
+      "evidence_strength": "indirect_speculation",
+      "source_id": "monitor",
+      "paragraph_id": "b2",
+      "quote": "The reference filter may improve contrast."
+    }
+  ],
+  "queries": [
+    {
+      "query_id": "q_probe_forward",
+      "query_type": "relation_evidence_probe",
+      "entity_a": "reference filter",
+      "entity_b": "Spectral drift",
+      "relation": "decreases",
+      "direction": "forward",
+      "source_id": "bench"
+    },
+    {
+      "query_id": "q_probe_reverse",
+      "query_type": "relation_evidence_probe",
+      "entity_a": "Spectral drift",
+      "entity_b": "reference filter",
+      "relation": "decreases",
+      "direction": "forward",
+      "source_id": "bench"
+    },
+    {
+      "query_id": "q_cross_comp",
+      "query_type": "cross_paper_comparison",
+      "entity": "reference filter"
+    }
+  ],
+  "uncertainties": []
+}

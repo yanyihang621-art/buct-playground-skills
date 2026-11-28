@@ -1,4 +1,4 @@
-"""Export requested manuscript files and render the actual Office document for its preview."""
+"""Export requested manuscript files (MD, DOCX with tables, LaTeX, PDF, PNG preview)."""
 
 from __future__ import annotations
 
@@ -9,17 +9,22 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Dict, List, Tuple
 
-from rw_utils import write_text_lf
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from output_contract import contract_specs
-
+from pdf_utils import write_text_lf
 
 EXT = re.compile(r"(?<![a-z0-9])(docx|pdf|tex|png|md)(?![a-z0-9])", re.I)
 
 
 def case_exports(case: dict) -> tuple[set[str], dict]:
     """Read explicitly named output formats/files. Do not treat input file extensions as requests."""
-    formats, names = set(), {}
+    formats: set[str] = set()
+    names: Dict[str, str] = {}
 
     def visit(value, filename=False):
         if isinstance(value, (list, tuple)):
@@ -43,7 +48,7 @@ def case_exports(case: dict) -> tuple[set[str], dict]:
             else:
                 formats.update(m.group(1).lower() for m in EXT.finditer(token))
                 if token.lower() in ("latex", "word", "markdown"):
-                    formats.add({"latex":"tex", "word":"docx", "markdown":"md"}[token.lower()])
+                    formats.add({"latex": "tex", "word": "docx", "markdown": "md"}[token.lower()])
 
     for key in ("output_format", "output_formats", "output_filename", "output_files", "required_files",
                 "required_artifacts", "expected_artifacts", "deliverables"):
@@ -101,39 +106,86 @@ def _tool(*names: str) -> str:
     raise ValueError("Missing executable " + "/".join(names))
 
 
+def _add_formatted_runs(paragraph, text: str) -> None:
+    for chunk in re.split(r"(\*\*[^*\n]+\*\*|\*[^*\n]+\*)", text):
+        if chunk.startswith("**") and chunk.endswith("**"):
+            paragraph.add_run(chunk[2:-2]).bold = True
+        elif chunk.startswith("*") and chunk.endswith("*"):
+            paragraph.add_run(chunk[1:-1]).italic = True
+        else:
+            paragraph.add_run(chunk)
+
+
 def _prose_docx(source: Path, dest: Path) -> None:
-    """Build basic editable scholarly prose when the fuller Pandoc writer is unavailable."""
+    """Build editable scholarly DOCX (headings, lists, inline bold/italic, AND Markdown pipe tables) via python-docx."""
     try:
-        from docx import Document
+        from docx import Document  # type: ignore
     except ImportError as exc:
         raise ValueError("DOCX export requires Pandoc or python-docx") from exc
+
     doc = Document()
-    text = source.read_text(encoding="utf-8")
-    if re.search(r"(?m)^(\s*[|>]|\\begin\{|~~~|\x60\x60\x60)|!\[|\$\$|\\\(", text):
-        raise ValueError("The manuscript uses tables, math or embedded media requiring the Pandoc DOCX writer")
-    blocks = re.split(r"\n\s*\n|(?m:(?<=\n)(?=#{1,6} |[-*] |\d+[.)] ))", text)
-    for block in blocks:
-        for item in re.split(r"(?m)(?<=\n)(?=[-*] |\d+[.)] )", block.strip()):
-            if not item:
-                continue
-            lines = item.splitlines()
-            header = re.match(r"^(#{1,6})\s+(.+)$", lines[0])
-            if header:
-                doc.add_heading(header[2], level=len(header[1]))
-                lines = lines[1:]
-                if not lines:
-                    continue
-            content = " ".join(line.strip() for line in lines)
-            bullet = re.match(r"^([-*]|\d+[.)])\s+(.+)", content)
-            paragraph = doc.add_paragraph(style=("List Bullet" if bullet[1] in ("-", "*") else "List Number")
-                                          if bullet else None)
-            for chunk in re.split(r"(\*\*[^*\n]+\*\*|\*[^*\n]+\*)", bullet[2] if bullet else content):
-                if chunk.startswith("**") and chunk.endswith("**"):
-                    paragraph.add_run(chunk[2:-2]).bold = True
-                elif chunk.startswith("*") and chunk.endswith("*"):
-                    paragraph.add_run(chunk[1:-1]).italic = True
-                else:
-                    paragraph.add_run(chunk)
+    lines = source.read_text(encoding="utf-8").splitlines()
+    i = 0
+    buf: List[str] = []
+
+    def flush_para() -> None:
+        if not buf:
+            return
+        content = " ".join(ln.strip() for ln in buf).strip()
+        buf.clear()
+        if content:
+            p = doc.add_paragraph()
+            _add_formatted_runs(p, content)
+
+    while i < len(lines):
+        ln = lines[i]
+        stripped = ln.strip()
+        if not stripped:
+            flush_para()
+            i += 1
+            continue
+        # Pipe table detection
+        if stripped.startswith("|") and i + 1 < len(lines) and re.match(r"^\|[\s:|\-]+\|$", lines[i + 1].strip()):
+            flush_para()
+            t_rows: List[List[str]] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                row_txt = lines[i].strip()
+                if not re.match(r"^\|[\s:|\-]+\|$", row_txt):
+                    cells = [c.strip() for c in row_txt.strip("|").split("|")]
+                    t_rows.append(cells)
+                i += 1
+            if t_rows:
+                ncols = max(len(r) for r in t_rows)
+                table = doc.add_table(rows=len(t_rows), cols=ncols)
+                table.style = "Table Grid"
+                for r_idx, r_vals in enumerate(t_rows):
+                    for c_idx in range(ncols):
+                        val = r_vals[c_idx] if c_idx < len(r_vals) else ""
+                        cell_p = table.cell(r_idx, c_idx).paragraphs[0]
+                        _add_formatted_runs(cell_p, val)
+                        if r_idx == 0:
+                            for run in cell_p.runs:
+                                run.bold = True
+            continue
+        # Heading
+        hm = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if hm:
+            flush_para()
+            doc.add_heading(hm.group(2).strip(), level=min(4, len(hm.group(1))))
+            i += 1
+            continue
+        # Bullet / numbered list
+        bm = re.match(r"^([-*]|\d+[.)])\s+(.+)$", stripped)
+        if bm:
+            flush_para()
+            style = "List Bullet" if bm.group(1) in ("-", "*") else "List Number"
+            p = doc.add_paragraph(style=style)
+            _add_formatted_runs(p, bm.group(2).strip())
+            i += 1
+            continue
+        buf.append(stripped)
+        i += 1
+    flush_para()
     doc.save(dest)
 
 
@@ -163,7 +215,6 @@ def _convert(source: Path, dest: Path, work: Path, language: str) -> None:
 
 
 def _office_pdf(stage: Path) -> None:
-    """Render the actual generated Word file with an installed Office renderer."""
     source = stage / "manuscript.docx"
     if not source.is_file():
         raise ValueError("No DOCX available for preview")
@@ -172,7 +223,6 @@ def _office_pdf(stage: Path) -> None:
     except ValueError:
         if os.name != "nt":
             raise
-        # An isolated Word instance renders only the document created by this export.
         script = """
 import sys
 from win32com.client import DispatchEx
@@ -196,13 +246,12 @@ finally:
 
 
 def _preview_png(stage: Path) -> None:
-    # Preview page one of the delivered PDF, preserving its rendered glyphs and layout.
     if shutil.which("pdftoppm"):
         _run([_tool("pdftoppm"), "-f", "1", "-l", "1", "-singlefile", "-r", "120",
               "-png", str(stage / "manuscript.pdf"), str(stage / "manuscript")], stage)
         return
     try:
-        import fitz
+        import fitz  # type: ignore
     except ImportError as exc:
         raise ValueError("PNG preview needs pdftoppm or PyMuPDF") from exc
     with fitz.open(stage / "manuscript.pdf") as pdf:
@@ -238,8 +287,11 @@ def export_manuscript(text: str, output_dir: Path, formats: list[str], names: di
             try:
                 target = _target(output_dir, names, ext)
                 intermediate = stage / ("manuscript." + ext)
-                if ext == "pdf" and "docx" in requested:
-                    _office_pdf(stage)
+                if ext == "pdf" and "docx" in requested and (stage / "manuscript.docx").is_file():
+                    try:
+                        _office_pdf(stage)
+                    except (OSError, ValueError, subprocess.TimeoutExpired):
+                        _convert(md, intermediate, stage, language)
                 elif ext == "png":
                     _preview_png(stage)
                 else:

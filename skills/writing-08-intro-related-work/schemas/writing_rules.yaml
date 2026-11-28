@@ -1,4 +1,4 @@
-version: "1.0"
+version: "2.0"
 required_sections_en:
   - "Research Background"
   - "Related Work"
@@ -9,13 +9,29 @@ required_sections_zh:
   - "相关工作"
   - "研究空白"
   - "主要贡献"
+task_modes:
+  full_intro_rw:
+    require_all_four_sections: true
+    allow_continuous_prose_with_spans: true
+  related_work_only:
+    require_all_four_sections: false
+    required_roles: ["related_work"]
+  intro_only:
+    require_all_four_sections: false
+    required_roles: ["background"]
+  revision:
+    require_all_four_sections: false
+    preserve_supplied_manuscript: true
+  citation_audit:
+    require_all_four_sections: false
 banned_cliche_openings:
-  - "in recent years, with the rapid development"
-  - "has attracted widespread attention"
-  - "plays an increasingly important role"
-  - "近年来，随着.*快速发展"
-  - "受到了广泛关注"
+  - "in recent years,? with the rapid development"
+  - "has attracted (?:widespread|extensive|increasing) attention"
+  - "plays an? (?:increasingly )?important role"
+  - "近年来[，,]?随着.{0,20}快速发展"
+  - "受到了(?:学术界和工业界的)?广泛关注"
   - "具有重要的研究意义"
+  - "成为当前研究的热点"
 comparison_dimensions:
   - "problem_setting"
   - "method_route"

@@ -1,14 +1,26 @@
-schema_version: "1.0.0"
+schema_version: "2.0.0"
 queries:
-  - id: "cross_paper_shared_concepts"
-    description: "Find canonical concepts shared across >= 2 independent papers along with merge_decisions and do_not_merge_records."
   - id: "entity_neighborhood"
-    description: "Retrieve a 1-hop subgraph around a node or label. Specify source_id to resolve an acronym within one paper."
-  - id: "paper_evidence"
-    description: "Retrieve the relations of a given source_id with replayable paragraph locators, conditions and source quotations."
-  - id: "method_metric_comparison"
-    description: "Compare Material/Method -> Metric/Finding edges grouped strictly by source_id and conditions without merging outcomes."
-  - id: "conflict_and_boundary_audit"
-    description: "Inspect cross-paper/intra-paper conflicts, evidence_strength distribution, and unverifiable/not_reported items."
+    parameters: ["entity", "source_id (optional)"]
+    description: "Retrieve a 1-hop subgraph around a node or label. Specify source_id to disambiguate a homograph acronym."
   - id: "relation_evidence_probe"
-    description: "Use direction=forward and relation to check a specified directed claim. direction=either retrieves relations in both directions. Inspect evidence_strength and has_direct_observation to distinguish an author's observations from citations or hypotheses."
+    parameters: ["entity_a", "entity_b", "direction (forward|either)", "relation (optional)", "source_id (optional)"]
+    description: "Verify a directed or undirected relationship with evidence_strength, polarity, conditions, and has_direct_observation."
+  - id: "cross_paper_shared_concepts"
+    parameters: []
+    description: "List canonical concepts shared across >= 2 independent papers along with merge_decisions and do_not_merge_records."
+  - id: "cross_paper_comparison"
+    parameters: ["entity (optional)"]
+    description: "Compare per-paper instances, relations, metrics, and operating conditions for shared concepts without conflating distinct experiments."
+  - id: "method_metric_comparison"
+    parameters: ["source_id (optional)"]
+    description: "Compare Material/Method/Model -> Metric/Finding edges grouped by source_id and conditions."
+  - id: "paper_evidence"
+    parameters: ["source_id"]
+    description: "Retrieve all substantive relations of a given paper with paragraph locators, conditions, and verbatim quotes."
+  - id: "path_search"
+    parameters: ["entity_a", "entity_b", "max_hops (default 3)", "source_id (optional)"]
+    description: "Find shortest grounded paths between two entities with full per-edge provenance."
+  - id: "conflict_and_boundary_audit"
+    parameters: ["source_id (optional)"]
+    description: "Inspect intra-paper/cross-paper contradictions, evidence_strength distribution, boundary statements, and uncertainties."
