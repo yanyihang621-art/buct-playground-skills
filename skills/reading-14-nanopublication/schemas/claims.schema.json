@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reading 14 Agent Claims Input",
+  "type": "object",
+  "required": ["claims"],
+  "properties": {
+    "paper": {
+      "type": "object",
+      "properties": {
+        "title": {"type": "string"},
+        "authors": {"type": "array", "items": {"type": "string"}},
+        "year": {"type": "string"},
+        "doi": {"type": "string"},
+        "version": {"type": "string"},
+        "venue": {"type": "string"},
+        "url": {"type": "string"}
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement", "subject", "predicate", "object", "polarity", "modality", "evidence", "evidence_type"],
+        "properties": {
+          "id": {"type": "string"},
+          "paper_id": {"type": "string"},
+          "section": {"type": "string"},
+          "statement": {"type": "string"},
+          "subject": {"type": "string"},
+          "predicate": {"type": "string"},
+          "object": {"type": "string"},
+          "qualifiers": {"type": "object"},
+          "polarity": {"type": "string", "enum": ["affirmative", "negative"]},
+          "modality": {"type": "string", "enum": ["asserted", "hedged", "hypothesized"]},
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["anchor", "quote"],
+              "properties": {
+                "anchor": {"type": "string"},
+                "quote": {"type": "string"}
+              }
+            }
+          },
+          "evidence_type": {
+            "type": "string",
+            "enum": [
+              "direct_experimental",
+              "direct_table_figure",
+              "author_statement",
+              "indirect_inference",
+              "cited_prior_work",
+              "hypothesis"
+            ]
+          },
+          "confidence": {"type": "number"},
+          "confidence_basis": {"type": "string"}
+        }
+      }
+    }
+  }
+}

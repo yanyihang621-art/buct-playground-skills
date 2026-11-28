@@ -1,0 +1,16 @@
+{
+  "_example_notice": "示例，非正式案例（仅用于演示 answer.json 接口）",
+  "fields": {
+    "status": "success",
+    "uncertainties": [
+      "not_reported: DOI 与出版年份在示例材料中未报告。"
+    ]
+  },
+  "status": "success",
+  "status_reason": "已完成 4 条原子断言拆解、引文核验与三格式 RDF 导出。",
+  "evidence": {},
+  "uncertainties": [
+    {"item": "DOI 与出版年份", "reason": "not_reported", "checked": ["frontmatter"]}
+  ],
+  "derived_values": []
+}

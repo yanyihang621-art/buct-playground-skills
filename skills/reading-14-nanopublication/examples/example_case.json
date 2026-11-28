@@ -1,22 +1,36 @@
 {
-  "_example_notice": "ILLUSTRATIVE EXAMPLE ONLY - NOT A FORMAL CONTEST CASE OR ANSWER",
+  "_example_notice": "示例，非正式案例（仅用于演示接口与本地自测）",
   "case_id": "example-reading-14-synthetic",
-  "task_type": "nanopublication_extraction",
-  "instruction": "Decompose scientific conclusions into atomic Nanopublications with controlled predicates, minimal sufficient evidence snippets, full source provenance, and JSON-LD/TriG/N-Quads exports.",
-  "input_files": [
-    "sample_paper.md"
-  ],
+  "instruction": "将论文中的主要结论拆解为受控谓词原子断言，绑定最小充分逐字引文，保留推测情态与否定极性，并导出 TriG/N-Quads/JSON-LD。",
+  "input_files": ["example_paper.md"],
   "output_contract": {
-    "required": [
-      "case_id",
-      "status",
-      "nanopub_count",
-      "nanopublications",
-      "source_metadata",
-      "deduplication_log",
-      "conflicts",
-      "sources",
-      "uncertainties"
-    ]
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["case_id", "status", "nanopublications", "uncertainties"],
+    "properties": {
+      "case_id": {"type": "string"},
+      "status": {"type": "string", "enum": ["success", "partial", "unable"]},
+      "nanopublications": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "statement", "subject", "predicate", "object", "polarity", "modality", "quote", "anchor", "page"],
+          "properties": {
+            "id": {"type": "string"},
+            "statement": {"type": "string"},
+            "subject": {"type": "string"},
+            "predicate": {"type": "string"},
+            "object": {"type": "string"},
+            "polarity": {"type": "string"},
+            "modality": {"type": "string"},
+            "quote": {"type": "string"},
+            "anchor": {"type": "string"},
+            "page": {"type": "integer"}
+          }
+        }
+      },
+      "uncertainties": {"type": "array", "items": {"type": "string"}}
+    }
   }
 }

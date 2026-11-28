@@ -1,406 +1,226 @@
-#!/usr/bin/env python3
-"""Self-test suite for reading-14-nanopublication: synthetic fixtures, 6 negative quality-gate tests, and baseline comparison."""
+"""End-to-end self-test, RDF roundtrip check, and fault-injection benchmark for reading-14-nanopublication."""
 
 from __future__ import annotations
 
 import argparse
 import copy
 import json
-import subprocess
+import shutil
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
+
+import fitz
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from build_nanopub_result import build_nanopub_result
-from decompose_assertions import decompose_document, load_relation_vocabulary
-from ingest_source import ingest_input
+from finalize import run_finalize
+from output_contract import contract_issues
 from pdf_utils import write_json_atomic, write_text_lf
-from serialize_nanopubs import serialize_all, _slug_iri, verify_nquads_syntax
-from validate_nanopubs import validate_nanopubs
-from structured_regression import run_structured_regression
-
-try:
-    import fitz  # type: ignore
-except ImportError as exc:
-    raise RuntimeError("PyMuPDF (fitz) is required for self_test.py") from exc
-
-try:
-    from PIL import Image, ImageDraw  # type: ignore
-except ImportError:
-    Image = None  # type: ignore
-    ImageDraw = None  # type: ignore
+from prepare import run_prepare
 
 
-def _build_n1_pdf(path: Path) -> None:
+def _make_encrypted_pdf(dest: Path) -> Path:
     doc = fitz.open()
-    doc.new_page(width=595, height=842)
-    doc.new_page(width=595, height=842)
-    p1, p2 = doc[0], doc[1]
-
-    p1.insert_text((50, 35), "ACS Catalysis 2025 | DOI: 10.1021/acscatal.2025.00123", fontsize=8.5, fontname="helv")
-    p2.insert_text((50, 35), "ACS Catalysis 2025 | DOI: 10.1021/acscatal.2025.00123", fontsize=8.5, fontname="helv")
-
-    p1.insert_text((50, 72), "Selective CO2 Hydrogenation over Cu-In2O3 Catalysts", fontsize=16.0, fontname="hebo")
-    p1.insert_text((50, 96), "Alice Zhang, Bob Li", fontsize=10.5, fontname="helv")
-    p1.insert_text((50, 112), "Beijing University of Chemical Technology", fontsize=9.5, fontname="helv")
-    p1.insert_text((50, 140), "Abstract: We report selective methanol synthesis over Cu-In2O3.", fontsize=10.0, fontname="helv")
-
-    p1.insert_text((50, 178), "1. Results and Discussion", fontsize=12.0, fontname="hebo")
-    p1.insert_textbox(
-        fitz.Rect(50, 195, 280, 380),
-        "At 573 K and 3.0 MPa, Cu-In2O3 catalyzes CO2 hydrogenation to methanol; "
-        "moreover, oxygen vacancies increase methanol selectivity, whereas water co-feeding inhibits catalytic activity.",
-        fontsize=10.0,
-        fontname="helv",
+    page = doc.new_page()
+    page.insert_text((72, 72), "Confidential fixture for encryption fallback test.")
+    doc.save(
+        str(dest),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        user_pw="secret123",
+        owner_pw="owner123",
     )
-    p1.insert_textbox(
-        fitz.Rect(50, 395, 280, 490),
-        "Surface hydroxyl accumulation may induce partial sintering after 200 h.",
-        fontsize=10.0,
-        fontname="helv",
-    )
-    p1.insert_textbox(
-        fitz.Rect(315, 195, 545, 310),
-        "Previous studies [1] reported that pure Cu exhibits low methanol selectivity.",
-        fontsize=10.0,
-        fontname="helv",
-    )
-
-    # Page 2 Table 1
-    p2.insert_text((50, 70), "Table 1. Catalytic performance metrics at 573 K.", fontsize=10.0, fontname="hebo")
-    p2.draw_line(fitz.Point(50, 82), fitz.Point(480, 82), width=1.2)
-    p2.insert_text((60, 97), "Catalyst", fontsize=9.5, fontname="hebo")
-    p2.insert_text((220, 97), "Selectivity", fontsize=9.5, fontname="hebo")
-    p2.insert_text((360, 97), "Conversion", fontsize=9.5, fontname="hebo")
-    p2.draw_line(fitz.Point(50, 105), fitz.Point(480, 105), width=0.8)
-    p2.insert_text((60, 122), "Cu-In2O3", fontsize=9.5, fontname="helv")
-    p2.insert_text((220, 122), "91.8%", fontsize=9.5, fontname="helv")
-    p2.insert_text((360, 122), "24.1%", fontsize=9.5, fontname="helv")
-    p2.draw_line(fitz.Point(50, 132), fitz.Point(480, 132), width=1.2)
-
-    p2.insert_text((50, 175), "References", fontsize=12.0, fontname="hebo")
-    p2.insert_text((50, 195), "[1] J. Smith et al., J. Catal. 2023, 415, 12-20.", fontsize=9.5, fontname="helv")
-
-    doc.save(str(path))
     doc.close()
+    return dest
 
 
-def _build_n2_md(path: Path) -> None:
-    md = """# Pt Doping Effects in CO Oxidation
-
-Authors: Carol Wang
-
-## 1. Results
-At 473 K, Pt doping increases CO yield.
-
-## 2. Discussion
-At 473 K, Pt doping increases CO yield.
-
-Under sulfur-rich feed, Pt doping decreases CO yield.
-"""
-    write_text_lf(path, md)
+def _find_encrypted_fixture(tmp_dir: Path) -> Path:
+    for candidate in (
+        SKILL_DIR.parents[2] / "local_test_outputs" / "reading-01" / "fixtures" / "t3a_encrypted.pdf",
+    ):
+        if candidate.is_file():
+            return candidate
+    return _make_encrypted_pdf(tmp_dir / "encrypted_fixture.pdf")
 
 
-def _build_n3a_encrypted(path: Path) -> None:
-    doc = fitz.open()
-    doc.new_page()
-    doc[0].insert_text((72, 72), "Confidential.", fontsize=12)
-    doc.save(str(path), encryption=fitz.PDF_ENCRYPT_AES_256, user_pw="pw", owner_pw="opw")
-    doc.close()
-
-
-def _build_n3b_scanned(path: Path) -> None:
-    doc = fitz.open()
-    doc.new_page(width=595, height=842)
-    if Image is not None and ImageDraw is not None:
-        img = Image.new("RGB", (1190, 1684), "white")
-        ImageDraw.Draw(img).text((120, 160), "Scanned paper without text layer.", fill="black")
-        tmp = path.parent / "_tmp_n3b.png"
-        img.save(str(tmp))
-        doc[0].insert_image(fitz.Rect(0, 0, 595, 842), filename=str(tmp))
-        tmp.unlink(missing_ok=True)
-    doc.save(str(path))
-    doc.close()
-
-
-def _run_case(in_dir: Path, work_dir: Path, case_data: Dict[str, Any]) -> Dict[str, Any]:
-    vocab = load_relation_vocabulary()
-    case_p = in_dir / "case.json"
-    write_json_atomic(case_p, case_data)
-    manifest = ingest_input(in_dir, work_dir / "ingested", case_path=case_p, ocr_mode="auto", save_crops=False)
-
-    docs = [json.loads(Path(it["document_json"]).read_text(encoding="utf-8")) for it in manifest["papers"]]
-    bundle = decompose_document(docs[0], vocab)
-    write_json_atomic(work_dir / "nanopubs.json", bundle)
-    ser = serialize_all(bundle, work_dir / "rdf")
-    nq_txt = Path(ser["nquads_path"]).read_text(encoding="utf-8")
-    trig_txt = Path(ser["trig_path"]).read_text(encoding="utf-8")
-    jsonld_obj = json.loads(Path(ser["jsonld_path"]).read_text(encoding="utf-8"))
-    md_txt = Path(ser["markdown_path"]).read_text(encoding="utf-8")
-
-    result = build_nanopub_result(
-        case_data,
-        bundle,
-        docs=docs,
-        trig_text=trig_txt,
-        jsonld_obj=jsonld_obj,
-        nq_text=nq_txt,
-        md_text=md_txt,
-    )
-    write_json_atomic(work_dir / "result.json", result)
-    val = validate_nanopubs(case_data, result, bundle, docs, nquads_text=nq_txt)
-    write_json_atomic(work_dir / "validation_report.json", val)
-    return {"bundle": bundle, "docs": docs, "result": result, "validation": val, "nq_txt": nq_txt, "ser": ser}
-
-
-def _test_qualified_claims(out_dir: Path) -> Dict[str, Any]:
-    materials = out_dir / "n4_in"
-    work = out_dir / "n4_work"
-    nested = materials / "supplement"
-    nested.mkdir(parents=True, exist_ok=True)
-    work.mkdir(parents=True, exist_ok=True)
-    case = {"case_id": "local-qualification", "output_contract": ["case_id", "assertions", "jsonld", "trig", "nquads", "markdown"]}
-    case_file = materials / "case.json"
-    write_json_atomic(case_file, case)
-    write_text_lf(materials / "task.md", "Task instructions")
-    write_text_lf(nested / "limits.TXT",
-                  "# Scope observations\n\n"
-                  "Under low light, Sensor A may induce signal drift; whereas Sensor B reduces variation.\n\n"
-                  "Sensor A induces signal drift.\n\nSensor A did not induce signal drift.\n")
-    _build_n1_pdf(materials / "main.pdf")
-    manifest = ingest_input(materials, work / "ingested", case_path=case_file)
-    assert {Path(p["source_file"]).name for p in manifest["papers"]} == {"main.pdf", "limits.TXT"}
-    papers = manifest["papers"]
-    docs = [json.loads(Path(p["document_json"]).read_text(encoding="utf-8")) for p in papers]
-    text_paper = next(p for p in papers if p["source_file"].endswith(".TXT"))
-    manifest_file = work / "ingested" / "ingest_manifest.json"
-    def cli(script: str, *args: Any) -> None:
-        subprocess.run([sys.executable, "-B", "-X", "utf8", str(SCRIPT_DIR / script), *map(str, args)],
-                       check=True, capture_output=True, encoding="utf-8")
-    bundle_dir = work / "bundle"
-    path = bundle_dir / "nanopubs.json"
-    def extract(*extra: Any) -> Dict[str, Any]:
-        cli("decompose_assertions.py", "--manifest", manifest_file, "--out", bundle_dir, *extra)
-        return json.loads(path.read_text(encoding="utf-8"))
-    before = extract()
-    subset = [n for n in before["nanopublications"] if n["provenance"]["source_metadata"]["source_file"] == "limits.TXT"]
-    sensor = [n for n in subset if n["assertion"]["subject"] == "Sensor A"]
-    assert len(sensor) == len({n["nanopub_uri"] for n in sensor}) == 3
-    hedged = next(n for n in sensor if n["assertion"]["modality"] == "hedged")
-    denied = next(n for n in sensor if n["assertion"]["polarity"] == "negative")
-    assert "may induce" in hedged["assertion"]["atomic_statement"] and "did not induce" in denied["assertion"]["atomic_statement"]
-    assert "whereas" not in hedged["provenance"]["minimal_evidence_snippet"]
-    assert hedged["provenance"]["condition_quote"] == "Under low light"
-    assert hedged["provenance"]["location"]["line_start"] == 3 and hedged["provenance"]["location"]["pdf_page"] is None
-    hedged["pubinfo"]["confidence_basis"] = "Reviewed the explicit modal verb and the condition in line 3."
-    review = work / "reviewed.json"
-    write_json_atomic(review, {text_paper["paper_id"]: subset})
-    bundle = extract("--reviewed", review)
-    rdf = work / "output"
-    cli("serialize_nanopubs.py", "--nanopubs", path, "--out", rdf)
-    result_file = rdf / "result.json"
-    cli("build_nanopub_result.py", "--case", case_file, "--nanopubs", path, "--manifest", manifest_file,
-        "--nquads", rdf / "nanopubs.nq", "--trig", rdf / "nanopubs.trig", "--markdown", rdf / "nanopubs.md",
-        "--jsonld", rdf / "nanopubs.jsonld", "--out", result_file)
-    cli("validate_nanopubs.py", "--case", case_file, "--nanopubs", path, "--manifest", manifest_file,
-        "--nquads", rdf / "nanopubs.nq", "--result", result_file, "--out", work / "verified.json")
-    result = json.loads(result_file.read_text(encoding="utf-8"))
-    nq = result["nquads"]
-    assert hedged["pubinfo"]["confidence_basis"] in nq and "Under low light" in result["markdown"]
-    for record in (hedged, denied):
-        a = record["assertion"]
-        direct = f"<{_slug_iri(a['subject'])}> <{a['predicate_uri']}> <{_slug_iri(a['object'])}> <{record['head']['assertion_graph']}> ."
-        assert direct not in nq
-    record = next(n for n in bundle["nanopublications"] if n["nanopub_uri"] == hedged["nanopub_uri"])
-    record["assertion"]["atomic_statement"] = record["assertion"]["atomic_statement"].replace("may induce", "induces")
-    audit = validate_nanopubs(case, result, bundle, docs, nq)
-    assert not audit["gate_results"]["gate2_relation_or_contradiction"]
-    assert not audit["gate_results"]["gate6_nquads_syntax"]
-    return {"pass": True, "source_files": len(papers), "distinct_scope_variants": len(sensor),
-            "stale_rdf_rejected": True, "strengthened_claim_rejected": True}
-
-
-def run_self_test(out_dir: Path, compare_baseline: bool = False) -> Dict[str, Any]:
+def run_suite(out_dir: Path, write_benchmark: bool = False) -> Dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    report: Dict[str, Any] = {"tests": {}, "all_passed": True}
+    examples_dir = SKILL_DIR / "examples"
+    case_path = examples_dir / "example_case.json"
+    case_data = json.loads(case_path.read_text(encoding="utf-8-sig"))
+    contract = case_data["output_contract"]
 
-    # --- N1: Compound PDF decomposition + 6 negative quality-gate fault injections ---
-    n1_in = out_dir / "n1_in"
-    n1_in.mkdir(parents=True, exist_ok=True)
-    n1_pdf = n1_in / "n1_catalysis_nanopub.pdf"
-    _build_n1_pdf(n1_pdf)
-    n1_case = {
-        "case_id": "selftest-n1",
-        "input_files": ["n1_catalysis_nanopub.pdf"],
-        "output_contract": {
-            "required": [
-                "case_id",
-                "status",
-                "nanopub_count",
-                "nanopublications",
-                "source_metadata",
-                "deduplication_log",
-                "conflicts",
-                "sources",
-                "uncertainties",
-            ]
-        },
-    }
-    n1_run = _run_case(n1_in, out_dir / "n1_work", n1_case)
-    n1_b = n1_run["bundle"]
-    n1_v = n1_run["validation"]
-    assert n1_v["pass"], f"N1 validation failed: {n1_v['errors']}"
-    assert n1_v["metrics"]["nquads_valid"] is True
-    assert n1_v["metrics"]["anchor_grounding_rate"] == 1.0
-    assert n1_b["source_metadata"]["doi"] == "10.1021/acscatal.2025.00123"
-    assert n1_b["source_metadata"]["year"] == "2025"
+    results: Dict[str, Any] = {"skill": "reading-14-nanopublication", "tests": {}, "all_passed": False}
 
-    ev_types = {np["provenance"]["evidence_type"] for np in n1_b["nanopublications"]}
-    preds = {np["assertion"]["predicate"] for np in n1_b["nanopublications"]}
-    assert {"catalyzes", "increases", "inhibits", "achieves_metric"}.issubset(preds), f"Missing preds in {preds}"
-    assert {"direct_experimental", "indirect_inference", "cited_prior_work", "direct_tabular_or_figure"}.issubset(ev_types), f"Missing ev_types in {ev_types}"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
 
-    # Verify leading condition propagation (573 K, 3.0 MPa propagated to oxygen vacancies & water co-feeding clauses)
-    ox_np = next(np for np in n1_b["nanopublications"] if "oxygen vacancies" in np["assertion"]["subject"].lower())
-    assert "573 K" in ox_np["assertion"]["conditions"] and "3.0 MPa" in ox_np["assertion"]["conditions"]
+        # (a) & (b) & (d): Happy path + closed contract projection + RDF consistency
+        in1 = tmp_path / "happy_in"
+        w1 = tmp_path / "happy_work"
+        o1 = tmp_path / "happy_out"
+        in1.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(examples_dir / "example_paper.md", in1 / "example_paper.md")
+        shutil.copy2(case_path, in1 / "case.json")
+        run_prepare(in1, in1 / "case.json", w1, o1)
+        shutil.copy2(examples_dir / "example_claims.json", w1 / "claims.json")
+        shutil.copy2(examples_dir / "example_answer.json", w1 / "answer.json")
+        rc = run_finalize(in1 / "case.json", w1, o1)
 
-    # 6 Negative Fault-Injection Quality Gate Tests
-    neg_caught: Dict[str, bool] = {}
-
-    # 1) over_broad_assertion
-    b1 = copy.deepcopy(n1_b)
-    b1["nanopublications"][0]["assertion"]["atomic_statement"] = "Sentence one claims X. Sentence two claims Y. Sentence three claims Z."
-    v1 = validate_nanopubs(n1_case, n1_run["result"], b1, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v1["pass"] and not v1["gate_results"]["gate1_over_broad"]
-    neg_caught["gate1_over_broad"] = True
-
-    # 2) invalid_relation_type
-    b2 = copy.deepcopy(n1_b)
-    b2["nanopublications"][0]["assertion"]["predicate"] = "magically_transforms"
-    v2 = validate_nanopubs(n1_case, n1_run["result"], b2, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v2["pass"] and not v2["gate_results"]["gate2_relation_or_contradiction"]
-    neg_caught["gate2_invalid_relation"] = True
-
-    # 3) assertion_evidence_contradiction
-    b3 = copy.deepcopy(n1_b)
-    b3["nanopublications"][0]["assertion"]["predicate"] = "increases"
-    b3["nanopublications"][0]["provenance"]["minimal_evidence_snippet"] = "water co-feeding inhibits catalytic activity."
-    v3 = validate_nanopubs(n1_case, n1_run["result"], b3, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v3["pass"] and not v3["gate_results"]["gate2_relation_or_contradiction"]
-    neg_caught["gate2_contradiction"] = True
-
-    # 4) evidence_not_grounded
-    b4 = copy.deepcopy(n1_b)
-    b4["nanopublications"][0]["provenance"]["location"]["block_id"] = "p9_b99"
-    v4 = validate_nanopubs(n1_case, n1_run["result"], b4, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v4["pass"] and not v4["gate_results"]["gate3_grounding_and_entity"]
-    neg_caught["gate3_ungrounded"] = True
-
-    # 5) entity_confusion
-    b5 = copy.deepcopy(n1_b)
-    b5["nanopublications"][0]["assertion"]["subject"] = "Platinum Nanowire"
-    v5 = validate_nanopubs(n1_case, n1_run["result"], b5, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v5["pass"] and not v5["gate_results"]["gate3_grounding_and_entity"]
-    neg_caught["gate3_entity_confusion"] = True
-
-    # 6) missing_provenance_metadata
-    b6 = copy.deepcopy(n1_b)
-    b6["source_metadata"] = {}
-    v6 = validate_nanopubs(n1_case, n1_run["result"], b6, n1_run["docs"], nquads_text=n1_run["nq_txt"])
-    assert not v6["pass"] and not v6["gate_results"]["gate4_provenance_metadata"]
-    neg_caught["gate4_missing_metadata"] = True
-
-    report["tests"]["n1_catalysis_nanopub"] = {
-        "pass": True,
-        "nanopub_count": n1_b["nanopub_count"],
-        "nquads_quad_count": n1_v["metrics"]["nquads_quad_count"],
-        "anchor_grounding_rate": n1_v["metrics"]["anchor_grounding_rate"],
-        "negative_gates_caught": neg_caught,
-    }
-
-    # --- N2: Markdown Deduplication & Cross-Assertion Contradiction ---
-    n2_in = out_dir / "n2_in"
-    n2_in.mkdir(parents=True, exist_ok=True)
-    _build_n2_md(n2_in / "n2_markdown_paper.md")
-    n2_case = {
-        "case_id": "selftest-n2-dedup-conflict",
-        "input_files": ["n2_markdown_paper.md"],
-        "output_contract": ["case_id", "status", "nanopub_count", "nanopublications", "deduplication_log", "conflicts", "uncertainties"],
-    }
-    n2_run = _run_case(n2_in, out_dir / "n2_work", n2_case)
-    assert n2_run["validation"]["pass"], f"N2 validation failed: {n2_run['validation']['errors']}"
-    assert len(n2_run["bundle"]["deduplication_log"]) >= 1, "Expected duplicate assertion merge!"
-    assert len(n2_run["bundle"]["conflicts"]) >= 1, "Expected cross_assertion_conflict (increases vs decreases)!"
-    report["tests"]["n2_dedup_and_conflict"] = {
-        "pass": True,
-        "nanopub_count": n2_run["bundle"]["nanopub_count"],
-        "dedup_merges": len(n2_run["bundle"]["deduplication_log"]),
-        "conflicts": len(n2_run["bundle"]["conflicts"]),
-    }
-
-    # --- N3: Encrypted & Scanned PDFs ---
-    n3a_in = out_dir / "n3a_in"
-    n3a_in.mkdir(parents=True, exist_ok=True)
-    _build_n3a_encrypted(n3a_in / "enc.pdf")
-    n3a_case = {"case_id": "selftest-n3a", "input_files": ["enc.pdf"], "output_contract": ["case_id", "status", "nanopublications", "uncertainties"]}
-    n3a_run = _run_case(n3a_in, out_dir / "n3a_work", n3a_case)
-    assert n3a_run["result"]["status"] == "refused" and n3a_run["bundle"]["nanopub_count"] == 0
-    assert n3a_run["validation"]["pass"]
-
-    n3b_in = out_dir / "n3b_in"
-    n3b_in.mkdir(parents=True, exist_ok=True)
-    _build_n3b_scanned(n3b_in / "scan.pdf")
-    n3b_case = {"case_id": "selftest-n3b", "input_files": ["scan.pdf"], "output_contract": ["case_id", "status", "nanopublications", "uncertainties"]}
-    n3b_run = _run_case(n3b_in, out_dir / "n3b_work", n3b_case)
-    assert n3b_run["result"]["status"] == "unverifiable" and n3b_run["bundle"]["nanopub_count"] == 0
-    assert n3b_run["validation"]["pass"]
-
-    report["tests"]["n3_encrypted_and_scanned"] = {
-        "pass": True,
-        "encrypted_status": n3a_run["result"]["status"],
-        "scanned_status": n3b_run["result"]["status"],
-    }
-
-    report["tests"]["n4_scope_review_exports"] = _test_qualified_claims(out_dir)
-    report["tests"]["n5_structured_sources_cells_and_review"] = run_structured_regression(out_dir)
-
-    if compare_baseline:
-        # Run a deliberately simple local comparator on the actual extracted paragraph.
-        paragraph = next(b["text"] for b in n1_run["docs"][0]["blocks"] if "oxygen vacancies" in b.get("text", ""))
-        baseline = [{"statement": paragraph, "evidence_type": "text"}]
-        report["baseline_comparison"] = {
-            "N1_catalysis_nanopub": {
-                "baseline_method": "Keep the first compound results paragraph as one unstructured text claim",
-                "baseline_single_paragraph_assertions": len(baseline),
-                "skill_atomic_nanopublications": n1_b["nanopub_count"],
-                "baseline_controlled_vocab_predicates": len({c["predicate"] for c in baseline if "predicate" in c}),
-                "skill_controlled_vocab_predicates": len(preds),
-                "baseline_evidence_types_distinguished": len({c["evidence_type"] for c in baseline}),
-                "skill_evidence_types_distinguished": len(ev_types),
-                "baseline_valid_nquads_quads": verify_nquads_syntax("".join(c.get("nquads", "") for c in baseline))["quad_count"],
-                "skill_valid_nquads_quads": n1_v["metrics"]["nquads_quad_count"],
-            }
+        res1 = json.loads((o1 / "result.json").read_text(encoding="utf-8"))
+        ev1 = json.loads((o1 / "evidence_check.json").read_text(encoding="utf-8"))
+        issues1 = contract_issues(contract, res1)
+        extra_keys = sorted(set(res1.keys()) - set(contract["properties"].keys()))
+        rdf_info = ev1.get("rdf_validation") or {}
+        rdf_ok = bool(rdf_info.get("consistent")) and (o1 / "nanopubs.trig").is_file() and (o1 / "nanopubs.nq").is_file() and (o1 / "nanopubs.jsonld").is_file()
+        happy_ok = (
+            rc == 0
+            and res1.get("case_id") == case_data["case_id"]
+            and len(res1.get("nanopublications") or []) == 4
+            and not issues1
+            and not extra_keys
+            and ev1["counts"]["unverified"] == 0
+            and rdf_ok
+        )
+        results["tests"]["happy_closed_and_rdf"] = {
+            "passed": happy_ok,
+            "contract_issues": issues1,
+            "extra_keys": extra_keys,
+            "counts": ev1["counts"],
+            "rdf_validation": rdf_info,
         }
 
-    write_json_atomic(out_dir / "self_test_report.json", report)
-    return report
+        # (c) Fault injection checks
+        fault_cases = [
+            ("altered_quote", "unverified_quote"),
+            ("dropped_negation", "negation_dropped"),
+            ("altered_number", "number_not_in_evidence"),
+            ("wrong_anchor", "anchor_relocated"),
+            ("may_as_asserted", "hedge_mismatch"),
+        ]
+        fault_summary: Dict[str, Any] = {}
+        base_claims = json.loads((examples_dir / "example_claims.json").read_text(encoding="utf-8-sig"))
+        base_answer = json.loads((examples_dir / "example_answer.json").read_text(encoding="utf-8-sig"))
+
+        for name, expected_code in fault_cases:
+            wf = tmp_path / f"work_{name}"
+            of = tmp_path / f"out_{name}"
+            run_prepare(in1, in1 / "case.json", wf, of)
+            c_mod = copy.deepcopy(base_claims)
+            a_mod = copy.deepcopy(base_answer)
+
+            if name == "altered_quote":
+                c_mod["claims"][0]["evidence"][0]["quote"] = "Oxygen vacancies erase all methanol yield at 573 K."
+            elif name == "dropped_negation":
+                c_mod["claims"][2]["polarity"] = "affirmative"
+                c_mod["claims"][2]["statement"] = "Carrier gas switching changed CO2 conversion across duplicate runs."
+            elif name == "altered_number":
+                c_mod["claims"][3]["statement"] = "Cu-In2O3 achieves 98.7% methanol selectivity at 573 K."
+                c_mod["claims"][3]["qualifiers"]["value"] = "98.7"
+            elif name == "wrong_anchor":
+                c_mod["claims"][3]["evidence"][0]["anchor"] = "p1_b03"
+            elif name == "may_as_asserted":
+                c_mod["claims"][1]["modality"] = "asserted"
+
+            write_json_atomic(wf / "claims.json", c_mod)
+            write_json_atomic(wf / "answer.json", a_mod)
+            run_finalize(in1 / "case.json", wf, of)
+            evf = json.loads((of / "evidence_check.json").read_text(encoding="utf-8"))
+            all_codes = (
+                [x.get("code") for x in evf.get("must_fix", [])]
+                + [x.get("code") for x in evf.get("warnings", [])]
+                + [x.get("type") for x in evf.get("change_records", [])]
+            )
+            fault_summary[name] = {
+                "expected": expected_code,
+                "detected": expected_code in all_codes,
+                "observed_codes": sorted(set(c for c in all_codes if c)),
+            }
+
+        results["tests"]["fault_injection"] = {
+            "passed": all(v["detected"] for v in fault_summary.values()),
+            "cases": fault_summary,
+        }
+
+        # (e) Encrypted PDF honest degradation
+        enc_pdf = _find_encrypted_fixture(tmp_path)
+        in_enc = tmp_path / "enc_in"
+        w_enc = tmp_path / "enc_work"
+        o_enc = tmp_path / "enc_out"
+        in_enc.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(enc_pdf, in_enc / "locked.pdf")
+        enc_case = {
+            "case_id": "enc-test-14",
+            "input_files": ["locked.pdf"],
+            "output_contract": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["case_id", "status", "uncertainties"],
+                "properties": {
+                    "case_id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["success", "partial", "unable"]},
+                    "uncertainties": {"type": "array"},
+                },
+            },
+        }
+        write_json_atomic(in_enc / "case.json", enc_case)
+        run_prepare(in_enc, in_enc / "case.json", w_enc, o_enc)
+        res_enc = json.loads((o_enc / "result.json").read_text(encoding="utf-8"))
+        enc_ok = (
+            res_enc.get("case_id") == "enc-test-14"
+            and res_enc.get("status") in {"unable", "partial"}
+            and not contract_issues(enc_case["output_contract"], res_enc)
+        )
+        results["tests"]["encrypted_pdf_fallback"] = {
+            "passed": enc_ok,
+            "status": res_enc.get("status"),
+            "fixture": str(enc_pdf),
+        }
+
+    results["all_passed"] = all(t["passed"] for t in results["tests"].values())
+    write_json_atomic(out_dir / "self_test_report.json", results)
+
+    if write_benchmark:
+        bench_dir = SKILL_DIR / "benchmarks"
+        bench_dir.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "# Reading 14 校验器故障注入与 RDF 一致性实测记录",
+            "",
+            f"- 运行时间 (UTC)：`{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}`",
+            f"- 测试脚本：`scripts/self_test.py`",
+            f"- 全部测试通过：`{results['all_passed']}`",
+            f"- RDF 导出校验：`{json.dumps(results['tests']['happy_closed_and_rdf']['rdf_validation'], ensure_ascii=False)}`",
+            "",
+            "| 测试项 / 注入故障 | 期望检出码 | 实测检出 | 实际捕获编码 |",
+            "|---|---|---|---|",
+        ]
+        for cname, cval in results["tests"]["fault_injection"]["cases"].items():
+            lines.append(
+                f"| {cname} | `{cval['expected']}` | {'PASS' if cval['detected'] else 'FAIL'} | "
+                f"`{', '.join(cval['observed_codes'])}` |"
+            )
+        lines.extend([
+            f"| happy_closed_and_rdf | 契约零错 + RDF 跨格式一致 | {'PASS' if results['tests']['happy_closed_and_rdf']['passed'] else 'FAIL'} | `exact={results['tests']['happy_closed_and_rdf']['counts']['exact']}` |",
+            f"| encrypted_pdf_fallback | 状态降级为 unable/partial | {'PASS' if results['tests']['encrypted_pdf_fallback']['passed'] else 'FAIL'} | `status={results['tests']['encrypted_pdf_fallback']['status']}` |",
+        ])
+        write_text_lf(bench_dir / "validator_benchmark.md", "\n".join(lines) + "\n")
+
+    print(json.dumps(results, ensure_ascii=False, indent=2))
+    return results
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run reading-14-nanopublication self-tests.")
-    parser.add_argument("--out-dir", default=None)
-    parser.add_argument("--compare-baseline", action="store_true")
+    parser = argparse.ArgumentParser(description="Run reading-14 self-test suite.")
+    parser.add_argument("--out-dir", default="/tmp/reading14-selftest", help="Directory to write test report")
+    parser.add_argument("--write-benchmark", action="store_true", help="Update benchmarks/validator_benchmark.md")
     args = parser.parse_args()
-
-    out_dir = Path(args.out_dir) if args.out_dir else Path(tempfile.mkdtemp(prefix="reading14_selftest_"))
-    rep = run_self_test(out_dir, compare_baseline=args.compare_baseline)
-    print(json.dumps(rep, ensure_ascii=False, indent=2))
-    return 0 if rep["all_passed"] else 1
+    res = run_suite(Path(args.out_dir), write_benchmark=args.write_benchmark)
+    return 0 if res["all_passed"] else 1
 
 
 if __name__ == "__main__":

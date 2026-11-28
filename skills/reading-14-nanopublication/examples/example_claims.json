@@ -1,0 +1,98 @@
+{
+  "_example_notice": "示例，非正式案例（仅用于演示 claims.json 接口）",
+  "paper": {
+    "title": "Oxygen Vacancies and Water Co-feeding in Cu-In2O3 Catalysis (示例，非正式案例)",
+    "authors": [],
+    "year": "not_reported",
+    "doi": "not_reported",
+    "version": "not_reported",
+    "venue": "not_reported",
+    "url": "not_reported"
+  },
+  "claims": [
+    {
+      "id": "c1",
+      "paper_id": "paper_1",
+      "section": "sec_1",
+      "statement": "Oxygen vacancies on Cu-In2O3 increase methanol selectivity from 72% to 91%.",
+      "subject": "Oxygen vacancies on Cu-In2O3",
+      "predicate": "increases",
+      "object": "methanol selectivity from 72% to 91%",
+      "qualifiers": {"condition": "573 K, 3.0 MPa", "system_or_population": "Cu-In2O3", "value": "72% -> 91%", "unit": "%", "comparator": ""},
+      "polarity": "affirmative",
+      "modality": "asserted",
+      "evidence": [
+        {
+          "anchor": "p1_b03",
+          "quote": "Oxygen vacancies on Cu-In2O3 increase methanol selectivity from 72% to 91% at 573 K and 3.0 MPa."
+        }
+      ],
+      "evidence_type": "direct_experimental",
+      "confidence": 0.92,
+      "confidence_basis": "Explicit quantitative claim in Section 1."
+    },
+    {
+      "id": "c2",
+      "paper_id": "paper_1",
+      "section": "sec_2",
+      "statement": "Surface hydroxyl accumulation may induce partial sintering after 200 h.",
+      "subject": "Surface hydroxyl accumulation",
+      "predicate": "causes",
+      "object": "partial sintering",
+      "qualifiers": {"condition": "after 200 h", "system_or_population": "", "value": "", "unit": "", "comparator": ""},
+      "polarity": "affirmative",
+      "modality": "hedged",
+      "evidence": [
+        {
+          "anchor": "p1_b05",
+          "quote": "Surface hydroxyl accumulation may induce partial sintering after 200 h."
+        }
+      ],
+      "evidence_type": "indirect_inference",
+      "confidence": 0.65,
+      "confidence_basis": "Author hedged wording ('may induce') retained as hedged."
+    },
+    {
+      "id": "c3",
+      "paper_id": "paper_1",
+      "section": "sec_2",
+      "statement": "Carrier gas switching showed no significant difference in CO2 conversion across duplicate runs.",
+      "subject": "Carrier gas switching",
+      "predicate": "differs_from",
+      "object": "baseline CO2 conversion",
+      "qualifiers": {"condition": "duplicate runs", "system_or_population": "", "value": "", "unit": "", "comparator": "duplicate runs"},
+      "polarity": "negative",
+      "modality": "asserted",
+      "evidence": [
+        {
+          "anchor": "p1_b05",
+          "quote": "carrier gas switching showed no significant difference in CO2 conversion across duplicate runs."
+        }
+      ],
+      "evidence_type": "direct_experimental",
+      "confidence": 0.88,
+      "confidence_basis": "Null result captured with negative polarity on differs_from."
+    },
+    {
+      "id": "c4",
+      "paper_id": "paper_1",
+      "section": "sec_2",
+      "statement": "Cu-In2O3 achieves 91.8% methanol selectivity at 573 K.",
+      "subject": "Cu-In2O3",
+      "predicate": "achieves",
+      "object": "91.8% methanol selectivity",
+      "qualifiers": {"condition": "573 K", "system_or_population": "Cu-In2O3", "value": "91.8", "unit": "%", "comparator": ""},
+      "polarity": "affirmative",
+      "modality": "asserted",
+      "evidence": [
+        {
+          "anchor": "tab_1",
+          "quote": "| Cu-In2O3 | 91.8 | 573 |"
+        }
+      ],
+      "evidence_type": "direct_table_figure",
+      "confidence": 0.95,
+      "confidence_basis": "Directly grounded in Table row tab_1."
+    }
+  ]
+}

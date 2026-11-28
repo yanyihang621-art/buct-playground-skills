@@ -1,49 +1,53 @@
-# 科研 Nanopublication 构建与证据核验
+# 阅读 14｜Nanopublication 断言拆解与证据绑定（`reading-14-nanopublication`）
 
-面向阅读14。输入一篇或多篇科研材料，输出逐条可核对的原子断言、最小引文、来源位置及 JSON、JSON-LD、TriG、N-Quads 和 Markdown。抽取器产生候选，Agent 结合案例问题补漏、裁去无关结论并审阅断言。案例独有的答案字段由 Agent 结合原文填写。
+> 由阅读原文的 Agent 亲手完成原子断言拆解与条件限定，脚本专注**锚点索引、逐字引文校验、情态/极性/原子性检查、四图 Nanopublication RDF 序列化与契约投影**。
 
-## 运行
+## 1. 为什么重构为 v3（v1 → v3 设计取舍）
 
-在安装此 Skill 的目录使用 Python 3.10+。词表读取使用 PyYAML，PDF 处理使用 PyMuPDF。OCR 取决于运行环境是否具备识别引擎和所需语言包，Pillow 用于部分图像操作。RDF 导出使用标准库。
+- **v1（`104123`，官方终分 62.33）** 与 **v2（`113231`，官方终分 56.67）**：v2 的正则全自动拆解与长链 `review` 校验在 DeepSeek Harness 下容易耗尽预算，且规则提取的陈述句带有较强机械痕迹（平台评语 *"push your agent for a more complete, genuinely-derived solution"*）。
+- **v3 核心思路（做减法）**：
+  1. `prepare.py` 统一完成 PDF/Markdown/JATS/JSON 递归解析，写出分节阅读稿 `reader/paper_*.md`、索引 `index.json`、元信息 `meta.json` 及保底骨架 `result.json`。
+  2. Agent 用 `find.py` 精读相关章节与表格，写出原子断言 `work/claims.json`（严格使用 22 个受控谓词，保留条件、否定与推测情态）及 `work/answer.json`。
+  3. `finalize.py` 核验引文、数值、情态/否定一致性与复合句原子性，执行 Jaccard 去重与极性冲突检测，生成 W3C TriG / N-Quads / JSON-LD 四图导出（无外部 RDF 库零依赖运行，检测到 `rdflib` 时额外交叉验算四元组数一致），并精确对齐封闭/开放 `output_contract`。
 
-```sh
-python3 -B scripts/run_case.py --input examples --case examples/example_case.json --work /tmp/np-example/work --out /tmp/np-example/output
+## 2. 快速执行流程
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1
+S=/skills/weekly-skill
+[ -f "$S/scripts/prepare.py" ] || S=/app/submission
+
+# 1) 解析材料并写骨架 result.json
+python3 "$S/scripts/prepare.py" --input /input --case /input/case.json --work /app/work/r14 --out /app/output
+
+# 2) 按大纲检索或分节精读
+python3 "$S/scripts/find.py" --work /app/work/r14 --section sec_1
+python3 "$S/scripts/find.py" --work /app/work/r14 "may|not|Table"
+
+# 3) Agent 写入 /app/work/r14/claims.json 与 /app/work/r14/answer.json 后校验与导出
+python3 "$S/scripts/finalize.py" --case /input/case.json --work /app/work/r14 --out /app/output
 ```
 
-输入为包内合成光学短文 `examples/sample_paper.md`。应输出两条断言。第一条保留低照度条件和 may，第二条为明确陈述。对照 `examples/example_result.json` 可检查句子、字段、源文件哈希与行号，生成时间随运行变化。生产路径及复核命令见 [SKILL.md](SKILL.md)。Harbor 中从 `/skills/weekly-skill/scripts/run_case.py` 启动，默认读取 `/input/case.json`。
+## 3. 受控谓词与四图模型
 
-## 输入与定位
+- **22 个受控谓词**：`increases`, `decreases`, `improves`, `outperforms`, `comparable_to`, `differs_from`, `causes`, `prevents`, `inhibits`, `activates`, `associated_with`, `correlated_with`, `has_value`, `achieves`, `requires`, `enables`, `used_for`, `part_of`, `is_a`, `defined_as`, `produces`, `interacts_with`（定义见 [schemas/predicates.yaml](schemas/predicates.yaml)）。
+- **四图 IRI 结构**（`https://w3id.org/np/local/<paper_sha12>/<claim_id>`）：
+  - `/head`：`np:Nanopublication` 绑定 `/assertion`、`/provenance`、`/pubinfo`。
+  - `/assertion`：始终输出物化 `rdf:Statement`（含 `polarity`、`modality`、`qualifiers`），仅当 `affirmative` 且 `asserted` 时额外输出直接三元组。
+  - `/provenance`：`prov:wasDerivedFrom` 绑定最小逐字引文、页码、锚点、`evidenceType` 与论文 `prov:wasQuotedFrom`。
+  - `/pubinfo`：`dct:created`、`dct:creator`、`dct:license`（CC-BY-4.0）与论文题录元数据。
+- **字段字典与 Schema**：见 [schemas/field_dictionary.yaml](schemas/field_dictionary.yaml)、[schemas/claims.schema.json](schemas/claims.schema.json)、[schemas/answer.schema.json](schemas/answer.schema.json)。
 
-| 材料 | 可复核位置 |
-|---|---|
-| 文字型 PDF | 物理页码、可读印刷页码、文本块或表格 ID、坐标；存在单元格坐标时定位到该格 |
-| Markdown、TXT | 文件哈希、原始行号、段落 ID；Markdown 规则表格补充数据行序号与列名 |
-| 结构化 JSON | 文献集合、章节、段落、句子和规则表格；保留 JSON Pointer、已有段号与作者给出的页号 |
-| JATS XML | 文章元数据、摘要和正文段落、规则表格；记录 XML 元素路径与原段号 |
-| 案例内联材料 | 从声明的材料字段读取，定位回 case.json 内的段落和字段；正文可与外部文献共用 |
+## 4. 适用范围、限制与依赖
 
-`ingest_manifest.json` 列出每个材料的 `paper_id` 和解析文件。原文无法访问、附件未找到、格式无法识别、扫描页读不出正文时，应沿记录回到对应文件检查。复杂表头、合并单元格、图片与跨段证据需按原材料核实；各条结论可以单独标注局限。缺少文献版本时记录 `not_reported`。
+- **支持格式**：数字版 PDF（双栏重排/表格提取）、Markdown、TXT、JATS XML、结构化 JSON；支持加密/损坏/扫描件降级。
+- **已知限制**：扫描件无 Tesseract OCR 时标记 `ocr_unavailable`；`finalize.py` 自带纯标准库 TriG/N-Quads/JSON-LD 序列化器与 N-Quads 语法校验，若运行环境未安装 `rdflib` 会在报告中注明 `rdflib_unavailable`。
 
-## 从候选到交付
+## 5. 本地自测与示例（非正式案例）
 
-1. 阅读任务和材料，确认目标段落、研究对象、变量、比较组、单位及限定条件。通读每项问题涉及的原段和图表，把合成示例与案例材料分开。
-2. 拆分独立可判真的关系。按 [关系词表](schemas/relation_vocabulary.yaml) 核对主客体和方向。保留陈述的肯定或否定、推测或确定、原文引用归属。对重复结论合并其定位，对条件或证据不同的结论保留差异。
-3. 若候选遗漏了表述，可按 [SKILL.md](SKILL.md) 的简式复核行补录短引、原块 ID、主谓宾、条件、陈述和置信度依据。每篇修订清单可混用旧完整记录和新简式行。程序从原材料派生位置、来源、图标识和各格式。表格输出的行号从首个数据行记为 1，单元格原值和单位以列标题及单元格共同解释。
-4. 查看 `/app/output/result.json`、案例指定产物与 `/app/work/nanopubs/validation_report.json`。修正影响任务的缺口，再次运行 `run_case.py --reviewed ... --answers ...`。三个 RDF 格式描述同一命名图集合。限定、否定、推测和引用关系保留其陈述强度。
-5. 配套资源包括 [字段字典](schemas/nanopub_field_dictionary.yaml)、[JSON Schema](schemas/nanopublication.schema.json) 和 [20 张合成示例卡](examples/example_20_nanopubs.json)。卡片涵盖推测、无显著影响、术语、实验比较等，逐条提供原句字段的 JSON Pointer。源代码按摄取、拆解、序列化、结果构建、校验拆分，均在 `scripts/` 内。
-
-## 验证
-
-```sh
-python3 -B scripts/self_test.py --out-dir /tmp/np-tests --compare-baseline
-```
-
-| 合成回归 | 核验内容 |
-|---|---|
-| N1 | PDF 复合句、共享条件、表格数值及 6 项故障注入；本次 7 条断言、249 个 N-Quads 四元组 |
-| N2 | 重复位置合并；相同范围的相反观察保留两条断言并记录冲突 |
-| N3 | 加密 PDF 拒绝，无法取得文本的扫描 PDF 返回无法核验 |
-| N4 | 混合格式、推测/肯定/否定、逐篇覆盖、过期 RDF 和强度篡改检测 |
-| N5 | JSON、JATS、内联论文共 3 份；审核补全后 7 条断言，3 个数据单元格；拦截虚构数值、移错表格行和伪造引文 |
-
-详细运行记录写入指定目录。对照开关只对同一本地合成输入比较保留整段文字的简单规则与本流程。赛事基础 Agent 的增益和成绩由平台在固定案例上测量。
+- 最小示例与 20 条跨学科合成断言样例位于 `examples/`（均标注“示例，非正式案例”）。
+- 运行自测与故障注入基准：
+  ```bash
+  PYTHONDONTWRITEBYTECODE=1 python3 scripts/self_test.py --out-dir /tmp/reading14-selftest --write-benchmark
+  ```
+- 实测报告见 [benchmarks/validator_benchmark.md](benchmarks/validator_benchmark.md)。

@@ -52,13 +52,16 @@ FIGURE_CAPTION_RE = re.compile(
     flags=re.IGNORECASE,
 )
 REF_ITEM_RE = re.compile(r"^(?:\[(\d{1,3})\]|(\d{1,3})\.)\s+(.+)$")
+PUBLISHER_STAMP = re.compile(r"^(?:arxiv\s*:\s*\d|doi\s*:\s*10\.|https?://doi\.org/|published as a conference paper\b)", re.I)
+TICK = r"[+−-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+−-]?\d+)?%?"
+AXIS_TICKS = re.compile(rf"^(?:{TICK}\s+){{2}}{TICK}(?:\s|$)")
 
 
 def _classify_heading(blk: Dict[str, Any], body_font_size: float) -> Optional[Tuple[int, Optional[str], str]]:
     if blk.get("role") in ("table_ref", "footnote"):
         return None
     txt = blk.get("text", "").strip()
-    if not txt or len(txt) > 160:
+    if not txt or len(txt) > 160 or AXIS_TICKS.match(txt) or not any(c.isalpha() for c in txt):
         return None
     # Reject table/figure captions or sentences ending in period (except numbered like "1. Introduction")
     if FIGURE_CAPTION_RE.match(txt) or re.match(r"^(?:Table|Tab\.?|表)\s*\d+", txt, re.IGNORECASE):
@@ -98,6 +101,7 @@ def _extract_metadata(
     blocks: Sequence[Dict[str, Any]],
     body_font_size: float,
     toc: List[Dict[str, Any]],
+    page_height: float = 800.0,
 ) -> Dict[str, Any]:
     p1_blocks = [b for b in blocks if b["page"] == 1 and b.get("role") not in ("table_ref", "footnote")]
     title: Optional[str] = None
@@ -107,8 +111,17 @@ def _extract_metadata(
     keywords: List[str] = []
 
     if p1_blocks:
-        # Title: largest-font block in top 45% of page 1
-        top_cands = [b for b in p1_blocks if b["bbox"][1] < 380.0 and not ABSTRACT_HEADING_RE.match(b["text"])]
+        top_cands = []
+        for block in p1_blocks:
+            x0, y0, x1, y1 = block["bbox"]
+            text = block["text"].strip()
+            if PUBLISHER_STAMP.match(text):
+                block["role"] = "publication_notice"
+                continue
+            if y0 >= page_height * 0.48 or y1 - y0 > 2 * (x1 - x0) or not text:
+                continue
+            if not ABSTRACT_HEADING_RE.match(text) and len(text) <= 450:
+                top_cands.append(block)
         if top_cands:
             title_blk = max(top_cands, key=lambda b: (b["max_font_size"], -b["bbox"][1]))
             if title_blk["max_font_size"] >= body_font_size * 1.18 or title_blk["is_bold"]:
@@ -127,14 +140,25 @@ def _extract_metadata(
                         break
                     if b["bbox"][1] > title_y + 220.0:
                         break
-                    if AFFILIATION_HINT_RE.search(t):
-                        affiliations.append(t)
-                        b["role"] = "affiliation"
-                    elif len(t) <= 180 and not t.endswith("."):
-                        # Split comma/and-separated authors if single clean line
-                        parts = [re.sub(r"[*†‡\d]+$", "", p).strip() for p in re.split(r",|;|\band\b", t) if p.strip()]
-                        authors.extend([p for p in parts if p])
-                        b["role"] = "authors"
+                    if b.get("role") == "publication_notice":
+                        continue
+                    # Some PDFs place a name, institution and email in a single text block.
+                    front_lines = [line["text"].strip() for line in b.get("lines", [])] or [t]
+                    has_name = False
+                    in_affiliation = False
+                    for line in front_lines:
+                        if AFFILIATION_HINT_RE.search(line):
+                            in_affiliation = True
+                        if in_affiliation:
+                            if line and "@" not in line:
+                                affiliations.append(line)
+                        elif line and len(line) <= 180 and not line.endswith("."):
+                            parts = [re.sub(r"[*∗†‡\d]+$", "", p.strip()).strip()
+                                     for p in re.split(r",|;|\band\b", line)]
+                            authors.extend(p for p in parts if p)
+                            has_name = True
+                    if has_name or in_affiliation:
+                        b["role"] = "authors" if has_name else "affiliation"
 
     # Extract Abstract and Keywords from Page 1 (or Page 2)
     for idx, b in enumerate(blocks):
@@ -278,8 +302,10 @@ def _extract_references(blocks: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
             else:
                 continue
 
-        # Stop if a new top-level Appendix heading starts
-        if re.match(r"^Appendix\s+[A-Z]\b", txt, re.IGNORECASE) and len(txt) <= 80:
+        # A numbered appendix or supplementary section can follow the bibliography.
+        if blk.get("role") == "heading" and not any(
+            REFERENCES_HEADING_RE.match(name) for name in blk.get("section_path", [])
+        ):
             in_refs = False
             continue
 
@@ -329,8 +355,9 @@ def _extract_references(blocks: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
         else:
             m = REF_ITEM_RE.match(txt)
             marker = (m.group(1) or m.group(2)) if m else None
-            if marker is None and refs and blk["page"] == refs[-1]["page"] and not txt.startswith("["):
-                # Continuation of previous reference entry
+            if (marker is None and refs and blk["page"] == refs[-1]["page"]
+                    and blk["bbox"][0] > refs[-1]["bbox"][0] + 3 and not txt.startswith("[")):
+                # Indented continuation; a flush-left author-year entry starts a new record.
                 refs[-1]["raw_text"] = refs[-1]["raw_text"] + " " + txt
                 refs[-1]["bbox"] = bbox_union([refs[-1]["bbox"], blk["bbox"]])
             else:
@@ -375,7 +402,8 @@ def parse_document_structure(
         except Exception:
             toc_list = []
 
-    metadata = _extract_metadata(blocks, body_font_size, toc_list)
+    page_profiles = diagnostics.get("page_profiles") or [{}]
+    metadata = _extract_metadata(blocks, body_font_size, toc_list, page_profiles[0].get("height", 800.0))
 
     # Build hierarchical section tree
     root_sections: List[Dict[str, Any]] = []
@@ -384,7 +412,7 @@ def parse_document_structure(
     sec_by_id: Dict[str, Dict[str, Any]] = {}
 
     for blk in blocks:
-        if blk.get("role") in ("title", "authors", "affiliation", "abstract", "keywords", "table_ref", "footnote"):
+        if blk.get("role") in ("title", "authors", "affiliation", "publication_notice", "abstract", "keywords", "footnote"):
             continue
         cls = _classify_heading(blk, body_font_size)
         if cls is not None:

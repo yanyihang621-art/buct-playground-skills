@@ -1,0 +1,208 @@
+{
+  "_example_notice": "示例，非正式案例（仅用于演示 notes.json 接口）",
+  "language": "zh",
+  "papers": [
+    {
+      "paper_id": "paper_1",
+      "bibliography": {
+        "title": "Cu-In2O3 and Cu-ZnO Catalysts for CO2 Hydrogenation (示例，非正式案例)",
+        "authors": [],
+        "year": "not_reported",
+        "venue": "not_reported",
+        "identifier": "not_reported"
+      },
+      "sections": [
+        {
+          "section_id": "sec_1",
+          "title": "1 Introduction",
+          "role": "motivation",
+          "summary": "阐述 CO2 加氢制甲醇的碳减排意义，指出传统 Cu-ZnO 催化剂在高水蒸气分压下易快速烧结失活。",
+          "points": [
+            {
+              "text": "传统 Cu-ZnO 催化剂在高水偏压下会出现快速烧结。",
+              "type": "claim",
+              "evidence": [
+                {
+                  "anchor": "p1_b03",
+                  "quote": "conventional Cu-ZnO catalysts suffer from rapid sintering under high water partial pressure."
+                }
+              ]
+            }
+          ],
+          "links_to_next": "引出在第 2 节中对 Cu-In2O3 与 Cu-ZnO 进行同条件对比测试的设计。"
+        },
+        {
+          "section_id": "sec_2",
+          "title": "2 Methods and Conditions",
+          "role": "method",
+          "summary": "说明固定床反应器的测试条件：573 K、3.0 MPa、GHSV = 12000 mL g^-1 h^-1、H2/CO2 = 3:1，持续运行 100 h。",
+          "points": [
+            {
+              "text": "固定床反应条件为 573 K、3.0 MPa、GHSV = 12000 mL g^-1 h^-1、H2/CO2 = 3:1、运行时长 100 h。",
+              "type": "condition",
+              "evidence": [
+                {
+                  "anchor": "p1_b05",
+                  "quote": "fixed-bed reactor at 573 K, 3.0 MPa, and GHSV = 12000 mL g^-1 h^-1 with H2/CO2 = 3:1 over 100 h on stream."
+                }
+              ]
+            }
+          ],
+          "links_to_next": "为第 3 节 100 h 稳态催化性能对比提供统一实验基准。"
+        },
+        {
+          "section_id": "sec_3",
+          "title": "3 Results and Limitations",
+          "role": "result",
+          "summary": "报告 100 h 稳态性能及 10 vol% 共进水实验结果，并指出超过 200 h 稳定性与再生成本未报告。",
+          "points": [
+            {
+              "text": "在 573 K 与 3.0 MPa 下，Cu-In2O3 的甲醇选择性为 91.8%、CO2 转化率为 14.2%，高于 Cu-ZnO（72.0% 与 11.5%）。",
+              "type": "result",
+              "evidence": [
+                {
+                  "anchor": "tab_1",
+                  "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+                },
+                {
+                  "anchor": "tab_1",
+                  "quote": "| Cu-ZnO | 573 | 3.0 | 72.0 | 11.5 |"
+                }
+              ]
+            },
+            {
+              "text": "10 vol% 共进水未导致 Cu-In2O3 不可逆失活，而 Cu-ZnO 损失了 28% 活性。",
+              "type": "result",
+              "evidence": [
+                {
+                  "anchor": "p1_b09",
+                  "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+                }
+              ]
+            },
+            {
+              "text": "超过 200 h 的长期稳定性与再生成本未在本研究中报告。",
+              "type": "limitation",
+              "evidence": [
+                {
+                  "anchor": "p1_b09",
+                  "quote": "Long-term stability beyond 200 h and regeneration cost were not reported in this study."
+                }
+              ]
+            }
+          ],
+          "links_to_next": ""
+        }
+      ],
+      "card": {
+        "research_question": {
+          "text": "对比 Cu-In2O3 与 Cu-ZnO 在 CO2 加氢制甲醇中的催化性能及抗水失活能力。",
+          "evidence": [
+            {
+              "anchor": "p1_b03",
+              "quote": "conventional Cu-ZnO catalysts suffer from rapid sintering under high water partial pressure."
+            }
+          ]
+        },
+        "data_materials": {
+          "text": "Cu-In2O3 与 Cu-ZnO 催化剂；反应气 H2/CO2 = 3:1。",
+          "evidence": [
+            {
+              "anchor": "p1_b05",
+              "quote": "with H2/CO2 = 3:1 over 100 h on stream."
+            }
+          ]
+        },
+        "method": {
+          "text": "固定床反应器稳态评价与 10 vol% 共进水耐受测试。",
+          "evidence": [
+            {
+              "anchor": "p1_b05",
+              "quote": "Catalysts were evaluated in a fixed-bed reactor at 573 K, 3.0 MPa"
+            }
+          ]
+        },
+        "conditions": [
+          {
+            "text": "573 K、3.0 MPa、GHSV = 12000 mL g^-1 h^-1、H2/CO2 = 3:1、100 h；耐水测试为 10 vol% 共进水。",
+            "evidence": [
+              {
+                "anchor": "p1_b05",
+                "quote": "at 573 K, 3.0 MPa, and GHSV = 12000 mL g^-1 h^-1 with H2/CO2 = 3:1 over 100 h on stream."
+              }
+            ]
+          }
+        ],
+        "key_findings": [
+          {
+            "text": "Cu-In2O3 甲醇选择性 91.8%、CO2 转化率 14.2%，优于 Cu-ZnO（72.0%、11.5%）；10 vol% 共进水下 Cu-In2O3 未导致不可逆失活，Cu-ZnO 活性下降 28%。",
+            "metric": "Methanol Selectivity / CO2 Conversion",
+            "value": "91.8% / 14.2%",
+            "comparator": "Cu-ZnO (72.0% / 11.5%)",
+            "condition": "573 K, 3.0 MPa, 100 h",
+            "evidence": [
+              {
+                "anchor": "tab_1",
+                "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+              },
+              {
+                "anchor": "p1_b09",
+                "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+              }
+            ]
+          }
+        ],
+        "conclusions": {
+          "text": "在 573 K、3.0 MPa 下 Cu-In2O3 兼具更高的甲醇选择性/转化率，且在共进水下未发生不可逆失活。",
+          "evidence": [
+            {
+              "anchor": "tab_1",
+              "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+            },
+            {
+              "anchor": "p1_b09",
+              "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+            }
+          ]
+        },
+        "limitations": [
+          {
+            "text": "未报告超过 200 h 的长期稳定性及催化剂再生成本。",
+            "source": "author_stated",
+            "evidence": [
+              {
+                "anchor": "p1_b09",
+                "quote": "Long-term stability beyond 200 h and regeneration cost were not reported in this study."
+              }
+            ]
+          }
+        ],
+        "not_reported": [
+          {
+            "item": "超过 200 h 长期稳定性与再生成本",
+            "searched": ["sec_2", "sec_3", "tab_1"]
+          }
+        ]
+      },
+      "knowledge": [
+        {
+          "term": "Cu-In2O3",
+          "kind": "method",
+          "definition": "在 573 K、3.0 MPa 下实现 91.8% 甲醇选择性且在 10 vol% 共进水下未发生不可逆失活的催化剂。",
+          "aliases": [],
+          "evidence": [
+            {
+              "anchor": "tab_1",
+              "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+            },
+            {
+              "anchor": "p1_b09",
+              "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "comparison": []
+}

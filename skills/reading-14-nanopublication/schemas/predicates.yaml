@@ -1,0 +1,69 @@
+schema_version: "3.0.0"
+vocabulary_name: "Reading 14 Controlled Predicate Vocabulary"
+predicates:
+  - id: increases
+    uri: "http://purl.obolibrary.org/obo/RO_0002213"
+    description: "Positively regulates, elevates, raises, or increases magnitude/rate"
+  - id: decreases
+    uri: "http://purl.obolibrary.org/obo/RO_0002212"
+    description: "Negatively regulates, reduces, lowers, or attenuates magnitude/rate"
+  - id: improves
+    uri: "https://w3id.org/np/vocab/improves"
+    description: "Improves performance, quality, stability, or convergence"
+  - id: outperforms
+    uri: "https://w3id.org/np/vocab/outperforms"
+    description: "Achieves better performance than a specified baseline/comparator"
+  - id: comparable_to
+    uri: "https://w3id.org/np/vocab/comparable_to"
+    description: "Exhibits similar or non-significantly different performance relative to comparator"
+  - id: differs_from
+    uri: "https://w3id.org/np/vocab/differs_from"
+    description: "Differs from comparator (use polarity=negative for 'no significant difference')"
+  - id: causes
+    uri: "http://purl.obolibrary.org/obo/RO_0002410"
+    description: "Explicit causal relation stated in source (do not upgrade association to causes)"
+  - id: prevents
+    uri: "http://purl.obolibrary.org/obo/RO_0002559"
+    description: "Prevents or avoids an outcome/failure mode"
+  - id: inhibits
+    uri: "http://purl.obolibrary.org/obo/RO_0002449"
+    description: "Inhibits, blocks, suppresses, or deactivates a process/entity"
+  - id: activates
+    uri: "http://purl.obolibrary.org/obo/RO_0002406"
+    description: "Activates, triggers, or initiates a process/mechanism"
+  - id: associated_with
+    uri: "http://semanticscience.org/resource/SIO_000001"
+    description: "Non-causal association, co-occurrence, or link"
+  - id: correlated_with
+    uri: "http://semanticscience.org/resource/SIO_000772"
+    description: "Statistical correlation (positive/negative/linear)"
+  - id: has_value
+    uri: "http://semanticscience.org/resource/SIO_000223"
+    description: "Has measured property, attribute, or quantitative value"
+  - id: achieves
+    uri: "http://semanticscience.org/resource/SIO_000216"
+    description: "Achieves a target metric, score, or benchmark result"
+  - id: requires
+    uri: "https://w3id.org/np/vocab/requires"
+    description: "Requires a precondition, resource, constraint, or operating regime"
+  - id: enables
+    uri: "https://w3id.org/np/vocab/enables"
+    description: "Enables, catalyzes, or makes a capability/process feasible"
+  - id: used_for
+    uri: "https://w3id.org/np/vocab/used_for"
+    description: "Is applied, employed, or used for a task or application"
+  - id: part_of
+    uri: "http://purl.obolibrary.org/obo/BFO_0000050"
+    description: "Structural or conceptual component of a larger whole"
+  - id: is_a
+    uri: "http://www.w3.org/2000/01/rdf-schema#subClassOf"
+    description: "Taxonomic or type membership relation"
+  - id: defined_as
+    uri: "http://www.w3.org/2004/02/skos/core#definition"
+    description: "Formal definition, abbreviation expansion, or mathematical formulation"
+  - id: produces
+    uri: "http://purl.obolibrary.org/obo/RO_0003000"
+    description: "Generates, yields, or synthesizes an output/product"
+  - id: interacts_with
+    uri: "http://purl.obolibrary.org/obo/RO_0002434"
+    description: "Mutual or bidirectional interaction between entities"

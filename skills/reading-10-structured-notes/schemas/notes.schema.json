@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reading 10 Agent Notes Input",
+  "type": "object",
+  "required": ["papers"],
+  "properties": {
+    "language": {"type": "string"},
+    "papers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["paper_id", "sections", "card"],
+        "properties": {
+          "paper_id": {"type": "string"},
+          "bibliography": {"type": "object"},
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["section_id", "title", "summary"],
+              "properties": {
+                "section_id": {"type": "string"},
+                "title": {"type": "string"},
+                "role": {"type": "string"},
+                "summary": {"type": "string"},
+                "points": {"type": "array"},
+                "links_to_next": {"type": "string"}
+              }
+            }
+          },
+          "card": {"type": "object"},
+          "knowledge": {"type": "array"}
+        }
+      }
+    },
+    "comparison": {"type": "array"}
+  }
+}

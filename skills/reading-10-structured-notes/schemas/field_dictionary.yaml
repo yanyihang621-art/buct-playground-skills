@@ -1,84 +1,28 @@
-schema_version: "1.0.0"
-name: "Scientific Literature Structured Notes Field Dictionary"
+schema_version: "3.0.0"
+skill: "reading-10-structured-notes"
 anchor_format:
-  required_fields:
-    - pdf_page
-    - section_id
-    - block_id
-    - bbox
-  optional_fields:
-    - printed_page
-    - table_id
-    - figure_id
-    - eq_id
-    - quote_snippet
-  display_template: "[p.{pdf_page} | {section_id} | {element_id} | bbox:{bbox}]"
-
-not_reported_policy:
-  marker: "not_reported"
-  rule: "Never infer or fabricate unreported experimental parameters, sample sizes, baselines, or limitations. Record explicit not_reported status and surface in unreported_or_missing_items."
-
-verification_tiers:
-  machine_verified: "Extracted directly from PDF/Markdown structure and deterministically verified for anchor ID, page number, bbox, and quote overlap."
-  needs_human_review: "High-level synthesis, implicit preconditions/limitations, or cross-section numeric discrepancies requiring domain reviewer confirmation."
-
-paper_card_fields:
-  bibliographic:
-    description: "Title, authors, affiliations, keywords, source file, page count."
-    verification_tier: "machine_verified"
-  research_question:
-    description: "Core problem, hypothesis, and objective explicitly stated by the authors."
-    verification_tier: "needs_human_review"
-  data_and_materials:
-    description: "Datasets, catalysts/materials, specimens, sample sizes, or corpus sources."
-    verification_tier: "needs_human_review"
-  methods_and_setup:
-    description: "Models, synthesis routes, characterization techniques, baselines, or algorithms."
-    verification_tier: "needs_human_review"
-  operating_conditions_and_preconditions:
-    description: "Temperature, pressure, GHSV, pH, hyperparameters, boundary assumptions, and scope conditions under which conclusions hold."
-    verification_tier: "needs_human_review"
-  key_findings_and_metrics:
-    description: "Primary quantitative and qualitative results with verbatim numeric values and anchors."
-    verification_tier: "needs_human_review"
-  tables_and_figures_digest:
-    description: "Structured digest of extracted tables and figures with captions and page/bbox provenance."
-    verification_tier: "machine_verified"
-  key_equations_and_variables:
-    description: "Extracted display equations and chemical/mathematical expressions preserving subscripts, superscripts, and Greek symbols."
-    verification_tier: "machine_verified"
-  limitations_and_threats_to_validity:
-    description: "Explicitly stated caveats, failure modes, narrow scopes, and open future work."
-    verification_tier: "needs_human_review"
-  unreported_or_missing_items:
-    description: "Standard Paper Card slots lacking direct textual evidence in the manuscript."
-    verification_tier: "needs_human_review"
-  reusability_tags:
-    description: "Normalized topic, method, material, and acronym tags for cross-paper search and comparison."
-    verification_tier: "machine_verified"
-  verification_summary:
-    description: "Deterministic anchor verification rate, section alignment coverage, and review checklist status."
-    verification_tier: "machine_verified"
-
-section_note_fields:
-  - section_id
-  - parent_section_id
-  - level
-  - number
-  - title
-  - section_path
-  - discourse_role
-  - pages
-  - block_ids
-  - cue_evidence
-  - cross_references
-  - transition_summary
-  - verification_tier
-
-knowledge_entry_types:
-  - concept_definition
-  - acronym
-  - variable_condition
-  - method_component
-  - quantitative_finding
-  - limitation_precondition
+  single_paper: "<element_id> (e.g. p3_b04, tab_1, fig_2, eq_1)"
+  multi_paper: "<paper_id>:<element_id> (e.g. paper_2:p3_b04)"
+  markdown_display: "[p.<page> §<section_id> <anchor>]"
+notes_fields:
+  bibliography: "title, authors, year, venue, identifier (DOI or arXiv)"
+  sections: "Ordered matching paper outline; role in {motivation, background, method, experiment, result, discussion, conclusion, appendix}"
+  card:
+    research_question: "Core problem or hypothesis with evidence"
+    data_materials: "Datasets, catalysts, samples, or experimental materials"
+    method: "Architecture, formulation, or experimental protocol"
+    conditions: "Operating conditions, budgets, hyperparameters, and constraints"
+    key_findings: "Quantitative results with metric, value, comparator, condition, and evidence"
+    conclusions: "Main takeaways supported by evidence"
+    limitations: "Author-stated or reader-inferred caveats"
+    not_reported: "Explicit missing items with searched section IDs"
+  knowledge: "Searchable concepts, variables, methods, datasets, metrics, and results"
+verification_codes:
+  exact: "Normalized quote found inside named anchor"
+  relocated: "Normalized quote found in another block/table; anchor auto-updated and logged"
+  fuzzy: "Difflib sliding-window similarity >= 0.90"
+  unverified: "Quote could not be grounded in source material (must fix)"
+  too_short: "Non-numeric/non-table quote shorter than 12 normalized chars"
+  number_not_in_evidence: "Numeric value in note/answer absent from evidence and derived_values"
+  negation_dropped: "Negation present in quote omitted in note/answer"
+  hedge_dropped: "Hedging modality present in quote omitted in note/answer"

@@ -1,8 +1,0 @@
-{
-  "case_id": "example-reading-10-synthetic",
-  "status": "success",
-  "answer": {
-    "comparison": "在观察期内，传感器 A 漂移 0.4 nm，传感器 B 漂移 0.7 nm。",
-    "scope": "实验仅覆盖干燥舱；潮湿条件下的表现尚未得到验证。"
-  }
-}

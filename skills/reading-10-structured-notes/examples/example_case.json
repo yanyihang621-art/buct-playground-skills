@@ -1,15 +1,38 @@
 {
-  "_example_notice": "Synthetic tutorial created to illustrate the interface.",
+  "_example_notice": "示例，非正式案例（仅用于演示接口与本地自测）",
   "case_id": "example-reading-10-synthetic",
   "input_files": ["example_paper.md"],
-  "instruction": "Compare the two sensors and bound the claim in Chinese. Keep the reusable reading note as a separate artifact.",
+  "instruction": "按原章节生成结构化笔记，比较两种催化剂在 573 K、3.0 MPa 条件下的表现，并说明否定边界与未报告项。",
   "output_contract": {
-    "type": "object", "additionalProperties": false,
-    "required": ["case_id", "status", "answer"],
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["case_id", "status", "answer", "uncertainties"],
     "properties": {
-      "case_id": {"type": "string"}, "status": {"type": "string"},
-      "answer": {"type": "object", "additionalProperties": false, "required": ["comparison", "scope"],
-                 "properties": {"comparison": {"type": "string"}, "scope": {"type": "string"}}}
+      "case_id": {"type": "string"},
+      "status": {"type": "string", "enum": ["success", "partial", "unable"]},
+      "answer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comparison", "scope", "evidence"],
+        "properties": {
+          "comparison": {"type": "string"},
+          "scope": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["anchor", "page", "quote"],
+              "properties": {
+                "anchor": {"type": "string"},
+                "page": {"type": "integer"},
+                "quote": {"type": "string"}
+              }
+            }
+          }
+        }
+      },
+      "uncertainties": {"type": "array", "items": {"type": "string"}}
     }
   }
 }

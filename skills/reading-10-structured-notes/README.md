@@ -1,49 +1,53 @@
-# 文献总结与结构化笔记
+# 阅读 10｜文献总结与结构化笔记（`reading-10-structured-notes`）
 
-把单篇或多篇论文变成与原章节对应的笔记、可比较的论文卡片和带出处的案例答案。可以在本地作为 Python 工具运行，也可由 Agent 根据 [SKILL.md](SKILL.md) 完成竞赛案例。
+> 将繁重的论文理解交还给正在阅读原文的 Agent，脚本只负责**版面还原、锚点索引、逐字引文校验、事实不变量告警与多格式交付**。
 
-## 最小可运行示例
+## 1. 为什么重构为 v3（v1 → v3 设计取舍）
 
-`examples/` 中的光学传感器短文、案例与复核稿均为合成教程。以下两次调用产生 [示例结果](examples/example_result.json) 以及包含原句与行号的 Markdown 笔记，不需要联网或创建凭据。
+- **v1（`104110`，官方终分 65.67）** 与 **v2（`113257`，官方终分 57.67）**：v2 引入了重型规则骨架生成与过长多轮审计协议（`review.json` 含复杂 JSON Pointer 审核、高达 670 KB 的机械产物），导致 DeepSeek Harness 在 64 次请求 / 900 秒预算内易消耗轮次并被判定为机械模板而非“genuinely-derived”结果，总分反而下降 8 分。
+- **v3 核心思路（做减法）**：
+  1. `prepare.py` 一次完成 PDF/Markdown/JATS/JSON 递归解析，输出紧凑分节阅读稿 `reader/paper_*.md`、检索索引 `index.json`，并立即写出符合 `output_contract` 的骨架 `result.json`（先保底）。
+  2. Agent 借助 `find.py` 按大纲精读原文，亲手撰写结构化笔记 `work/notes.json`（支持分片）与问题答案 `work/answer.json`。
+  3. `finalize.py` 执行确定性校验（逐字引文匹配、错位锚点自动重定位、数字一致性、否定与推测强度保留、章节顺序与遗漏检查、契约闭环校验），生成 `result.json`、`notes.md`、`notes.json`、`evidence_check.json`（多篇另出 `comparison.md`）。
 
-```bash
-python3 scripts/run_case.py prepare --input examples --case examples/example_case.json --work ./work --out ./out
-python3 scripts/run_case.py finish --input examples --case examples/example_case.json --work ./work --out ./out --review examples/example_review.json
-```
-
-运行自己材料时，将案例和论文放入输入目录。prepare 保存阶段性结果，生成 `work/reader/paper_*.md` 和 `work/ingested/ingest_manifest.json`。按照案例逐章阅读，检查实验表格与脚注，将答案、限制及引文写入复核稿。finish 验证输入未改变，使用复核稿生成最终交付。变更原文后重新 prepare。Harbor 直接用 `python3 /skills/weekly-skill/scripts/run_case.py prepare` 和 `finish`，默认输入在 `/input`，交付至 `/app/output`。
-
-## 输入、定位与输出
-
-| 输入 | 支持的来源与位置 |
-|---|---|
-| PDF | 正文、原始章节、表格、公式和图注，保留物理页、章节及区块位置。扫描与损坏文件会产生状态和诊断。 |
-| Markdown / TXT | 标题、段落及 Markdown 表格。证据定位到原文件行，不把文本行冒充印刷页。 |
-| JSON | 独立文章、论文合集、案例中明确的内嵌论文、清单引用。正文引用 JSON Pointer，保留作者、章节和原始段落 ID。 |
-| JATS XML | 文章元数据、摘要、正文层级、段落和普通表格。以 XML 路径及存在的段落 ID 定位。 |
-
-默认递归查找资料。案例提供 `input_files` 等材料清单时按所列文件处理，文件声明可以是路径字符串或含 `path` 的对象。对于同一论文的多个版本，按题意选择主版本，标注补充材料和异文。图片中的表格、公式、合并单元格和缺失字体宜打开对应原页确认。
-
-`out/result.json` 遵循本案例契约，支持嵌套类型与闭合对象。完整的 `out/notes/` 包含结构化笔记、可编辑 Markdown、论文比较矩阵、检索索引、案例答案对应证据及审计报告。审计失败时，查看 `work/latest_audit.json`。成功完成后的再次复核如失败，将保留上次发布的结果。
-
-`examples/example_review.json` 展示逐章摘要、卡片、自由契约字段与证据绑定。JSON Pointer 指向具体回答值；同一数值比较可引用表头、数行和必要脚注。 `schemas/field_dictionary.yaml` 定义论文卡片字段，`templates/paper_note_template.md` 提供独立复用的笔记模板。严格验证外层契约不会限制独立笔记文件的内容。
-
-## 运行环境
-
-建议 Python 3.10+。JSON/JATS/Markdown/TXT 的阅读器使用标准库。PDF 使用 PyMuPDF，复杂表格使用 pdfplumber，OCR 依赖 Pillow 和系统可执行的 Tesseract。需要 PDF 环境时可执行以下命令。可选 jsonschema 用于验证完整标准模式；缺少时检查常用嵌套类型、数组、枚举和字段限制。
+## 2. 快速执行流程
 
 ```bash
-python3 -m pip install PyMuPDF pdfplumber pypdf Pillow numpy PyYAML jsonschema
+export PYTHONDONTWRITEBYTECODE=1
+S=/skills/weekly-skill
+[ -f "$S/scripts/prepare.py" ] || S=/app/submission
+
+# 1) 解析材料并写骨架 result.json
+python3 "$S/scripts/prepare.py" --input /input --case /input/case.json --work /app/work/r10 --out /app/output
+
+# 2) 按大纲检索或分节精读
+python3 "$S/scripts/find.py" --work /app/work/r10 --section sec_1
+python3 "$S/scripts/find.py" --work /app/work/r10 "Table 3|ablation"
+
+# 3) Agent 写入 /app/work/r10/notes.json 与 /app/work/r10/answer.json 后校验交付
+python3 "$S/scripts/finalize.py" --case /input/case.json --work /app/work/r10 --out /app/output
 ```
 
-对于扫描件，OCR 语言需要系统中已有相应语言包。无法读取的材料必须列明影响范围和人工接管位置。没有明确报告某一条件时，应区分检索范围、可读性与原作者明确说明的局限。语义解释、作者推测、统计显著性和跨实验可比性仍需人工或 Agent 读原文判断。
+## 3. 锚点与字段字典
 
-## 验证与复用
+- **锚点格式**：单篇使用 `p3_b04`、`tab_1`、`fig_2`、`eq_1`；多篇使用 `paper_2:p3_b04`。Markdown 中渲染为 `[p.3 §sec_2 p3_b04]`。
+- **完整字段与 Schema**：见 [schemas/field_dictionary.yaml](schemas/field_dictionary.yaml)、[schemas/notes.schema.json](schemas/notes.schema.json)、[schemas/answer.schema.json](schemas/answer.schema.json)。
+- **核心核验规则**（实现于 `scripts/evidence.py`）：
+  - `exact` / `relocated` / `fuzzy`（≥ 0.90）/ `unverified` / `too_short`；错位锚点自动重定位并记录在 `change_records`。
+  - `number_not_in_evidence`：笔记或答案中的数值必须在引文、锚点原文或 `derived_values` 中有据可查。
+  - `negation_dropped` / `hedge_dropped`：跨语种识别否定词与推测情态词，防止把“未显著改善”或“may induce”改写为绝对肯定结论。
 
-```bash
-python3 scripts/self_test.py --out-dir ./checks --compare-baseline
-python3 scripts/test_review_workflow.py
-python3 scripts/test_pdf_structure.py
-```
+## 4. 适用范围、限制与依赖
 
-自测含双栏论文、混合格式、16 页长文、扫描及加密文件、子目录和章节末尾的否定结果，以及改数值、改单位、换比较组与伪造引文的负例。测试使用本地合成材料。对照选项记录原始文本提取与结构化产物的工程差异；平台执行正式白板和 Skill 对照。PDF 标题、书签和首页边栏的独立回归见 scripts 中的 PDF 测试。问题反馈可在本仓库给出最小来源片段、输入契约、版本和失败的审计项，以便复现。
+- **支持格式**：数字版 PDF（含双栏重排与表格提取）、Markdown、TXT、JATS XML、结构化 JSON 及内联文本；支持加密/损坏/扫描件降级。
+- **已知限制**：扫描件无 Tesseract OCR 时标记 `ocr_unavailable` 并诚实降级；复杂二维堆叠公式或纯图表格需结合原 PDF 页面核对。
+- **依赖**：Python ≥ 3.10；`PyMuPDF (fitz)` / `pdfplumber` / `pypdf`（可选降级，契约校验零外部依赖纯标准库实现）。
+
+## 5. 本地自测与示例（非正式案例）
+
+- 最小示例位于 `examples/`（均标注“示例，非正式案例”）。
+- 运行自测与故障注入基准：
+  ```bash
+  PYTHONDONTWRITEBYTECODE=1 python3 scripts/self_test.py --out-dir /tmp/reading10-selftest --write-benchmark
+  ```
+- 实测故障注入报告见 [benchmarks/validator_benchmark.md](benchmarks/validator_benchmark.md)。

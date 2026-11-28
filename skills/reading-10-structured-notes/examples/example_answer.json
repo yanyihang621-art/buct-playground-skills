@@ -1,0 +1,66 @@
+{
+  "_example_notice": "示例，非正式案例（仅用于演示 answer.json 接口）",
+  "fields": {
+    "status": "success",
+    "answer": {
+      "comparison": "在 573 K、3.0 MPa、GHSV = 12000 mL g^-1 h^-1、H2/CO2 = 3:1 及 100 h 稳态条件下，Cu-In2O3 的甲醇选择性为 91.8%、CO2 转化率为 14.2%，高于传统 Cu-ZnO（选择性 72.0%、转化率 11.5%）；在 10 vol% 共进水条件下，Cu-In2O3 未出现不可逆失活，而 Cu-ZnO 损失 28% 活性。",
+      "scope": "结论仅适用于 573 K、3.0 MPa、100 h 与 10 vol% 共进水实验范围；超过 200 h 的长期稳定性与再生成本未报告。",
+      "evidence": [
+        {
+          "anchor": "tab_1",
+          "page": 1,
+          "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+        },
+        {
+          "anchor": "tab_1",
+          "page": 1,
+          "quote": "| Cu-ZnO | 573 | 3.0 | 72.0 | 11.5 |"
+        },
+        {
+          "anchor": "p1_b09",
+          "page": 1,
+          "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+        }
+      ]
+    },
+    "uncertainties": [
+      "not_reported: 超过 200 h 的长期稳定性与再生成本未报告（已核查 sec_2, sec_3, tab_1）。"
+    ]
+  },
+  "status": "success",
+  "status_reason": "已完成示例材料精读并绑定全部逐字证据。",
+  "evidence": {
+    "/answer/comparison": [
+      {
+        "anchor": "p1_b05",
+        "quote": "at 573 K, 3.0 MPa, and GHSV = 12000 mL g^-1 h^-1 with H2/CO2 = 3:1 over 100 h on stream."
+      },
+      {
+        "anchor": "tab_1",
+        "quote": "| Cu-In2O3 | 573 | 3.0 | 91.8 | 14.2 |"
+      },
+      {
+        "anchor": "p1_b09",
+        "quote": "Water co-feeding at 10 vol% did not cause irreversible deactivation of Cu-In2O3, whereas Cu-ZnO lost 28% activity."
+      }
+    ],
+    "/answer/scope": [
+      {
+        "anchor": "p1_b05",
+        "quote": "at 573 K, 3.0 MPa, and GHSV = 12000 mL g^-1 h^-1 with H2/CO2 = 3:1 over 100 h on stream."
+      },
+      {
+        "anchor": "p1_b09",
+        "quote": "Long-term stability beyond 200 h and regeneration cost were not reported in this study."
+      }
+    ]
+  },
+  "uncertainties": [
+    {
+      "item": "超过 200 h 长期稳定性与再生成本",
+      "reason": "not_reported",
+      "checked": ["sec_2", "sec_3", "tab_1"]
+    }
+  ],
+  "derived_values": []
+}
